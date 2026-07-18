@@ -49,7 +49,7 @@ stage2/c68k: $(OBJS:src/%=stage2/src/%)
 
 stage2/src/%.o: c68k src/%.c
 	mkdir -p stage2/src
-	./c68k -c -o $@ src/$*.c
+	./c68k -I$(INCDIR) -c -o $@ src/$*.c
 
 stage2/$(TESTDIR)/%.exe: stage2/c68k $(TESTDIR)/%.c
 	mkdir -p stage2/$(TESTDIR)
@@ -67,7 +67,7 @@ stage3/c68k: $(OBJS:src/%=stage3/src/%)
 
 stage3/src/%.o: stage2/c68k src/%.c
 	mkdir -p stage3/src
-	./stage2/c68k -c -o $@ src/$*.c
+	./stage2/c68k -I$(INCDIR) -c -o $@ src/$*.c
 
 # The self-host baseline: stage2 (built by stage1) and stage3 (built by stage2)
 # must be byte-identical, object for object.
