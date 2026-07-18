@@ -25,7 +25,7 @@ Legend: ☐ not started · ◐ in progress · ☑ done.
 | **P4** | [libc core + Osiris backend](#p4--libc-core--osiris-backend) | ☑ | 7 / 7 | **`HELLO.PRG` runs on Osiris** |
 | **P5** | [CP/M-68K backend](#p5--cpm-68k-backend) | ☑ | 7 / 7 | **`HELLO.68K` runs on CP/M-68K; lockstep** |
 | **P6** | [C99 language completeness](#p6--c99-language-completeness) | ☑ | 6 / 6 | language suite green on both OSes |
-| **P7** | [C99 standard library](#p7--c99-standard-library) | ◐ | 5 / 7 | library + `libm` suite green |
+| **P7** | [C99 standard library](#p7--c99-standard-library) | ◐ | 6 / 7 | library + `libm` suite green |
 | **P8** | [Integrated object emitter](#p8--integrated-object-emitter) | ☐ | 0 / 5 | compiler emits ELF `.o` with no assembler |
 | **P9** | [Native LINK / LIB / mkdri](#p9--native-link--lib--mkdri) | ☐ | 0 / 6 | native link chain on both OSes |
 | **P10** | [Self-hosting bootstrap](#p10--self-hosting-bootstrap) | ☐ | 0 / 5 | **stage2 == stage3 on both OSes** |
@@ -253,7 +253,7 @@ suite goes **lockstep** across both OSes.
 
 - [x] `printf`/`scanf` full conversion coverage (incl. `%lld`, `%f`/`%g`, `%p`, width/precision/flags). `printf` family + `sscanf`/`vsscanf`.
 - [x] `<stdlib.h>` breadth: `strtol`/`strtoul`/`strtod`, `qsort`/`bsearch`, `rand`, `div`/`ldiv`, `labs`, `atof`.
-- [ ] `<string.h>` full set; `<time.h>` formatting over the seam clock. *(string set done; `<time.h>` deferred — needs a clock seam neither OS exposes yet.)*
+- [x] `<string.h>` full set; `<time.h>` formatting over the seam clock. *(string set done; `<time.h>` wall clock over Osiris DOS `2Ah`/`2Ch` and CP/M-68K BDOS `105` — `time`/`gmtime`/`localtime`/`mktime`/`difftime`/`asctime`/`ctime`/`strftime`.)*
 - [x] `<math.h>` via the `libieee754d` soft-float donor (double transcendentals) on soft-float.
 - [x] `<inttypes.h>`, `<stdint.h>`, `<float.h>` completeness; `<assert.h>`, `<signal.h>` (minimal, synchronous).
 - [ ] Freestanding mode (`-ffreestanding`) validated (headers-only + runtime lib). *(deferred to a follow-up.)*

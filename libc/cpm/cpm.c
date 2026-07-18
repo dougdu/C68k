@@ -23,6 +23,7 @@ extern long cpm_bdos(int func, long param);
 #define F_WRITE 21
 #define F_MAKE 22
 #define F_DMAOFF 26
+#define T_GET 105 /* Worm CP/M-68K BDOS clock extension (BDOSEXT) */
 
 /* FCB field offsets. */
 #define FCB_DRIVE 0
@@ -197,4 +198,33 @@ int sys_unlink(const char *path) {
   unsigned char fcb[FCB_SIZE];
   parse_fcb(fcb, path);
   return ((cpm_bdos(F_DELETE, (long)fcb) & 0xFF) == 0xFF) ? -1 : 0;
+}
+
+/* ---- <time.h> clock seam --------------------------------------------
+ * BDOS 105 (T_GET, Worm BDOSEXT) fills an 8-byte DAT block: a big-endian
+ * word of days-since-1-JAN-1978, then byte hour/min/sec. Convert the day
+ * count to a Gregorian date with the core's shared calendar helper and
+ * hand libc a broken-down struct, identical to the Osiris backend. */
+struct __sysdt {
+  long year, mon, mday, hour, min, sec;
+};
+extern void __civil_from_days(long z, int *py, int *pm, int *pd);
+
+#define DAYS_1970_TO_1978 2922L /* 8 years, incl. leaps 1972 + 1976 */
+
+int sys_time(struct __sysdt *dt) {
+  unsigned char dat[8];
+  for (int i = 0; i < 8; i++)
+    dat[i] = 0;
+  long rc = cpm_bdos(T_GET, (long)dat);
+  long days1978 = ((long)dat[0] << 8) | dat[1]; /* big-endian word */
+  int y, m, d;
+  __civil_from_days(days1978 + DAYS_1970_TO_1978, &y, &m, &d);
+  dt->year = y;
+  dt->mon = m;
+  dt->mday = d;
+  dt->hour = dat[2];
+  dt->min = dat[3];
+  dt->sec = dat[4];
+  return (rc == 0) ? 0 : -1;
 }

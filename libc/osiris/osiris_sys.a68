@@ -16,6 +16,7 @@
         PUBLIC  _start
         PUBLIC  _sys_write,_sys_read,_sys_open,_sys_creat,_sys_close
         PUBLIC  _sys_seek,_sys_unlink,_sys_exit,_sys_sbrk
+        PUBLIC  _sys_time
         EXTERN  _main
 
 * DOS TRAP #1 function selectors (AH, high byte of D0.W).
@@ -28,6 +29,8 @@ DOSF_WRITE   equ  $4000
 DOSF_UNLINK  equ  $4100
 DOSF_LSEEK   equ  $4200
 DOSF_ALLOC   equ  $4800
+DOSF_GETDATE equ  $2A00
+DOSF_GETTIME equ  $2C00
 
 STKSIZE      equ  $4000       ; 16 KiB user stack reserved at the arena top
 HEAPSLOP     equ  $100
@@ -276,6 +279,44 @@ _sys_sbrk:
         rts
 sbrk_err:
         moveq   #-1,d0
+        unlk    a6
+        rts
+
+**********************************************************
+* int _sys_time(struct __sysdt *dt) --- read the DOS wall clock into the
+* caller's broken-down struct (6 longs: +0 year +4 mon +8 mday +12 hour
+* +16 min +20 sec) using 2Ah (get date) + 2Ch (get time). The DOS clock is
+* always readable, so this returns 0.  The frame pointer A6 survives the
+* traps, so we reload the struct pointer from 8(a6) after each call.
+**********************************************************
+_sys_time:
+        link    a6,#0
+        move.w  #DOSF_GETDATE,d0   ; 2Ah -> D1.L=year, D2.w=(mon<<8)|day
+        trap    #1
+        movea.l 8(a6),a0
+        move.l  d1,(a0)            ; year (full)
+        move.w  d2,d1
+        andi.l  #$FF,d1
+        move.l  d1,8(a0)           ; mday = D2 & $FF
+        move.w  d2,d1
+        lsr.w   #8,d1
+        andi.l  #$FF,d1
+        move.l  d1,4(a0)           ; mon = D2 >> 8
+        move.w  #DOSF_GETTIME,d0   ; 2Ch -> D2.w=(hr<<8)|min, D3.w=(sec<<8)|cs
+        trap    #1
+        movea.l 8(a6),a0
+        move.w  d2,d1
+        lsr.w   #8,d1
+        andi.l  #$FF,d1
+        move.l  d1,12(a0)          ; hour = D2 >> 8
+        move.w  d2,d1
+        andi.l  #$FF,d1
+        move.l  d1,16(a0)          ; min = D2 & $FF
+        move.w  d3,d1
+        lsr.w   #8,d1
+        andi.l  #$FF,d1
+        move.l  d1,20(a0)          ; sec = D3 >> 8
+        moveq   #0,d0              ; success
         unlk    a6
         rts
 

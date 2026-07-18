@@ -30,6 +30,7 @@ $cases = @(
   @{ Run = 'C99TEST';  Src = 'tests\lockstep\c99test.c';  Expect = @('C99 PASS') }
   @{ Run = 'MATHTEST'; Src = 'tests\lockstep\mathtest.c'; Expect = @('MATH PASS') }
   @{ Run = 'LIBTEST';  Src = 'tests\lockstep\libtest.c';  Expect = @('LIB PASS') }
+  @{ Run = 'TIMETEST'; Src = 'tests\lockstep\timetest.c'; Expect = @('TIME PASS') }
 )
 
 $osRun  = Join-Path $repo 'tools\osiris\run-osiris.ps1'
