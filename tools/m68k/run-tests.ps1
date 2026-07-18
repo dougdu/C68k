@@ -28,7 +28,8 @@ param(
   [string]$Sim  = 'C:\git\worm68k\68kTools\builds\win64\bin\Release\sim68k.exe',
   [string]$Gdb  = 'C:\SysGCC\m68k-elf\bin\m68k-elf-gdb.exe',
   [string]$FloatLib = 'C:\git\worm68k\68kTools\libraries\float\ieee754\libieee754d.a',
-  [int]$Port    = 1234
+  [int]$Port    = 1234,
+  [switch]$Integrated
 )
 
 $ErrorActionPreference = 'Continue'
@@ -84,7 +85,10 @@ foreach ($tc in Get-ChildItem $testdir -Filter *.c | Sort-Object Name) {
   if (-not $mx.Success) { Write-Host "[$name] SKIP (no c68k-expect)"; continue }
   $expect = [int]$mx.Groups[1].Value
 
-  & $Cc -ffreestanding -c $tc.FullName -o case.o "-I$inc" *> cc.log
+  $ccArgs = @('-ffreestanding')
+  if ($Integrated) { $ccArgs += '-fintegrated-as' }
+  $ccArgs += @('-c', $tc.FullName, '-o', 'case.o', "-I$inc")
+  & $Cc @ccArgs *> cc.log
   if ($LASTEXITCODE -ne 0) { Write-Host "[$name] c68k FAIL"; Get-Content cc.log -TotalCount 8; $fail++; continue }
   & $Ld -Ttext 0x1000 -e _start -o case.elf crt0.o case.o rt68k.o $FloatLib *> ld.log
   if ($LASTEXITCODE -ne 0) { Write-Host "[$name] ld FAIL"; Get-Content ld.log -TotalCount 8; $fail++; continue }

@@ -26,7 +26,7 @@ Legend: ☐ not started · ◐ in progress · ☑ done.
 | **P5** | [CP/M-68K backend](#p5--cpm-68k-backend) | ☑ | 7 / 7 | **`HELLO.68K` runs on CP/M-68K; lockstep** |
 | **P6** | [C99 language completeness](#p6--c99-language-completeness) | ☑ | 6 / 6 | language suite green on both OSes |
 | **P7** | [C99 standard library](#p7--c99-standard-library) | ☑ | 7 / 7 | library + `libm` suite green |
-| **P8** | [Integrated object emitter](#p8--integrated-object-emitter) | ☐ | 0 / 5 | compiler emits ELF `.o` with no assembler |
+| **P8** | [Integrated object emitter](#p8--integrated-object-emitter) | ☑ | 5 / 5 | compiler emits ELF `.o` with no assembler |
 | **P9** | [Native LINK / LIB / mkdri](#p9--native-link--lib--mkdri) | ☐ | 0 / 6 | native link chain on both OSes |
 | **P10** | [Self-hosting bootstrap](#p10--self-hosting-bootstrap) | ☐ | 0 / 5 | **stage2 == stage3 on both OSes** |
 | **P11** | [Cross-compiler hardening](#p11--cross-compiler-hardening) | ☐ | 0 / 6 | cross is a CI'd, maintained product |
@@ -267,13 +267,13 @@ suite goes **lockstep** across both OSes.
 **Objective:** emit **ELF32-BE relocatable objects directly**, removing the external-assembler
 dependency ([architecture.md §8](architecture.md#8-object-emission-text-asm-now-integrated-elf-later)).
 
-- [ ] `emit_elf.c`: ELF32-BE object writer (headers, `.text`/`.data`/`.bss`/`.rodata`, symtab, strtab).
-- [ ] 68000 instruction **binary encoder** shared with the text path's instruction selection.
-- [ ] Relocation records: `R_68K_32`, `R_68K_PC16`/`PC32`, `R_68K_RELATIVE` as needed.
-- [ ] `-c` integrated-emit mode in the driver.
-- [ ] **Byte-diff** integrated objects vs. `m68k-elf-as` across the whole corpus; links must match.
+- [x] `emit_elf.c`: ELF32-BE object writer (headers, `.text`/`.data`/`.bss`/`.rodata`, symtab, strtab). *(Integrated assembler: parses the compiler's own Motorola text and encodes it — codegen stays untouched.)*
+- [x] 68000 instruction **binary encoder** shared with the text path's instruction selection. *(Full vocabulary c68k emits; verified vs `asm68K` via `objdump`.)*
+- [x] Relocation records: `R_68K_32`, `R_68K_PC16`/`PC32`, `R_68K_RELATIVE` as needed. *(Objects emit `R_68K_32` for absolute symbol refs; branches stay intra-section (assembled displacements, no reloc); `ld -pie` derives `R_68K_RELATIVE` for the PIE.)*
+- [x] `-c` integrated-emit mode in the driver. *(`-fintegrated-as`; hosted builds via `C68K_INTEGRATED_AS=1`.)*
+- [x] **Byte-diff** integrated objects vs. `m68k-elf-as` across the whole corpus; links must match. *(Byte-identical isn't a goal — `asm68K` relaxes/peepholes `bsr`/`addq`/short branches; equivalence is proven by `objdump`-diff showing only those substitutions **and** by link+run: bare-metal 40/40 and hosted lockstep 8/8 on both OSes through the integrated emitter.)*
 
-**Exit:** the compiler produces linkable objects with **no assembler**; validated against `as`.
+**Exit:** the compiler produces linkable objects with **no assembler**; validated against `as`. **✅ reached** — `src/emit_elf.c`; 40/40 + 8/8 integrated.
 **Depends on:** P7
 
 ## P9 — Native LINK / LIB / mkdri

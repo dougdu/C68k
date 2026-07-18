@@ -8,6 +8,7 @@ StringArray include_paths;
 bool opt_fcommon = true;
 bool opt_fpic;
 bool opt_ffreestanding;
+bool opt_integrated_as;
 
 static FileType opt_x;
 static StringArray opt_include;
@@ -274,6 +275,16 @@ static void parse_args(int argc, char **argv) {
 
     if (!strcmp(argv[i], "-fpic") || !strcmp(argv[i], "-fPIC")) {
       opt_fpic = true;
+      continue;
+    }
+
+    if (!strcmp(argv[i], "-fintegrated-as")) {
+      opt_integrated_as = true;
+      continue;
+    }
+
+    if (!strcmp(argv[i], "-fno-integrated-as")) {
+      opt_integrated_as = false;
       continue;
     }
 
@@ -582,6 +593,11 @@ static void assemble(char *input, char *output) {
   // c68k emits Motorola-syntax assembly assembled by asm68K into an ELF32-BE
   // object. asm68K is not strict about the source extension, so the driver's
   // temp file is passed directly. (Slash switches; asm68K is a Windows tool.)
+  if (opt_integrated_as) {
+    // Integrated path: no external assembler (P8).
+    assemble_to_elf(input, output);
+    return;
+  }
   char *cmd[] = {"asm68K", "/Cx", "/elf", "/c", "/nologo",
                  format("/Fo%s", output), input, NULL};
   run_subprocess(cmd);

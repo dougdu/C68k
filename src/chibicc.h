@@ -116,6 +116,12 @@ void undef_macro(char *name);
 Token *preprocess(Token *tok);
 
 //
+// emit_elf.c
+//
+
+void assemble_to_elf(char *inpath, char *outpath);
+
+//
 // parse.c
 //
 
@@ -454,4 +460,5 @@ extern StringArray include_paths;
 extern bool opt_fpic;
 extern bool opt_fcommon;
 extern bool opt_ffreestanding;
+extern bool opt_integrated_as;
 extern char *base_file;

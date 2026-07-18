@@ -28,6 +28,11 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 
+# Integrated ELF emitter (P8): set C68K_INTEGRATED_AS=1 to bypass asm68K for
+# the C compiles (crt0/runtime .a68 still go through asm68K).
+$asArgs = @()
+if ($env:C68K_INTEGRATED_AS -eq '1') { $asArgs = @('-fintegrated-as') }
+
 $repo = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
 $inc   = Join-Path $repo 'libc\include'
 $sysA  = Join-Path $repo 'libc\cpm\cpm_sys.a68'
@@ -71,9 +76,9 @@ $out68 = Join-Path $OutDir "$Name.68K"
 
 Invoke-Step 'asm crt0/bdos' { & $Asm /Cx /elf /c /nologo "/Fo$sysO" $sysA }
 Invoke-Step 'asm runtime'   { & $Asm /Cx /elf /c /nologo "/Fo$rtO"  $rtA }
-Invoke-Step 'cc seam'       { & $Cc -c $seamC -o $seamO "-I$inc" }
-Invoke-Step 'cc libc'       { & $Cc -c $libcC -o $libcO "-I$inc" }
-Invoke-Step 'cc program'    { & $Cc -c $Src   -o $progO "-I$inc" }
+Invoke-Step 'cc seam'       { & $Cc @asArgs -c $seamC -o $seamO "-I$inc" }
+Invoke-Step 'cc libc'       { & $Cc @asArgs -c $libcC -o $libcO "-I$inc" }
+Invoke-Step 'cc program'    { & $Cc @asArgs -c $Src   -o $progO "-I$inc" }
 Invoke-Step 'link elf'      { & $Ld -T $LdScript -Ttext 0x500 $sysO $progO $seamO $libcO $rtO $FloatLib -o $elf }
 Invoke-Step 'mkdri .68K'    { & $Mkdri -b500 -y -o $out68 $elf }
 
