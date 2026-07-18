@@ -20,7 +20,7 @@ Legend: ☐ not started · ◐ in progress · ☑ done.
 | --- | --- | :---: | :---: | --- |
 | **P0** | [Scaffolding & host baseline](#p0--scaffolding--host-baseline) | ☑ | 6 / 6 | chibicc forks in, builds & self-hosts on host |
 | **P1** | [ILP32 type-model retarget](#p1--ilp32-type-model-retarget) | ☑ | 6 / 6 | front end is big-endian ILP32 |
-| **P2** | [68000 code generation](#p2--68000-code-generation) | ◐ | 7 / 8 | C runs on bare 68000 under sim68k |
+| **P2** | [68000 code generation](#p2--68000-code-generation) | ☑ | 8 / 8 | C runs on bare 68000 under sim68k |
 | **P3** | [Runtime support library](#p3--runtime-support-library) | ☐ | 0 / 6 | float / `long long` math correct |
 | **P4** | [libc core + Osiris backend](#p4--libc-core--osiris-backend) | ☐ | 0 / 7 | **`HELLO.PRG` runs on Osiris** |
 | **P5** | [CP/M-68K backend](#p5--cpm-68k-backend) | ☐ | 0 / 7 | **`HELLO.68K` runs on CP/M-68K; lockstep** |
@@ -36,7 +36,7 @@ Legend: ☐ not started · ◐ in progress · ☑ done.
 
 **Milestones (headline):**
 
-1. **M1 — Bare-metal C** (end P2): compiled C executes correctly on the 68000 under `sim68k`.
+1. **M1 — Bare-metal C** (end P2): compiled C executes correctly on the 68000 under `sim68k`. **✅ reached** — 17-case golden suite green (`tools/m68k/run-tests.ps1`).
 2. **M2 — Hello, both OSes** (end P5): the same C source builds and runs as a `.PRG` on Osiris and a
    `.68K` on CP/M-68K, verified in lockstep.
 3. **M3 — Conforming C99** (end P7): the language + hosted library suites pass on both OSes.
@@ -123,8 +123,8 @@ on the bare CPU under `sim68k`.
       trivially; 64-bit `D0:D1` return lands with `long long` in P3.)_
 - [x] Integer arithmetic, comparisons, logical/bitwise, shifts (helper calls where needed).
 - [x] Control flow: `if`/`for`/`while`/`switch`/`goto`, `&&`/`||`, `?:`.
-- [ ] Pointers, arrays, structs/unions, member access, aggregate copy. _(Pointers, arrays and member
-      access done & tested; struct/union **by-value** args/return + aggregate copy remain.)_
+- [x] Pointers, arrays, structs/unions, member access, aggregate copy. _(Struct/union **by-value**
+      args & return use a hidden result-buffer pointer at `8(a6)`; aggregate copy is byte-wise.)_
 - [x] PC-relative addressing for code/data; even-alignment enforcement.
 - [x] Emit Motorola-syntax `.s`; assemble with **`asm68K`** (`/elf`); link a freestanding test (GNU
       `m68k-elf-ld`) with a minimal stub.

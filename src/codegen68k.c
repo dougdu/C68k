@@ -102,6 +102,7 @@ static void gen_addr(Node *node) {
     return;
   case ND_ASSIGN:
   case ND_COND:
+  case ND_FUNCALL:
     if (node->ty->kind == TY_STRUCT || node->ty->kind == TY_UNION) {
       gen_expr(node);
       return;
@@ -236,14 +237,33 @@ static void cast(Type *from, Type *to) {
   }
 }
 
+// Copy a struct/union whose address is in D0 onto the top of the stack,
+// occupying align_to(size,4) bytes (struct byte 0 at the lowest address). A
+// block copy is byte-order agnostic, so this is correct on big-endian m68k.
+static void push_struct(Type *ty) {
+  int sz = align_to(ty->size, 4);
+  println("  suba.w #%d,sp", sz);
+  depth += sz / 4;
+  println("  movea.l d0,a1");
+  for (int i = 0; i < ty->size; i++) {
+    println("  move.b %d(a1),d1", i);
+    println("  move.b d1,%d(sp)", i);
+  }
+}
+
 // Push each call argument right-to-left; returns the total bytes pushed so the
-// caller can clean the stack. Scalars occupy a 4-byte slot (long long/double 8).
+// caller can clean the stack. Scalars occupy a 4-byte slot; a struct/union is
+// copied as a block rounded up to a multiple of 4 (long long/double 8 -> P3).
 static int push_args(Node *arg) {
   if (!arg)
     return 0;
   int rest = push_args(arg->next);
 
   gen_expr(arg);
+  if (arg->ty->kind == TY_STRUCT || arg->ty->kind == TY_UNION) {
+    push_struct(arg->ty);
+    return rest + align_to(arg->ty->size, 4);
+  }
   if (arg->ty->size > 4)
     error_tok(arg->tok, "8-byte argument not yet supported (P3)");
   push();
@@ -355,6 +375,17 @@ static void gen_expr(Node *node) {
   }
   case ND_FUNCALL: {
     int bytes = push_args(node->args);
+
+    // Struct/union return: pass the address of the caller-allocated result
+    // buffer as a hidden leftmost argument (pushed last, so it lands at 8(a6)
+    // in the callee). The callee copies the result there and returns the
+    // pointer in D0, so the aggregate rvalue is its address as usual.
+    if (node->ret_buffer) {
+      println("  lea %d(a6),a0", node->ret_buffer->offset);
+      println("  move.l a0,-(sp)");
+      depth++;
+      bytes += 4;
+    }
 
     if (node->lhs->kind == ND_VAR && node->lhs->ty->kind == TY_FUNC) {
       println("  jsr %s", sym(node->lhs->var->name));
@@ -528,8 +559,21 @@ static void gen_stmt(Node *node) {
     gen_stmt(node->lhs);
     return;
   case ND_RETURN:
-    if (node->lhs)
+    if (node->lhs) {
       gen_expr(node->lhs);
+      Type *ty = node->lhs->ty;
+      if (ty->kind == TY_STRUCT || ty->kind == TY_UNION) {
+        // Copy the result into the caller's buffer via the hidden pointer at
+        // 8(a6), and hand that pointer back in D0.
+        println("  movea.l d0,a0");
+        println("  movea.l 8(a6),a1");
+        for (int i = 0; i < ty->size; i++) {
+          println("  move.b %d(a0),d1", i);
+          println("  move.b d1,%d(a1)", i);
+        }
+        println("  move.l 8(a6),d0");
+      }
+    }
     println("  bra L_return_%s", current_fn->name);
     return;
   case ND_EXPR_STMT:
@@ -551,6 +595,14 @@ static void assign_lvar_offsets(Obj *prog) {
     // A6 and return address). A narrow scalar occupies the low bytes of its
     // 4-byte slot, which on big-endian is the high address of the slot.
     int top = 8;
+
+    // A struct/union-returning function receives a hidden pointer to the
+    // result buffer as its first (leftmost) stack argument, at 8(a6); the
+    // declared parameters follow it.
+    Type *rty = fn->ty->return_ty;
+    if (rty && (rty->kind == TY_STRUCT || rty->kind == TY_UNION))
+      top += 4;
+
     for (Obj *var = fn->params; var; var = var->next) {
       int sz = var->ty->size;
       int slot = (sz <= 4) ? 4 : align_to(sz, 4);
