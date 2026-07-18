@@ -22,7 +22,7 @@ Legend: ☐ not started · ◐ in progress · ☑ done.
 | **P1** | [ILP32 type-model retarget](#p1--ilp32-type-model-retarget) | ☑ | 6 / 6 | front end is big-endian ILP32 |
 | **P2** | [68000 code generation](#p2--68000-code-generation) | ☑ | 8 / 8 | C runs on bare 68000 under sim68k |
 | **P3** | [Runtime support library](#p3--runtime-support-library) | ☑ | 6 / 6 | float / `long long` math correct |
-| **P4** | [libc core + Osiris backend](#p4--libc-core--osiris-backend) | ◐ | 6 / 7 | **`HELLO.PRG` runs on Osiris** |
+| **P4** | [libc core + Osiris backend](#p4--libc-core--osiris-backend) | ☑ | 7 / 7 | **`HELLO.PRG` runs on Osiris** |
 | **P5** | [CP/M-68K backend](#p5--cpm-68k-backend) | ☐ | 0 / 7 | **`HELLO.68K` runs on CP/M-68K; lockstep** |
 | **P6** | [C99 language completeness](#p6--c99-language-completeness) | ☐ | 0 / 6 | language suite green on both OSes |
 | **P7** | [C99 standard library](#p7--c99-standard-library) | ☐ | 0 / 7 | library + `libm` suite green |
@@ -176,9 +176,11 @@ Osiris under `sim68k`.
 - [x] Core `<string.h>`, `<ctype.h>`, `<stdlib.h>` (`malloc` over `_sbrk`), `<errno.h>`.
       _([`libc/core/libc.c`](../libc/core/libc.c) + [`libc/include/`](../libc/include); malloc is a
       bump allocator over `sys_sbrk`.)_
-- [ ] Core `<stdio.h>`: buffered `FILE`, `printf`/`fwrite`/`fopen`/`fread`/`fseek`. _(Buffered `FILE`,
-      `fopen`/`fclose`/`fread`/`fwrite`/`fgets`/`fputs`/`puts`/`fseek` done & running on Osiris;
-      **`printf` pending** — needs m68k `va_arg` codegen.)_
+- [x] Core `<stdio.h>`: buffered `FILE`, `printf`/`fwrite`/`fopen`/`fread`/`fseek`. _(Buffered `FILE`,
+      `fopen`/`fclose`/`fread`/`fwrite`/`fgets`/`fputs`/`puts`/`fseek`, and the `printf` family
+      (`printf`/`fprintf`/`snprintf`, integer/string/char formats incl. `%lld`) — all running on
+      Osiris. m68k `va_arg` is supported (the prologue stores the first stack vararg in `__va_area__`;
+      float `%f` conversion is a later add.)_
 - [x] `-target osiris` driver: assemble + link with `osiris-prg.ld` → `.PRG`.
       _(via [`tools/osiris/build-prg.ps1`](../tools/osiris/build-prg.ps1): asm68K + c68k + the osiris
       binutils `ld -pie -T osiris-prg.ld`. A c68k-internal `-target osiris` flag is a follow-up.)_

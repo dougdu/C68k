@@ -2,6 +2,7 @@
 #define _STDIO_H
 
 #include <stddef.h>
+#include <stdarg.h>
 
 #define BUFSIZ 512
 #define EOF (-1)
@@ -51,5 +52,12 @@ int fseek(FILE *fp, long off, int whence);
 long ftell(FILE *fp);
 int feof(FILE *fp);
 int ferror(FILE *fp);
+
+int printf(const char *fmt, ...);
+int fprintf(FILE *fp, const char *fmt, ...);
+int sprintf(char *buf, const char *fmt, ...);
+int snprintf(char *buf, size_t size, const char *fmt, ...);
+int vfprintf(FILE *fp, const char *fmt, va_list ap);
+int vsnprintf(char *buf, size_t size, const char *fmt, va_list ap);
 
 #endif /* _STDIO_H */

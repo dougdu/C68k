@@ -931,6 +931,19 @@ static void emit_text(Obj *prog) {
     // Prologue: set up the A6 frame and reserve locals.
     println("  link a6,#%d", -fn->stack_size);
 
+    // Variadic: stash a pointer to the first stack vararg in __va_area__ (all
+    // args are on the stack; the first vararg sits just past the named params).
+    if (fn->va_area) {
+      int va_off = 8;
+      Type *rty = fn->ty->return_ty;
+      if (rty && (rty->kind == TY_STRUCT || rty->kind == TY_UNION))
+        va_off += 4;
+      for (Obj *p = fn->params; p; p = p->next)
+        va_off += (p->ty->size <= 4) ? 4 : align_to(p->ty->size, 4);
+      println("  lea %d(a6),a0", va_off);
+      println("  move.l a0,%d(a6)", fn->va_area->offset);
+    }
+
     gen_stmt(fn->body);
     assert(depth == 0);
 

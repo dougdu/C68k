@@ -12,6 +12,7 @@
 #include <stdlib.h>
 #include <ctype.h>
 #include <stdio.h>
+#include <stdarg.h>
 #include <errno.h>
 
 /* ---- syscall seam (asm _sys_*; C name has no leading underscore) ---- */
@@ -405,6 +406,203 @@ int fseek(FILE *fp, long off, int whence) {
 long ftell(FILE *fp) { return sys_seek(fp->fd, 0, SEEK_CUR); }
 int feof(FILE *fp) { return (fp->flags & _SF_EOF) != 0; }
 int ferror(FILE *fp) { return (fp->flags & _SF_ERR) != 0; }
+
+/* =====================================================================
+ * printf family -- integer / string / char formatting over a sink that is
+ * either a FILE (printf/fprintf) or a bounded buffer (snprintf).
+ * ===================================================================== */
+typedef struct {
+  FILE *fp;
+  char *buf;
+  int cap;
+  int len;
+} _psink;
+
+static void _emit(_psink *s, int c) {
+  if (s->fp)
+    fputc(c, s->fp);
+  else if (s->buf && s->len + 1 < s->cap)
+    s->buf[s->len] = (char)c;
+  s->len++;
+}
+
+static int _u64toa(unsigned long long v, int base, int upper, char *out) {
+  const char *digs = upper ? "0123456789ABCDEF" : "0123456789abcdef";
+  char tmp[24];
+  int n = 0;
+  do {
+    tmp[n++] = digs[v % base];
+    v /= base;
+  } while (v);
+  for (int i = 0; i < n; i++)
+    out[i] = tmp[n - 1 - i];
+  out[n] = 0;
+  return n;
+}
+
+static int _vformat(_psink *s, const char *fmt, va_list ap) {
+  for (; *fmt; fmt++) {
+    if (*fmt != '%') {
+      _emit(s, (unsigned char)*fmt);
+      continue;
+    }
+    fmt++;
+
+    int left = 0, zero = 0;
+    for (;; fmt++) {
+      if (*fmt == '-')
+        left = 1;
+      else if (*fmt == '0')
+        zero = 1;
+      else
+        break;
+    }
+    int width = 0;
+    while (*fmt >= '0' && *fmt <= '9')
+      width = width * 10 + (*fmt++ - '0');
+    int prec = -1;
+    if (*fmt == '.') {
+      fmt++;
+      prec = 0;
+      while (*fmt >= '0' && *fmt <= '9')
+        prec = prec * 10 + (*fmt++ - '0');
+    }
+    int lng = 0;
+    while (*fmt == 'l') {
+      lng++;
+      fmt++;
+    }
+    while (*fmt == 'h')
+      fmt++;
+
+    char numbuf[26];
+    const char *str = numbuf;
+    int slen = 0;
+    char sign = 0;
+
+    switch (*fmt) {
+    case 'd':
+    case 'i': {
+      long long v = (lng >= 2) ? va_arg(ap, long long) : va_arg(ap, long);
+      unsigned long long uv;
+      if (v < 0) {
+        sign = '-';
+        uv = (unsigned long long)(-v);
+      } else {
+        uv = (unsigned long long)v;
+      }
+      slen = _u64toa(uv, 10, 0, numbuf);
+      break;
+    }
+    case 'u':
+    case 'x':
+    case 'X':
+    case 'o': {
+      unsigned long long uv =
+          (lng >= 2) ? va_arg(ap, unsigned long long) : va_arg(ap, unsigned long);
+      int base = (*fmt == 'x' || *fmt == 'X') ? 16 : (*fmt == 'o') ? 8 : 10;
+      slen = _u64toa(uv, base, *fmt == 'X', numbuf);
+      break;
+    }
+    case 'c':
+      numbuf[0] = (char)va_arg(ap, int);
+      numbuf[1] = 0;
+      slen = 1;
+      break;
+    case 's':
+      str = va_arg(ap, const char *);
+      if (!str)
+        str = "(null)";
+      while (str[slen] && (prec < 0 || slen < prec))
+        slen++;
+      break;
+    case 'p': {
+      unsigned long uv = (unsigned long)va_arg(ap, void *);
+      numbuf[0] = '0';
+      numbuf[1] = 'x';
+      slen = _u64toa(uv, 16, 0, numbuf + 2) + 2;
+      break;
+    }
+    case '%':
+      _emit(s, '%');
+      continue;
+    default:
+      _emit(s, '%');
+      _emit(s, (unsigned char)*fmt);
+      continue;
+    }
+
+    int total = slen + (sign ? 1 : 0);
+    int pad = width > total ? width - total : 0;
+    if (!left && !zero)
+      while (pad-- > 0)
+        _emit(s, ' ');
+    if (sign)
+      _emit(s, sign);
+    if (!left && zero)
+      while (pad-- > 0)
+        _emit(s, '0');
+    for (int i = 0; i < slen; i++)
+      _emit(s, (unsigned char)str[i]);
+    if (left)
+      while (pad-- > 0)
+        _emit(s, ' ');
+  }
+  return s->len;
+}
+
+int vfprintf(FILE *fp, const char *fmt, va_list ap) {
+  _psink s;
+  s.fp = fp;
+  s.buf = NULL;
+  s.cap = 0;
+  s.len = 0;
+  return _vformat(&s, fmt, ap);
+}
+
+int fprintf(FILE *fp, const char *fmt, ...) {
+  va_list ap;
+  va_start(ap, fmt);
+  int n = vfprintf(fp, fmt, ap);
+  va_end(ap);
+  return n;
+}
+
+int printf(const char *fmt, ...) {
+  va_list ap;
+  va_start(ap, fmt);
+  int n = vfprintf(stdout, fmt, ap);
+  va_end(ap);
+  return n;
+}
+
+int vsnprintf(char *buf, size_t size, const char *fmt, va_list ap) {
+  _psink s;
+  s.fp = NULL;
+  s.buf = buf;
+  s.cap = (int)size;
+  s.len = 0;
+  _vformat(&s, fmt, ap);
+  if (size > 0)
+    buf[s.len < (int)size ? s.len : (int)size - 1] = 0;
+  return s.len;
+}
+
+int snprintf(char *buf, size_t size, const char *fmt, ...) {
+  va_list ap;
+  va_start(ap, fmt);
+  int n = vsnprintf(buf, size, fmt, ap);
+  va_end(ap);
+  return n;
+}
+
+int sprintf(char *buf, const char *fmt, ...) {
+  va_list ap;
+  va_start(ap, fmt);
+  int n = vsnprintf(buf, 0x7fffffff, fmt, ap);
+  va_end(ap);
+  return n;
+}
 
 /* =====================================================================
  * process exit -- flush all output streams, then hand off to the OS.
