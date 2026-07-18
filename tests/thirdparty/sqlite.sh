@@ -1,6 +1,6 @@
 #!/bin/bash
 repo='git@github.com:sqlite/sqlite.git'
-. test/thirdparty/common
+. tests/thirdparty/common
 git reset --hard 86f477edaa17767b39c7bae5b67cac8580f7a8c1
 
 CC=$chibicc CFLAGS=-D_GNU_SOURCE ./configure
