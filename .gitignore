@@ -33,6 +33,12 @@
 build/*.img
 *.nv
 
+# ---- Vendored, hermetic sim test environment ----------------------------
+# Populated by tools/bootstrap-simenv.ps1 (renamed c68k-sim68k.exe + boot ROM
+# + CP/M / Osiris disk images + cpmtools). ~19 MB vendored from sibling repos;
+# re-created on demand, never committed. Per-run scratch lives under /build/.
+/simenv/
+
 # ---- Editor / OS ---------------------------------------------------------
 .vscode/
 *.swp
