@@ -21,7 +21,7 @@ Legend: ☐ not started · ◐ in progress · ☑ done.
 | **P0** | [Scaffolding & host baseline](#p0--scaffolding--host-baseline) | ☑ | 6 / 6 | chibicc forks in, builds & self-hosts on host |
 | **P1** | [ILP32 type-model retarget](#p1--ilp32-type-model-retarget) | ☑ | 6 / 6 | front end is big-endian ILP32 |
 | **P2** | [68000 code generation](#p2--68000-code-generation) | ☑ | 8 / 8 | C runs on bare 68000 under sim68k |
-| **P3** | [Runtime support library](#p3--runtime-support-library) | ☐ | 0 / 6 | float / `long long` math correct |
+| **P3** | [Runtime support library](#p3--runtime-support-library) | ☑ | 6 / 6 | float / `long long` math correct |
 | **P4** | [libc core + Osiris backend](#p4--libc-core--osiris-backend) | ☐ | 0 / 7 | **`HELLO.PRG` runs on Osiris** |
 | **P5** | [CP/M-68K backend](#p5--cpm-68k-backend) | ☐ | 0 / 7 | **`HELLO.68K` runs on CP/M-68K; lockstep** |
 | **P6** | [C99 language completeness](#p6--c99-language-completeness) | ☐ | 0 / 6 | language suite green on both OSes |
@@ -141,12 +141,24 @@ under `sim68k`.
 **Objective:** the helper library the generator calls
 ([libc-and-toolchain.md §5](libc-and-toolchain.md#5-the-runtime-support-library)).
 
-- [ ] 32-bit integer helpers: `__mulsi3`, `__divsi3`/`__udivsi3`, `__modsi3`/`__umodsi3`, shifts.
-- [ ] 64-bit `long long`: `__muldi3`, `__divdi3`/`__udivdi3`, `__moddi3`, shifts, compares.
-- [ ] Soft **single** float: add/sub/mul/div/compare/convert.
-- [ ] Soft **double** float: add/sub/mul/div/compare/convert/extend/truncate (big-endian word order).
-- [ ] `memcpy`/`memset` fast paths + struct-copy thunks.
-- [ ] Numeric tests vs. host `double`/`long long` golden values (both OSes once P4/P5 land).
+- [x] 32-bit integer helpers: `__mulsi3`, `__divsi3`/`__udivsi3`, `__modsi3`/`__umodsi3`, shifts.
+      _(mul/div/mod in [`rt68k.a68`](../lib/runtime/rt68k.a68); 32-bit shifts emit the 68000's own
+      register-count `asl/lsr/asr` inline — no helper needed.)_
+- [x] 64-bit `long long`: `__muldi3`, `__divdi3`/`__udivdi3`, `__moddi3`, shifts, compares.
+      _(`rt68k.a68`: `__muldi3` via a 16×16 `umul64`, 64-iteration `udivmod64`, `__ashldi3`/`__ashrdi3`/
+      `__lshrdi3`, `__cmpdi2`/`__ucmpdi2`; add/sub/logical inline via `addx`/`subx`.)_
+- [x] Soft **single** float: add/sub/mul/div/compare/convert.
+- [x] Soft **double** float: add/sub/mul/div/compare/convert/extend/truncate (big-endian word order).
+      _(Both provided by the worm68k **IEEE754** library `libieee754d.a` — C-stack ABI, pure 68000,
+      PIC; the codegen lowers float/double ops and conversions to its `_fpadd`/`_fpaddd`/`_fpltof`/…
+      entries. **TODO:** vendor/build the IEEE754 source into c68k's own `librt` for a self-owned,
+      Osiris/CP/M-linkable runtime. `long long`↔`float` conversions are deferred, the lib has no
+      64-bit int convert.)_
+- [x] `memcpy`/`memset` fast paths + struct-copy thunks. _(`_memcpy`/`_memset`/`_memmove` in
+      `rt68k.a68`; aggregate copy is emitted inline by the code generator.)_
+- [x] Numeric tests vs. host `double`/`long long` golden values (both OSes once P4/P5 land).
+      _(20 golden cases in [`tests/m68k/`](../tests/m68k): `ll_*`, `f_*`, `d_*`, `fd_conv` — all green
+      under `sim68k`.)_
 
 **Exit:** float and `long long` programs compute results matching host golden.
 **Depends on:** P2

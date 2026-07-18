@@ -1,15 +1,23 @@
 *----------------------------------------------------------------------
-* rt68k.a68 --- c68k runtime support helpers (P2 bring-up minimal set).
+* rt68k.a68 --- c68k runtime support helpers (integer).
 *
-* 32-bit multiply / signed+unsigned divide / modulo, which the base MC68000
-* lacks as single instructions. Correct-but-simple (shift/add, restoring
-* division); P3 replaces these with optimized routines (see basrtm).
+* 32-bit multiply / signed+unsigned divide / modulo (the base MC68000 lacks
+* them as single instructions), plus the 64-bit `long long` helper set
+* (multiply, divide, modulo, shifts, compares) which has no hardware at all.
+* Correct-but-simple (shift/add, restoring division); P12 may optimize.
 *
-* ABI: argument a in D0, b in D1; result in D0. D2-D7/A2-A6 preserved.
+* 32-bit ABI: a in D0, b in D1; result in D0. D2-D7/A2-A6 preserved.
+* 64-bit ABI: a in D0:D1 (D0=high, big-endian MSW-first), b in D2:D3;
+*   result in D0:D1. Shifts: value in D0:D1, count in D2. Compares:
+*   a=D0:D1, b=D2:D3 -> D0 = -1/0/1 (signed a<=>b). D4-D7/A2-A6 preserved
+*   (D2/D3 are inputs and may be clobbered, like D1 in the 32-bit ABI).
 *----------------------------------------------------------------------
         .model  flat
         .code
         PUBLIC  __mulsi3,__divsi3,__modsi3,__udivsi3,__umodsi3
+        PUBLIC  __muldi3,__divdi3,__moddi3,__udivdi3,__umoddi3
+        PUBLIC  __ashldi3,__ashrdi3,__lshrdi3,__cmpdi2,__ucmpdi2
+        PUBLIC  _memcpy,_memset,_memmove
 
 * D0 = D0 * D1  (low 32 bits), shift-and-add.
 __mulsi3:
@@ -101,6 +109,327 @@ mod_b:
         neg.l   d0
 mod_dn:
         movem.l (sp)+,d2/d3/d4/d5
+        rts
+
+*======================================================================
+* 64-bit `long long` helpers.  a = D0:D1 (high:low), b = D2:D3.
+*======================================================================
+
+* umul64 : unsigned 32x32 -> 64.  IN D0=x, D1=y.  OUT D0=hi, D1=lo.
+* Built from four 16x16 MULUs (the 68000 has no 32-bit multiply).
+* Preserves D2-D7.
+umul64:
+        movem.l d2-d7,-(sp)
+        move.l  d0,d2               ; x
+        move.l  d1,d3               ; y
+        move.l  d2,d4
+        andi.l  #$FFFF,d4           ; d4 = xL
+        clr.w   d2
+        swap    d2                  ; d2 = xH
+        move.l  d3,d5
+        andi.l  #$FFFF,d5           ; d5 = yL
+        clr.w   d3
+        swap    d3                  ; d3 = yH
+        move.l  d4,d0
+        mulu.w  d5,d0               ; d0 = xL*yL (P0)
+        move.l  d2,d1
+        mulu.w  d5,d1               ; d1 = xH*yL (P1)
+        move.l  d4,d6
+        mulu.w  d3,d6               ; d6 = xL*yH (P2)
+        move.l  d2,d7
+        mulu.w  d3,d7               ; d7 = xH*yH (P3)
+        add.l   d6,d1               ; d1 = mid = P1+P2 ; X = bit32 carry
+        moveq   #0,d4
+        addx.l  d4,d4               ; d4 = carry bit (0/1)
+        move.l  d1,d5
+        swap    d5
+        move.l  d5,d6
+        andi.l  #$FFFF0000,d6       ; d6 = midLow16 << 16  (-> lo)
+        andi.l  #$0000FFFF,d5       ; d5 = midHigh16       (-> hi)
+        swap    d4                  ; d4 = carry << 16
+        or.l    d4,d5               ; d5 = hi contribution of mid
+        add.l   d6,d0               ; lo = P0 + (midLow16<<16) ; X = carry_lo
+        move.l  d0,d1               ; final lo
+        move.l  d7,d0               ; P3
+        addx.l  d5,d0               ; hi = P3 + midHi + carry_lo
+        movem.l (sp)+,d2-d7
+        rts
+
+* __muldi3 : low 64 bits of a*b.  a=D0:D1, b=D2:D3 -> D0:D1.
+__muldi3:
+        movem.l d4-d7,-(sp)
+        move.l  d0,d4               ; aH
+        move.l  d1,d5               ; aL
+        move.l  d2,d6               ; bH
+        move.l  d3,d7               ; bL
+        move.l  d4,d0
+        move.l  d7,d1
+        bsr     __mulsi3            ; d0 = aH*bL (low32)
+        move.l  d0,d2               ; cross = aH*bL
+        move.l  d5,d0
+        move.l  d6,d1
+        bsr     __mulsi3            ; d0 = aL*bH (low32)
+        add.l   d0,d2               ; cross += aL*bH
+        move.l  d5,d0
+        move.l  d7,d1
+        bsr     umul64              ; D0:D1 = aL*bL (64-bit)
+        add.l   d2,d0               ; hi += cross
+        movem.l (sp)+,d4-d7
+        rts
+
+* udivmod64 (internal): N=D0:D1, D=D2:D3 -> quotient D0:D1, remainder D4:D5.
+* Restoring shift/subtract, 64 iterations.  Clobbers D6.
+udivmod64:
+        moveq   #0,d4               ; R.hi
+        moveq   #0,d5               ; R.lo
+        moveq   #63,d6              ; 64 iterations
+u64d_lp:
+        add.l   d1,d1               ; N.lo <<= 1, MSB -> X
+        addx.l  d0,d0               ; N.hi <<= 1
+        addx.l  d5,d5               ; R.lo <<= 1 (in: N.hi MSB)
+        addx.l  d4,d4               ; R.hi <<= 1
+        cmp.l   d2,d4               ; R.hi vs D.hi
+        bne     u64d_dec
+        cmp.l   d3,d5               ; hi equal -> R.lo vs D.lo
+u64d_dec:
+        bcs     u64d_skip           ; R < D -> no subtract
+        sub.l   d3,d5               ; R -= D
+        subx.l  d2,d4
+        addq.l  #1,d1               ; quotient bit
+u64d_skip:
+        dbra    d6,u64d_lp
+        rts
+
+__udivdi3:
+        movem.l d4-d7,-(sp)
+        bsr     udivmod64
+        movem.l (sp)+,d4-d7
+        rts
+
+__umoddi3:
+        movem.l d4-d7,-(sp)
+        bsr     udivmod64
+        move.l  d4,d0               ; remainder
+        move.l  d5,d1
+        movem.l (sp)+,d4-d7
+        rts
+
+* __divdi3 : signed.  quotient sign = sign(a) XOR sign(b).
+__divdi3:
+        movem.l d4-d7,-(sp)
+        move.l  d0,d7
+        eor.l   d2,d7               ; d7 MSB = result sign
+        tst.l   d0
+        bpl     divd_a
+        neg.l   d1
+        negx.l  d0                  ; a = -a
+divd_a:
+        tst.l   d2
+        bpl     divd_b
+        neg.l   d3
+        negx.l  d2                  ; b = -b
+divd_b:
+        bsr     udivmod64           ; Q = D0:D1
+        tst.l   d7
+        bpl     divd_dn
+        neg.l   d1
+        negx.l  d0                  ; -Q
+divd_dn:
+        movem.l (sp)+,d4-d7
+        rts
+
+* __moddi3 : signed.  remainder sign = sign(a).
+__moddi3:
+        movem.l d4-d7,-(sp)
+        move.l  d0,d7               ; d7 MSB = dividend sign
+        tst.l   d0
+        bpl     modd_a
+        neg.l   d1
+        negx.l  d0
+modd_a:
+        tst.l   d2
+        bpl     modd_b
+        neg.l   d3
+        negx.l  d2
+modd_b:
+        bsr     udivmod64           ; R = D4:D5
+        move.l  d4,d0
+        move.l  d5,d1
+        tst.l   d7
+        bpl     modd_dn
+        neg.l   d1
+        negx.l  d0
+modd_dn:
+        movem.l (sp)+,d4-d7
+        rts
+
+* __ashldi3 : D0:D1 = D0:D1 << D2  (count 0..63).
+__ashldi3:
+        movem.l d4/d5,-(sp)
+        moveq   #32,d4
+        cmp.l   d4,d2
+        bcc     ashl_big            ; count >= 32
+        move.l  d1,d4               ; save lo
+        lsl.l   d2,d0               ; hi <<= count
+        moveq   #32,d5
+        sub.l   d2,d5               ; 32-count
+        lsr.l   d5,d4               ; lo >> (32-count)
+        or.l    d4,d0               ; hi |= carry-in from lo
+        lsl.l   d2,d1               ; lo <<= count
+        movem.l (sp)+,d4/d5
+        rts
+ashl_big:
+        subi.l  #32,d2
+        move.l  d1,d0               ; hi = lo << (count-32)
+        lsl.l   d2,d0
+        moveq   #0,d1
+        movem.l (sp)+,d4/d5
+        rts
+
+* __lshrdi3 : logical right shift (zero fill).
+__lshrdi3:
+        movem.l d4/d5,-(sp)
+        moveq   #32,d4
+        cmp.l   d4,d2
+        bcc     lshr_big
+        move.l  d0,d4               ; save hi
+        lsr.l   d2,d1               ; lo >>= count
+        moveq   #32,d5
+        sub.l   d2,d5
+        lsl.l   d5,d4               ; hi << (32-count)
+        or.l    d4,d1               ; lo |= carry-in from hi
+        lsr.l   d2,d0               ; hi >>= count
+        movem.l (sp)+,d4/d5
+        rts
+lshr_big:
+        subi.l  #32,d2
+        move.l  d0,d1               ; lo = hi >> (count-32)
+        lsr.l   d2,d1
+        moveq   #0,d0
+        movem.l (sp)+,d4/d5
+        rts
+
+* __ashrdi3 : arithmetic right shift (sign fill).
+__ashrdi3:
+        movem.l d4/d5,-(sp)
+        moveq   #32,d4
+        cmp.l   d4,d2
+        bcc     ashr_big
+        move.l  d0,d4               ; save hi
+        lsr.l   d2,d1               ; lo >>= count (logical)
+        moveq   #32,d5
+        sub.l   d2,d5
+        lsl.l   d5,d4               ; hi << (32-count)
+        or.l    d4,d1
+        asr.l   d2,d0               ; hi >>= count (arithmetic)
+        movem.l (sp)+,d4/d5
+        rts
+ashr_big:
+        subi.l  #32,d2
+        move.l  d0,d1               ; lo = hi >> (count-32) arithmetic
+        asr.l   d2,d1
+        moveq   #31,d4
+        asr.l   d4,d0               ; hi = sign extension (all sign bits)
+        movem.l (sp)+,d4/d5
+        rts
+
+* __cmpdi2 : signed 64-bit compare -> D0 = -1/0/1 (a<b / a==b / a>b).
+__cmpdi2:
+        cmp.l   d2,d0               ; a.hi vs b.hi (signed)
+        beq     cmpd_lo
+        blt     cmpd_lt
+        moveq   #1,d0
+        rts
+cmpd_lt:
+        moveq   #-1,d0
+        rts
+cmpd_lo:
+        cmp.l   d3,d1               ; a.lo vs b.lo (unsigned)
+        beq     cmpd_eq
+        bcs     cmpd_lt
+        moveq   #1,d0
+        rts
+cmpd_eq:
+        moveq   #0,d0
+        rts
+
+* __ucmpdi2 : unsigned 64-bit compare -> D0 = -1/0/1.
+__ucmpdi2:
+        cmp.l   d2,d0               ; a.hi vs b.hi (unsigned)
+        beq     ucmpd_lo
+        bcs     ucmpd_lt
+        moveq   #1,d0
+        rts
+ucmpd_lt:
+        moveq   #-1,d0
+        rts
+ucmpd_lo:
+        cmp.l   d3,d1               ; a.lo vs b.lo (unsigned)
+        beq     ucmpd_eq
+        bcs     ucmpd_lt
+        moveq   #1,d0
+        rts
+ucmpd_eq:
+        moveq   #0,d0
+        rts
+
+*======================================================================
+* Memory helpers (C stack ABI: args on the stack, result in D0).
+* void *memcpy(void *dst, const void *src, size_t n)
+* void *memset(void *dst, int c, size_t n)
+* void *memmove(void *dst, const void *src, size_t n)
+*======================================================================
+
+_memcpy:
+        move.l  4(sp),a0            ; dst
+        move.l  8(sp),a1            ; src
+        move.l  12(sp),d1           ; n
+        move.l  a0,d0               ; return value = dst
+        tst.l   d1
+        beq     mcpy_done
+mcpy_lp:
+        move.b  (a1)+,(a0)+
+        subq.l  #1,d1
+        bne     mcpy_lp
+mcpy_done:
+        rts
+
+_memset:
+        move.l  4(sp),a0            ; dst
+        move.l  8(sp),d1            ; c (low byte used)
+        move.l  12(sp),d0           ; n
+        move.l  a0,a1               ; save dst for return
+        tst.l   d0
+        beq     mset_done
+mset_lp:
+        move.b  d1,(a0)+
+        subq.l  #1,d0
+        bne     mset_lp
+mset_done:
+        move.l  a1,d0               ; return dst
+        rts
+
+_memmove:
+        move.l  4(sp),a0            ; dst
+        move.l  8(sp),a1            ; src
+        move.l  12(sp),d1           ; n
+        move.l  a0,d0               ; return value = dst
+        tst.l   d1
+        beq     mmv_done
+        cmpa.l  a1,a0               ; dst - src
+        bls     mmv_fwd             ; dst <= src -> forward is safe
+        adda.l  d1,a0               ; overlap, dst > src -> copy backward
+        adda.l  d1,a1
+mmv_bwd:
+        move.b  -(a1),-(a0)
+        subq.l  #1,d1
+        bne     mmv_bwd
+        rts
+mmv_fwd:
+        move.b  (a1)+,(a0)+
+        subq.l  #1,d1
+        bne     mmv_fwd
+mmv_done:
         rts
 
         END

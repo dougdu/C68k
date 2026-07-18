@@ -354,7 +354,9 @@ static bool convert_pp_int(Token *tok) {
     base = 8;
   }
 
-  int64_t val = strtoul(p, &p, base);
+  // strtoull (not strtoul): `unsigned long` is only 32 bits on LLP64 hosts
+  // (Windows), which would silently saturate any constant above 0xFFFFFFFF.
+  int64_t val = strtoull(p, &p, base);
 
   // Read U, L or LL suffixes.
   bool l = false;   // "l"  (long)

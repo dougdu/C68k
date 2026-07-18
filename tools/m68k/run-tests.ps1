@@ -27,6 +27,7 @@ param(
   [string]$Ld   = 'C:\SysGCC\m68k-elf\bin\m68k-elf-ld.exe',
   [string]$Sim  = 'C:\git\worm68k\68kTools\builds\win64\bin\Release\sim68k.exe',
   [string]$Gdb  = 'C:\SysGCC\m68k-elf\bin\m68k-elf-gdb.exe',
+  [string]$FloatLib = 'C:\git\worm68k\68kTools\libraries\float\ieee754\libieee754d.a',
   [int]$Port    = 1234
 )
 
@@ -84,7 +85,7 @@ foreach ($tc in Get-ChildItem $testdir -Filter *.c | Sort-Object Name) {
 
   & $Cc -c $tc.FullName -o case.o *> cc.log
   if ($LASTEXITCODE -ne 0) { Write-Host "[$name] c68k FAIL"; Get-Content cc.log -TotalCount 8; $fail++; continue }
-  & $Ld -Ttext 0x1000 -e _start -o case.elf crt0.o case.o rt68k.o *> ld.log
+  & $Ld -Ttext 0x1000 -e _start -o case.elf crt0.o case.o rt68k.o $FloatLib *> ld.log
   if ($LASTEXITCODE -ne 0) { Write-Host "[$name] ld FAIL"; Get-Content ld.log -TotalCount 8; $fail++; continue }
 
   Get-Process sim68k -ErrorAction SilentlyContinue | Stop-Process -Force
