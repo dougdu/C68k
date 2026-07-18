@@ -27,7 +27,7 @@ Legend: ☐ not started · ◐ in progress · ☑ done.
 | **P6** | [C99 language completeness](#p6--c99-language-completeness) | ☑ | 6 / 6 | language suite green on both OSes |
 | **P7** | [C99 standard library](#p7--c99-standard-library) | ☑ | 7 / 7 | library + `libm` suite green |
 | **P8** | [Integrated object emitter](#p8--integrated-object-emitter) | ☑ | 5 / 5 | compiler emits ELF `.o` with no assembler |
-| **P9** | [Native LINK / LIB / mkdri](#p9--native-link--lib--mkdri) | ☐ | 0 / 6 | native link chain on both OSes |
+| **P9** | [Native LINK / LIB / mkdri](#p9--native-link--lib--mkdri) | ◐ | 2 / 6 | native link chain on both OSes |
 | **P10** | [Self-hosting bootstrap](#p10--self-hosting-bootstrap) | ☐ | 0 / 5 | **stage2 == stage3 on both OSes** |
 | **P11** | [Cross-compiler hardening](#p11--cross-compiler-hardening) | ☐ | 0 / 6 | cross is a CI'd, maintained product |
 | **P12** | [Optimization](#p12--optimization) | ☐ | 0 / 6 | register allocation + peephole |
@@ -281,12 +281,14 @@ dependency ([architecture.md §8](architecture.md#8-object-emission-text-asm-now
 **Objective:** a **native** link/archive chain on both OSes
 ([libc-and-toolchain.md §7](libc-and-toolchain.md#7-the-native-toolchain)).
 
-- [ ] Verify Osiris `LINK.PRG` / `LIB.PRG` consume c68k objects/archives; wire the native recipe.
-- [ ] Port `LINK` to CP/M-68K (`LINK.68K`) — file I/O moved to BDOS FCBs.
-- [ ] Port `LIB` to CP/M-68K (`LIB.68K`).
-- [ ] Build `mkdri` as a native `.68K` (or confirm the host path) for the CP/M final step.
-- [ ] Native recipes: Osiris `CC→LINK→.PRG`; CP/M `CC→LINK→mkdri→.68K`.
-- [ ] A multi-object + archive program links natively on both OSes and runs under `sim68k`.
+- [x] Verify Osiris `LINK.PRG` / `LIB.PRG` consume c68k objects/archives; wire the native recipe. *(Proven on Osiris under sim68k — [`tools/osiris/run-native-link.ps1`](../tools/osiris/run-native-link.ps1): c68k integrated objects link with the native `LINK.PRG` into a running `.PRG` (bare, multi-TU cross-object call, and the full `libc.o` all parse cleanly); `LIB.PRG` (`LIB rcs`) archives a c68k object and `LINK` pulls the member. Samples: `bare.c`, `multi.c`+`multi_helper.c`.)*
+- [ ] Port `LINK` to CP/M-68K (`LINK.68K`) — file I/O moved to BDOS FCBs. *(Tracked follow-on — large asm68K port in the Osiris repo.)*
+- [ ] Port `LIB` to CP/M-68K (`LIB.68K`). *(Tracked follow-on.)*
+- [x] Build `mkdri` as a native `.68K` (or confirm the host path) for the CP/M final step. *(Host `mkdri` path confirmed and in use — [`tools/cpm/build-68k.ps1`](../tools/cpm/build-68k.ps1); a native `.68K` port is a follow-on.)*
+- [ ] Native recipes: Osiris `CC→LINK→.PRG`; CP/M `CC→LINK→mkdri→.68K`. *(Osiris `CC→LINK→.PRG` and `CC→LIB→LINK→.PRG` done; CP/M recipe waits on `LINK.68K`.)*
+- [ ] A multi-object + archive program links natively on both OSes and runs under `sim68k`. *(Osiris done — multi-TU + `LIB` archive both run; CP/M pending the port.)*
+
+> **Finding (Osiris `LINK.PRG` capacity).** c68k's objects — including the full single-TU `libc.o` — link cleanly, but `LINK.PRG` address-exceptions on the 28-member/125 KB `libieee754d.a` float archive (a fixed-capacity table overflow in its `ar`/symbol handling; rebuilding the archive deterministically doesn't help, a 1-member archive links fine). So hosted **soft-float** programs still use the cross linker (`m68k-elf-ld`, lockstep 8/8) until `LINK.PRG`'s capacity is raised — an Osiris-toolchain follow-on, not a c68k issue.
 
 **Exit:** native linking/archiving builds real (multi-TU) programs on both OSes.
 **Depends on:** P8
