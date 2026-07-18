@@ -36,6 +36,7 @@ $ErrorActionPreference = 'Continue'
 # tools/m68k -> repo root
 $repo    = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
 $testdir = Join-Path $repo 'tests\m68k'
+$inc     = Join-Path $repo 'libc\include'
 $rtSrc   = Join-Path $repo 'lib\runtime\rt68k.a68'
 $crtSrc  = Join-Path $PSScriptRoot 'crt0-test.a68'
 $work    = Join-Path ([System.IO.Path]::GetTempPath()) 'c68k-m68k-tests'
@@ -83,7 +84,7 @@ foreach ($tc in Get-ChildItem $testdir -Filter *.c | Sort-Object Name) {
   if (-not $mx.Success) { Write-Host "[$name] SKIP (no c68k-expect)"; continue }
   $expect = [int]$mx.Groups[1].Value
 
-  & $Cc -c $tc.FullName -o case.o *> cc.log
+  & $Cc -ffreestanding -c $tc.FullName -o case.o "-I$inc" *> cc.log
   if ($LASTEXITCODE -ne 0) { Write-Host "[$name] c68k FAIL"; Get-Content cc.log -TotalCount 8; $fail++; continue }
   & $Ld -Ttext 0x1000 -e _start -o case.elf crt0.o case.o rt68k.o $FloatLib *> ld.log
   if ($LASTEXITCODE -ne 0) { Write-Host "[$name] ld FAIL"; Get-Content ld.log -TotalCount 8; $fail++; continue }

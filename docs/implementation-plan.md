@@ -25,7 +25,7 @@ Legend: ☐ not started · ◐ in progress · ☑ done.
 | **P4** | [libc core + Osiris backend](#p4--libc-core--osiris-backend) | ☑ | 7 / 7 | **`HELLO.PRG` runs on Osiris** |
 | **P5** | [CP/M-68K backend](#p5--cpm-68k-backend) | ☑ | 7 / 7 | **`HELLO.68K` runs on CP/M-68K; lockstep** |
 | **P6** | [C99 language completeness](#p6--c99-language-completeness) | ☑ | 6 / 6 | language suite green on both OSes |
-| **P7** | [C99 standard library](#p7--c99-standard-library) | ◐ | 6 / 7 | library + `libm` suite green |
+| **P7** | [C99 standard library](#p7--c99-standard-library) | ☑ | 7 / 7 | library + `libm` suite green |
 | **P8** | [Integrated object emitter](#p8--integrated-object-emitter) | ☐ | 0 / 5 | compiler emits ELF `.o` with no assembler |
 | **P9** | [Native LINK / LIB / mkdri](#p9--native-link--lib--mkdri) | ☐ | 0 / 6 | native link chain on both OSes |
 | **P10** | [Self-hosting bootstrap](#p10--self-hosting-bootstrap) | ☐ | 0 / 5 | **stage2 == stage3 on both OSes** |
@@ -39,7 +39,7 @@ Legend: ☐ not started · ◐ in progress · ☑ done.
 1. **M1 — Bare-metal C** (end P2): compiled C executes correctly on the 68000 under `sim68k`. **✅ reached** — 17-case golden suite green (`tools/m68k/run-tests.ps1`).
 2. **M2 — Hello, both OSes** (end P5): the same C source builds and runs as a `.PRG` on Osiris and a
    `.68K` on CP/M-68K, verified in lockstep. **✅ reached** — hello / filerw / printftest 3/3 lockstep (`tools/run-lockstep.ps1`).
-3. **M3 — Conforming C99** (end P7): the language + hosted library suites pass on both OSes.
+3. **M3 — Conforming C99** (end P7): the language + hosted library suites pass on both OSes. **✅ reached** — language + `libm` + library + `<time.h>` suites 8/8 lockstep on both OSes (`coretest` 41, `c99test` 18, `mathtest` 14, `libtest` 26, `timetest` 15); freestanding mode 40/40 bare-metal (`tools/m68k/run-tests.ps1`).
 4. **M4 — Self-hosting** (end P10): the native `CC` recompiles itself to a byte-identical binary on
    both OSes.
 5. **M5 — Product** (end P11): the cross-compiler is hardened, CI-gated, and building real tools.
@@ -256,8 +256,8 @@ suite goes **lockstep** across both OSes.
 - [x] `<string.h>` full set; `<time.h>` formatting over the seam clock. *(string set done; `<time.h>` wall clock over Osiris DOS `2Ah`/`2Ch` and CP/M-68K BDOS `105` — `time`/`gmtime`/`localtime`/`mktime`/`difftime`/`asctime`/`ctime`/`strftime`.)*
 - [x] `<math.h>` via the `libieee754d` soft-float donor (double transcendentals) on soft-float.
 - [x] `<inttypes.h>`, `<stdint.h>`, `<float.h>` completeness; `<assert.h>`, `<signal.h>` (minimal, synchronous).
-- [ ] Freestanding mode (`-ffreestanding`) validated (headers-only + runtime lib). *(deferred to a follow-up.)*
-- [x] Library conformance suite, green lockstep on both OSes (`mathtest` 14/14, `libtest` 26/26).
+- [x] Freestanding mode (`-ffreestanding`) validated (headers-only + runtime lib). *(`-ffreestanding` sets `__STDC_HOSTED__=0`; full C99 freestanding header set — `<stddef.h>`, `<stdint.h>`, `<limits.h>`, `<stdbool.h>`, `<stdarg.h>`, `<float.h>`, `<iso646.h>`; `tests/m68k/freestd.c` links no libc, 40/40 bare-metal.)*
+- [x] Library conformance suite, green lockstep on both OSes (`mathtest` 14/14, `libtest` 26/26, `timetest` 15/15).
 
 **Exit (M3):** hosted library + `libm` suites pass lockstep on both OSes.
 **Depends on:** P6

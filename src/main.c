@@ -7,6 +7,7 @@ typedef enum {
 StringArray include_paths;
 bool opt_fcommon = true;
 bool opt_fpic;
+bool opt_ffreestanding;
 
 static FileType opt_x;
 static StringArray opt_include;
@@ -157,6 +158,11 @@ static void parse_args(int argc, char **argv) {
 
     if (!strcmp(argv[i], "-fno-common")) {
       opt_fcommon = false;
+      continue;
+    }
+
+    if (!strcmp(argv[i], "-ffreestanding")) {
+      opt_ffreestanding = true;
       continue;
     }
 
@@ -320,7 +326,6 @@ static void parse_args(int argc, char **argv) {
         !strncmp(argv[i], "-W", 2) ||
         !strncmp(argv[i], "-g", 2) ||
         !strncmp(argv[i], "-std=", 5) ||
-        !strcmp(argv[i], "-ffreestanding") ||
         !strcmp(argv[i], "-fno-builtin") ||
         !strcmp(argv[i], "-fno-omit-frame-pointer") ||
         !strcmp(argv[i], "-fno-stack-protector") ||
@@ -726,6 +731,11 @@ int main(int argc, char **argv) {
   atexit(cleanup);
   init_macros();
   parse_args(argc, argv);
+
+  // -ffreestanding: the hosted library is not assumed present. This is set
+  // here (not in init_macros) because the flag is only known after arg parse.
+  if (opt_ffreestanding)
+    define_macro("__STDC_HOSTED__", "0");
 
   if (opt_cc1) {
     add_default_include_paths(argv[0]);
