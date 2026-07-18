@@ -121,9 +121,12 @@ static void gen_addr(Node *node) {
       println("  move.l a0,d0");
       return;
     }
-    // Global / function: PC-relative address (in-module) for position
-    // independence; the assembler/linker relaxes the reference.
-    println("  lea %s(pc),a0", sym(node->var->name));
+    // Global / function: absolute (32-bit) address. In a static-PIE (Osiris
+    // .PRG) the linker rewrites this as an R_68K_RELATIVE dynamic reloc the
+    // loader applies; in a fixed-load image (CP/M .68K, bare metal) it resolves
+    // directly. Absolute avoids the +/-32 KB reach of PC-relative (R_68K_PC16),
+    // which truncates once a global sits far from the referencing code.
+    println("  lea %s,a0", sym(node->var->name));
     println("  move.l a0,d0");
     return;
   case ND_DEREF:

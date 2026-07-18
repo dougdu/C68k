@@ -1,0 +1,125 @@
+**********************************************************
+* cpm_sys.a68 --- c68k CP/M-68K backend: crt0 (_start) + the BDOS primitive
+* the C seam calls, plus process exit and the sbrk heap.
+*
+* CP/M-68K enters a transient at _start (the first byte of .text at the TPA
+* base) with the stack holding [return-to-CCP][basepage-ptr]. This module
+* discards the return address, captures the base page, positions the user
+* stack at the top of the TPA, zero-fills .bss, sets up the heap, then calls
+* main; it terminates via BDOS 0. _start MUST be the first object linked so it
+* lands at the TPA base (there is no ELF ENTRY under CP/M).
+*
+* BDOS is entered via TRAP #2 with the function in D0.W and the primary
+* parameter (a value or a pointer) in D1; the result comes back in D0.
+**********************************************************
+        .model  flat
+
+        PUBLIC  _start
+        PUBLIC  _cpm_bdos,_sys_exit,_sys_sbrk
+        EXTERN  _main
+
+* CP/M-68K base-page offsets.
+BP_HIGHTPA   equ  $04       ; first byte above the TPA (stack top)
+BP_BSSTART   equ  $18       ; bss segment start
+BP_BSLEN     equ  $1C       ; bss segment length
+
+STKRESERVE   equ  $4000     ; 16 KiB user stack reserved below HIGHTPA
+
+        .code
+
+**********************************************************
+* _start --- CP/M-68K entry (must be first in .text). Set the stack to the
+* top of the TPA, zero .bss, carve the heap above .bss, call main, exit.
+**********************************************************
+_start:
+        move.l  (sp)+,a0            ; return-to-CCP (discarded)
+        move.l  (sp)+,a2            ; A2 = base page pointer
+        move.l  BP_HIGHTPA(a2),d1
+        movea.l d1,a7               ; user stack at the top of the TPA
+
+        movea.l BP_BSSTART(a2),a0   ; zero .bss (defensive)
+        move.l  BP_BSLEN(a2),d0
+        beq     bz_done
+bz_lp:
+        clr.b   (a0)+
+        subq.l  #1,d0
+        bne     bz_lp
+bz_done:
+        move.l  a2,c_bp             ; heap = [past-bss .. HIGHTPA - stack)
+        move.l  BP_BSSTART(a2),d0
+        add.l   BP_BSLEN(a2),d0
+        addq.l  #3,d0
+        andi.l  #$FFFFFFFC,d0       ; round up to a longword
+        move.l  d0,c_heapbase
+        move.l  d0,c_brk
+        move.l  BP_HIGHTPA(a2),d1
+        subi.l  #STKRESERVE,d1
+        sub.l   d0,d1
+        move.l  d1,c_heaplen
+
+        lea     c_envp(pc),a0       ; main(argc=1, argv, envp)
+        move.l  a0,-(sp)
+        lea     c_argv(pc),a0
+        move.l  a0,-(sp)
+        moveq   #1,d0
+        move.l  d0,-(sp)
+        jsr     _main
+        lea     12(sp),sp
+
+        move.l  d0,-(sp)            ; exit(main's return)
+        jsr     _sys_exit
+
+**********************************************************
+* long cpm_bdos(int func, long param) --- one BDOS call (TRAP #2).
+**********************************************************
+_cpm_bdos:
+        move.l  4(sp),d0            ; func (low word used as D0.W)
+        move.l  8(sp),d1            ; param
+        trap    #2
+        rts
+
+**********************************************************
+* void sys_exit(int code) --- BDOS 0 (return to CCP). Never returns.
+**********************************************************
+_sys_exit:
+        moveq   #0,d1
+        moveq   #0,d0              ; BDOS 0 = P_TERMCPM
+        trap    #2
+sx_spin:
+        bra     sx_spin
+
+**********************************************************
+* void *sys_sbrk(int delta) --- bump the break; old break or (void*)-1.
+**********************************************************
+_sys_sbrk:
+        move.l  4(sp),d0           ; delta
+        move.l  c_brk,d1           ; current break
+        movea.l d1,a0              ; return = old break
+        add.l   d0,d1              ; new break
+        move.l  c_heapbase,d0
+        cmp.l   d0,d1
+        bcs     sbrk_err           ; new < base
+        add.l   c_heaplen,d0       ; heap top
+        cmp.l   d0,d1
+        bhi     sbrk_err           ; new > top
+        move.l  d1,c_brk
+        move.l  a0,d0
+        rts
+sbrk_err:
+        moveq   #-1,d0
+        rts
+
+        .data
+c_progname  dc.b  'PROG',0
+        ALIGN 2
+c_argv      dc.l  c_progname
+            dc.l  0
+c_envp      dc.l  0
+
+        .bss
+c_bp        ds.l  1
+c_heapbase  ds.l  1
+c_heaplen   ds.l  1
+c_brk       ds.l  1
+
+        end

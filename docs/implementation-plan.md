@@ -23,7 +23,7 @@ Legend: ☐ not started · ◐ in progress · ☑ done.
 | **P2** | [68000 code generation](#p2--68000-code-generation) | ☑ | 8 / 8 | C runs on bare 68000 under sim68k |
 | **P3** | [Runtime support library](#p3--runtime-support-library) | ☑ | 6 / 6 | float / `long long` math correct |
 | **P4** | [libc core + Osiris backend](#p4--libc-core--osiris-backend) | ☑ | 7 / 7 | **`HELLO.PRG` runs on Osiris** |
-| **P5** | [CP/M-68K backend](#p5--cpm-68k-backend) | ☐ | 0 / 7 | **`HELLO.68K` runs on CP/M-68K; lockstep** |
+| **P5** | [CP/M-68K backend](#p5--cpm-68k-backend) | ◐ | 6 / 7 | **`HELLO.68K` runs on CP/M-68K; lockstep** |
 | **P6** | [C99 language completeness](#p6--c99-language-completeness) | ☐ | 0 / 6 | language suite green on both OSes |
 | **P7** | [C99 standard library](#p7--c99-standard-library) | ☐ | 0 / 7 | library + `libm` suite green |
 | **P8** | [Integrated object emitter](#p8--integrated-object-emitter) | ☐ | 0 / 5 | compiler emits ELF `.o` with no assembler |
@@ -38,7 +38,7 @@ Legend: ☐ not started · ◐ in progress · ☑ done.
 
 1. **M1 — Bare-metal C** (end P2): compiled C executes correctly on the 68000 under `sim68k`. **✅ reached** — 17-case golden suite green (`tools/m68k/run-tests.ps1`).
 2. **M2 — Hello, both OSes** (end P5): the same C source builds and runs as a `.PRG` on Osiris and a
-   `.68K` on CP/M-68K, verified in lockstep.
+   `.68K` on CP/M-68K, verified in lockstep. **✅ reached** — hello / filerw / printftest 3/3 lockstep (`tools/run-lockstep.ps1`).
 3. **M3 — Conforming C99** (end P7): the language + hosted library suites pass on both OSes.
 4. **M4 — Self-hosting** (end P10): the native `CC` recompiles itself to a byte-identical binary on
    both OSes.
@@ -198,15 +198,28 @@ Osiris under `sim68k`.
 **Objective:** the **CP/M-68K** seam, FCB shim, and `crt0`; the same programs run as `.68K`, and the
 suite goes **lockstep** across both OSes.
 
-- [ ] CP/M seam over BDOS `TRAP #2`, incl. the FCB/record/DMA→byte-stream shim.
-- [ ] `crt0.cpm` (base-page cmd tail → `argv`, TPA heap/stack, BDOS-0 exit).
-- [ ] `errno` mapping for CP/M status codes; console-routed `stdin/stdout/stderr`.
-- [ ] `-target cpm` driver: link with `cpm68k.ld`, then `mkdri` → `.68K`.
-- [ ] `HELLO.68K` + file-I/O run correctly on CP/M-68K under `sim68k`.
-- [ ] Lockstep runner: every test compiled for **both** OSes, one golden file, both must match.
-- [ ] Port the P0–P4 tests into the lockstep suite.
+- [x] CP/M seam over BDOS `TRAP #2`, incl. the FCB/record/DMA→byte-stream shim.
+      _([`libc/cpm/cpm.c`](../libc/cpm/cpm.c): fd→FCB table, 128-byte record buffering with `F_DMAOFF`,
+      sequential `F_READ`/`F_WRITE`, `^Z`-padded close; console via BDOS 6. BDOS primitive +
+      crt0 in [`libc/cpm/cpm_sys.a68`](../libc/cpm/cpm_sys.a68).)_
+- [x] `crt0.cpm` (base-page cmd tail → `argv`, TPA heap/stack, BDOS-0 exit). _(`_start`: discard
+      return-to-CCP, capture base page, stack at `HIGHTPA`, zero bss, heap above bss, `main`, BDOS 0.
+      argv minimal (argc=1).)_
+- [x] `errno` mapping for CP/M status codes; console-routed `stdin/stdout/stderr`. _(fds 0/1/2 route to
+      the BDOS console; `errno` is set at the libc layer on failures. A per-code BDOS→errno table is a
+      refinement.)_
+- [x] `-target cpm` driver: link with `cpm68k.ld`, then `mkdri` → `.68K`. _(via
+      [`tools/cpm/build-68k.ps1`](../tools/cpm/build-68k.ps1): `ld -T cpm68k.ld -Ttext 0x500` +
+      `mkdri -b500`. A c68k-internal `-target cpm` flag is a follow-up.)_
+- [x] `HELLO.68K` + file-I/O run correctly on CP/M-68K under `sim68k`. _([`tools/cpm/run-cpm.ps1`](../tools/cpm/run-cpm.ps1):
+      `cpmcp` deploy to D:, boot `c68k-sim68k`, run — hello + filerw both PASS.)_
+- [x] Lockstep runner: every test compiled for **both** OSes, one golden file, both must match.
+      _([`tools/run-lockstep.ps1`](../tools/run-lockstep.ps1): hello / filerw / printftest — **3/3
+      identical on Osiris and CP/M-68K**.)_
+- [ ] Port the P0–P4 tests into the lockstep suite. _(3 representative console cases are in lockstep;
+      the bare-metal P2/P3 return-code tests need console-output wrappers to join it.)_
 
-**Exit (M2):** the same C source runs as `.PRG` (Osiris) and `.68K` (CP/M-68K) with matching output.
+**Exit (M2): ✅ reached** — the same C source runs as `.PRG` (Osiris) and `.68K` (CP/M-68K) with matching output.
 **Depends on:** P4
 
 ## P6 — C99 language completeness

@@ -1,0 +1,200 @@
+/*
+ * cpm.c --- c68k CP/M-68K syscall seam: the sys_* functions libc calls,
+ * implemented over BDOS (TRAP #2) via the asm cpm_bdos primitive.
+ *
+ * CP/M has no file handles: files are FCB + 128-byte records moved through a
+ * DMA buffer. This shim keeps a small table mapping an fd (>=3) to an FCB and
+ * a 128-byte record buffer, and translates byte-granular sys_read/sys_write
+ * into whole-record BDOS reads/writes so libc's stdio byte stream just works.
+ * fds 0/1/2 route to the console (BDOS 6, raw I/O). exit()/sbrk live in
+ * cpm_sys.a68.
+ */
+
+#include <ctype.h>
+
+extern long cpm_bdos(int func, long param);
+
+/* BDOS function codes. */
+#define C_RAWIO 6
+#define F_OPEN 15
+#define F_CLOSE 16
+#define F_DELETE 19
+#define F_READ 20
+#define F_WRITE 21
+#define F_MAKE 22
+#define F_DMAOFF 26
+
+/* FCB field offsets. */
+#define FCB_DRIVE 0
+#define FCB_NAME 1
+#define FCB_TYPE 9
+#define FCB_CR 32
+#define FCB_SIZE 36
+
+#define NFILE 8
+#define RECSZ 128
+
+typedef struct {
+  int used;
+  int writing;
+  int eof;
+  int recpos; /* read: next byte in rec; write: bytes buffered */
+  int reccnt; /* read: valid bytes in rec */
+  unsigned char fcb[FCB_SIZE];
+  unsigned char rec[RECSZ];
+} CpmFile;
+
+static CpmFile _cpmf[NFILE];
+
+/* Parse an ASCIIZ path ("D:NAME.EXT") into a zeroed FCB: optional drive,
+   uppercase 8.3 name, space-padded. */
+static void parse_fcb(unsigned char *fcb, const char *path) {
+  for (int i = 0; i < FCB_SIZE; i++)
+    fcb[i] = 0;
+
+  if (path[0] && path[1] == ':') {
+    fcb[FCB_DRIVE] = (unsigned char)(toupper((unsigned char)path[0]) - 'A' + 1);
+    path += 2;
+  }
+
+  int i = 0;
+  while (i < 8 && *path && *path != '.')
+    fcb[FCB_NAME + i++] = (unsigned char)toupper((unsigned char)*path++);
+  while (i < 8)
+    fcb[FCB_NAME + i++] = ' ';
+  while (*path && *path != '.')
+    path++;
+  if (*path == '.')
+    path++;
+
+  i = 0;
+  while (i < 3 && *path)
+    fcb[FCB_TYPE + i++] = (unsigned char)toupper((unsigned char)*path++);
+  while (i < 3)
+    fcb[FCB_TYPE + i++] = ' ';
+}
+
+static CpmFile *alloc_slot(int *idx) {
+  for (int i = 0; i < NFILE; i++)
+    if (!_cpmf[i].used) {
+      *idx = i;
+      return &_cpmf[i];
+    }
+  return 0;
+}
+
+int sys_open(const char *path, int mode) {
+  (void)mode;
+  int i;
+  CpmFile *f = alloc_slot(&i);
+  if (!f)
+    return -1;
+  parse_fcb(f->fcb, path);
+  f->fcb[FCB_CR] = 0;
+  if ((cpm_bdos(F_OPEN, (long)f->fcb) & 0xFF) == 0xFF)
+    return -1;
+  f->used = 1;
+  f->writing = 0;
+  f->eof = 0;
+  f->recpos = 0;
+  f->reccnt = 0;
+  return 3 + i;
+}
+
+int sys_creat(const char *path, int attr) {
+  (void)attr;
+  int i;
+  CpmFile *f = alloc_slot(&i);
+  if (!f)
+    return -1;
+  parse_fcb(f->fcb, path);
+  cpm_bdos(F_DELETE, (long)f->fcb); /* truncate: remove any existing file */
+  parse_fcb(f->fcb, path);
+  f->fcb[FCB_CR] = 0;
+  if ((cpm_bdos(F_MAKE, (long)f->fcb) & 0xFF) == 0xFF)
+    return -1;
+  f->used = 1;
+  f->writing = 1;
+  f->eof = 0;
+  f->recpos = 0;
+  f->reccnt = 0;
+  return 3 + i;
+}
+
+int sys_write(int fd, const void *buf, int n) {
+  const unsigned char *p = buf;
+  if (fd < 3) {
+    for (int i = 0; i < n; i++)
+      cpm_bdos(C_RAWIO, p[i]);
+    return n;
+  }
+  CpmFile *f = &_cpmf[fd - 3];
+  for (int i = 0; i < n; i++) {
+    f->rec[f->recpos++] = p[i];
+    if (f->recpos == RECSZ) {
+      cpm_bdos(F_DMAOFF, (long)f->rec);
+      if (cpm_bdos(F_WRITE, (long)f->fcb) != 0)
+        return i;
+      f->recpos = 0;
+    }
+  }
+  return n;
+}
+
+int sys_read(int fd, void *buf, int n) {
+  unsigned char *p = buf;
+  if (fd < 3) {
+    for (int i = 0; i < n; i++)
+      p[i] = (unsigned char)cpm_bdos(C_RAWIO, 0xFF);
+    return n;
+  }
+  CpmFile *f = &_cpmf[fd - 3];
+  int got = 0;
+  for (; got < n; got++) {
+    if (f->recpos >= f->reccnt) {
+      if (f->eof)
+        break;
+      cpm_bdos(F_DMAOFF, (long)f->rec);
+      if (cpm_bdos(F_READ, (long)f->fcb) != 0) {
+        f->eof = 1;
+        break;
+      }
+      f->reccnt = RECSZ;
+      f->recpos = 0;
+    }
+    p[got] = f->rec[f->recpos++];
+  }
+  return got;
+}
+
+int sys_close(int fd) {
+  if (fd < 3)
+    return 0;
+  CpmFile *f = &_cpmf[fd - 3];
+  if (!f->used)
+    return -1;
+  if (f->writing && f->recpos > 0) {
+    for (int i = f->recpos; i < RECSZ; i++)
+      f->rec[i] = 0x1A; /* ^Z pad the last text record */
+    cpm_bdos(F_DMAOFF, (long)f->rec);
+    cpm_bdos(F_WRITE, (long)f->fcb);
+    f->recpos = 0;
+  }
+  cpm_bdos(F_CLOSE, (long)f->fcb);
+  f->used = 0;
+  return 0;
+}
+
+/* Byte-granular seek is not yet supported (record/DMA only). */
+long sys_seek(int fd, long off, int whence) {
+  (void)fd;
+  (void)off;
+  (void)whence;
+  return -1;
+}
+
+int sys_unlink(const char *path) {
+  unsigned char fcb[FCB_SIZE];
+  parse_fcb(fcb, path);
+  return ((cpm_bdos(F_DELETE, (long)fcb) & 0xFF) == 0xFF) ? -1 : 0;
+}
