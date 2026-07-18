@@ -18,7 +18,7 @@ Legend: ☐ not started · ◐ in progress · ☑ done.
 
 | Phase | Title | Status | Tasks | Milestone |
 | --- | --- | :---: | :---: | --- |
-| **P0** | [Scaffolding & host baseline](#p0--scaffolding--host-baseline) | ◐ | 4 / 6 | chibicc forks in, builds & self-hosts on host |
+| **P0** | [Scaffolding & host baseline](#p0--scaffolding--host-baseline) | ☑ | 6 / 6 | chibicc forks in, builds & self-hosts on host |
 | **P1** | [ILP32 type-model retarget](#p1--ilp32-type-model-retarget) | ☐ | 0 / 6 | front end is big-endian ILP32 |
 | **P2** | [68000 code generation](#p2--68000-code-generation) | ☐ | 0 / 8 | C runs on bare 68000 under sim68k |
 | **P3** | [Runtime support library](#p3--runtime-support-library) | ☐ | 0 / 6 | float / `long long` math correct |
@@ -32,7 +32,7 @@ Legend: ☐ not started · ◐ in progress · ☑ done.
 | **P11** | [Cross-compiler hardening](#p11--cross-compiler-hardening) | ☐ | 0 / 6 | cross is a CI'd, maintained product |
 | **P12** | [Optimization](#p12--optimization) | ☐ | 0 / 6 | register allocation + peephole |
 | **P13** | [Tooling & debug polish](#p13--tooling--debug-polish) | ☐ | 0 / 6 | DWARF, diagnostics, samples, SDK docs |
-| | **Total** | **0 / 14** | **4 / 87** | |
+| | **Total** | **1 / 14** | **6 / 87** | |
 
 **Milestones (headline):**
 
@@ -61,12 +61,12 @@ as a full-suite + self-host safety net.
       **Linux (GCC/Clang)**. A thin [`src/compat.{h,c}`](../src/compat.c) platform layer supplies the
       POSIX shims MSVC lacks (`fork`/`spawn`, `open_memstream`, `strndup`, `dirname`/`basename`,
       `mkstemp`, `ctime_r`, case-compare); this is the one deliberate change to the imported baseline.
-- [ ] Bring chibicc's own test suite over (imported into `tests/`); it passes on x86-64 **Linux**
-      unchanged. *(Execution tests are Linux-only: the interim x86-64 back end can't assemble/link on
-      Windows or macOS, where P0 instead runs `make smoke` / a front-end check — `-E`/`-S`/`--help`.
-      Suite imported; green run pending the first Linux CI run.)*
-- [ ] Confirm the compiler **self-hosts** (stage2 == stage3) as the baseline — `make selfhost`
-      byte-compares the two stages on the **Linux CI** job. *(Wired; pending first CI run.)*
+- [x] Bring chibicc's own test suite over (imported into `tests/`); it passes on x86-64 **Linux**
+      unchanged — **green in CI** (gcc + clang). *(Execution tests are Linux-only: the interim x86-64
+      back end can't assemble/link on Windows or macOS, where P0 instead runs `make smoke` / a
+      front-end check — `-E`/`-S`/`--help`.)*
+- [x] Confirm the compiler **self-hosts** (stage2 == stage3) as the baseline — `make selfhost`
+      byte-compares the two stages; **green in CI** (gcc + clang).
 - [x] CI skeleton: build + test on every commit ([`.github/workflows/ci.yml`](../.github/workflows/ci.yml))
       — Linux (full suite + self-host), macOS (build + front-end), Windows/MSVC (build + front-end).
 
@@ -79,8 +79,9 @@ suite and stage2==stage3 self-host pass on the Linux CI safety net.
 > Linux/ELF assembly and shells out to GNU `as`/`ld`, so full execution + self-host only run on
 > x86-64 **Linux**, which is retained as a **CI-only** correctness net. Once the **68000** back end
 > lands (P2+), real execution testing happens under `sim68k` with the `m68k-elf` toolchain on every
-> host, and the x86-64 vestige is retired. Local verification so far: MSVC `cl` build + front-end
-> (`-E`/`-S`/`--help`) confirmed on Windows.
+> host, and the x86-64 vestige is retired. **Status: P0 CI is green on all three hosts** — Linux
+> (full conformance suite + stage2==stage3 self-host, gcc + clang), macOS (build + front-end), and
+> Windows/MSVC (build + front-end).
 
 ## P1 — ILP32 type-model retarget
 
@@ -309,3 +310,4 @@ flowchart LR
 | 2026-07 | Draft 0.1 | Initial 14-phase plan (P0–P13), progress dashboard, milestones, dependency graph. |
 | 2026-07 | Draft 0.1 | P0 scaffolding landed: chibicc imported (unmodified, commit `90d1f7f`) into `src/`; repo layout created; `Makefile` + `CMakeLists.txt` host build; conformance suite in `tests/`; `selfhost` stage2==stage3 check; GitHub Actions CI. Test-green + self-host verification run on Linux CI (dev host is Windows/MSVC-only). |
 | 2026-07 | Draft 0.1 | P0 host strategy revised (decision D11): build the cross-compiler on **Windows/MSVC** + **macOS/Clang** via a new `src/compat.{h,c}` POSIX/Win shim; Linux becomes a CI-only full-suite + self-host safety net; Windows/macOS CI run a front-end smoke check. MSVC `cl` build + front end verified locally on Windows. |
+| 2026-07 | Draft 0.1 | **P0 complete (6/6).** CI green on all three hosts: Linux full conformance suite + `stage2==stage3` self-host (gcc + clang), macOS + Windows/MSVC build + front-end smoke. Landing fixes: `tests/` path-rename stragglers, `driver.sh` exec bit + `.gitattributes` LF, `actions/checkout@v5` (Node 24), and `-Iinclude` for the relocated stage2/stage3 self-host. |

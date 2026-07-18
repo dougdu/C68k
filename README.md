@@ -4,8 +4,9 @@
 Osiris DOS (OS/68K) and CP/M-68K — from one source tree, on the same toolchain that builds
 Osiris.**
 
-> **Status:** Planning / Draft 0.1 — the architecture and the phased plan are complete; no
-> compiler code has landed yet. Progress is tracked in
+> **Status:** Draft 0.1 — **P0 complete**: the chibicc front end is imported and builds, tests, and
+> self-hosts (stage2 == stage3) green in CI on Linux, with the cross-compiler also building on
+> Windows/MSVC and macOS/Clang. The 68000 retarget begins in P1/P2. Progress is tracked in
 > [docs/implementation-plan.md](docs/implementation-plan.md#progress-dashboard).
 
 ---
