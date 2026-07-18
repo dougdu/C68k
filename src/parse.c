@@ -1393,29 +1393,26 @@ static Node *lvar_initializer(Token **rest, Token *tok, Obj *var) {
   return new_binary(ND_COMMA, lhs, rhs, tok);
 }
 
+// The target (m68k) is big-endian, so global initializer bytes are
+// serialized MSB-first regardless of the host's byte order. emit_data emits
+// this buffer one byte at a time (DC.B), so the bytes must already be in
+// target order here.
 static uint64_t read_buf(char *buf, int sz) {
-  if (sz == 1)
-    return *buf;
-  if (sz == 2)
-    return *(uint16_t *)buf;
-  if (sz == 4)
-    return *(uint32_t *)buf;
-  if (sz == 8)
-    return *(uint64_t *)buf;
-  unreachable();
+  if (sz != 1 && sz != 2 && sz != 4 && sz != 8)
+    unreachable();
+  uint64_t val = 0;
+  for (int i = 0; i < sz; i++)
+    val = (val << 8) | (unsigned char)buf[i];
+  return val;
 }
 
 static void write_buf(char *buf, uint64_t val, int sz) {
-  if (sz == 1)
-    *buf = val;
-  else if (sz == 2)
-    *(uint16_t *)buf = val;
-  else if (sz == 4)
-    *(uint32_t *)buf = val;
-  else if (sz == 8)
-    *(uint64_t *)buf = val;
-  else
+  if (sz != 1 && sz != 2 && sz != 4 && sz != 8)
     unreachable();
+  for (int i = sz - 1; i >= 0; i--) {
+    buf[i] = val & 0xff;
+    val >>= 8;
+  }
 }
 
 static Relocation *
@@ -1459,12 +1456,18 @@ write_gvar_data(Relocation *cur, Initializer *init, Type *ty, char *buf, int off
     return cur;
 
   if (ty->kind == TY_FLOAT) {
-    *(float *)(buf + offset) = eval_double(init->expr);
+    float fval = eval_double(init->expr);
+    uint32_t bits;
+    memcpy(&bits, &fval, sizeof(bits));
+    write_buf(buf + offset, bits, 4);
     return cur;
   }
 
   if (ty->kind == TY_DOUBLE) {
-    *(double *)(buf + offset) = eval_double(init->expr);
+    double dval = eval_double(init->expr);
+    uint64_t bits;
+    memcpy(&bits, &dval, sizeof(bits));
+    write_buf(buf + offset, bits, 8);
     return cur;
   }
 

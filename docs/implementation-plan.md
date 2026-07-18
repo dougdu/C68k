@@ -20,7 +20,7 @@ Legend: ☐ not started · ◐ in progress · ☑ done.
 | --- | --- | :---: | :---: | --- |
 | **P0** | [Scaffolding & host baseline](#p0--scaffolding--host-baseline) | ☑ | 6 / 6 | chibicc forks in, builds & self-hosts on host |
 | **P1** | [ILP32 type-model retarget](#p1--ilp32-type-model-retarget) | ☑ | 6 / 6 | front end is big-endian ILP32 |
-| **P2** | [68000 code generation](#p2--68000-code-generation) | ☐ | 0 / 8 | C runs on bare 68000 under sim68k |
+| **P2** | [68000 code generation](#p2--68000-code-generation) | ◐ | 7 / 8 | C runs on bare 68000 under sim68k |
 | **P3** | [Runtime support library](#p3--runtime-support-library) | ☐ | 0 / 6 | float / `long long` math correct |
 | **P4** | [libc core + Osiris backend](#p4--libc-core--osiris-backend) | ☐ | 0 / 7 | **`HELLO.PRG` runs on Osiris** |
 | **P5** | [CP/M-68K backend](#p5--cpm-68k-backend) | ☐ | 0 / 7 | **`HELLO.68K` runs on CP/M-68K; lockstep** |
@@ -116,16 +116,21 @@ suite and stage2==stage3 self-host pass on the Linux CI safety net.
 **Objective:** replace `codegen.c` with a **68000** generator emitting assembly text; run compiled C
 on the bare CPU under `sim68k`.
 
-- [ ] `codegen68k.c`: stack-machine lowering (accumulator = `D0`, spill via `-(SP)`).
-- [ ] The **m68k C ABI** ([architecture.md §7.2](architecture.md#72-calling-convention--abi)):
+- [x] `codegen68k.c`: stack-machine lowering (accumulator = `D0`, spill via `-(SP)`).
+- [x] The **m68k C ABI** ([architecture.md §7.2](architecture.md#72-calling-convention--abi)):
       stack args, `D0(:D1)` return, `D2–D7/A2–A6` callee-saved, `A6` frame via `LINK`/`UNLK`.
-- [ ] Integer arithmetic, comparisons, logical/bitwise, shifts (helper calls where needed).
-- [ ] Control flow: `if`/`for`/`while`/`switch`/`goto`, `&&`/`||`, `?:`.
-- [ ] Pointers, arrays, structs/unions, member access, aggregate copy.
-- [ ] PC-relative addressing for code/data; even-alignment enforcement.
-- [ ] Emit Motorola-syntax `.s`; assemble with **`asm68K`** (`/elf`); link a freestanding test (GNU
+      _(Integer scope: only caller-saved `D0/D1/A0/A1` are used, so callee-saved regs are honored
+      trivially; 64-bit `D0:D1` return lands with `long long` in P3.)_
+- [x] Integer arithmetic, comparisons, logical/bitwise, shifts (helper calls where needed).
+- [x] Control flow: `if`/`for`/`while`/`switch`/`goto`, `&&`/`||`, `?:`.
+- [ ] Pointers, arrays, structs/unions, member access, aggregate copy. _(Pointers, arrays and member
+      access done & tested; struct/union **by-value** args/return + aggregate copy remain.)_
+- [x] PC-relative addressing for code/data; even-alignment enforcement.
+- [x] Emit Motorola-syntax `.s`; assemble with **`asm68K`** (`/elf`); link a freestanding test (GNU
       `m68k-elf-ld`) with a minimal stub.
-- [ ] `sim68k` bare-metal harness captures a result register / memory and diffs to golden.
+- [x] `sim68k` bare-metal harness captures a result register / memory and diffs to golden.
+      _(11-case golden suite in [`tests/m68k/`](../tests/m68k) via
+      [`tools/m68k/run-tests.ps1`](../tools/m68k/run-tests.ps1); all green.)_
 
 **Exit (M1):** arithmetic, control-flow, function-call, and struct tests run correctly on the 68000
 under `sim68k`.

@@ -378,11 +378,26 @@ static void cleanup(void) {
 }
 
 static char *create_tmpfile(void) {
+#ifdef _WIN32
+  // On Windows asm68K reads a leading '/' as a switch, so temp source paths
+  // must be native (backslashed, under %TMP%). _tempnam honors %TMP% and
+  // returns a Windows path; a `.a68` extension keeps it a conventional source.
+  char *base = _tempnam(NULL, "c68k");
+  if (!base)
+    error("failed to create a temporary file");
+  char *path = format("%s.a68", base);
+  free(base);
+  FILE *fp = fopen(path, "wb");
+  if (!fp)
+    error("cannot open temporary file: %s", path);
+  fclose(fp);
+#else
   char *path = strdup("/tmp/chibicc-XXXXXX");
   int fd = mkstemp(path);
   if (fd == -1)
     error("mkstemp failed: %s", strerror(errno));
   close(fd);
+#endif
 
   strarray_push(&tmpfiles, path);
   return path;
@@ -559,7 +574,11 @@ static void cc1(void) {
 }
 
 static void assemble(char *input, char *output) {
-  char *cmd[] = {"as", "-c", input, "-o", output, NULL};
+  // c68k emits Motorola-syntax assembly assembled by asm68K into an ELF32-BE
+  // object. asm68K is not strict about the source extension, so the driver's
+  // temp file is passed directly. (Slash switches; asm68K is a Windows tool.)
+  char *cmd[] = {"asm68K", "/Cx", "/elf", "/c", "/nologo",
+                 format("/Fo%s", output), input, NULL};
   run_subprocess(cmd);
 }
 

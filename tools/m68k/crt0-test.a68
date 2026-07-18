@@ -1,0 +1,19 @@
+*----------------------------------------------------------------------
+* crt0-test.a68 --- minimal bare-metal C runtime start for the P2 test
+* harness (NOT the Osiris/CP/M crt0; those arrive in P4/P5).
+*
+* sim68k --gdb loads the ELF and we set PC = _start. This stub sets up a
+* stack, calls _main, and halts at _done where the harness reads the
+* return value from D0. Link at a low .text address (e.g. -Ttext 0x1000).
+*----------------------------------------------------------------------
+        .model  flat
+        .code
+        PUBLIC  _start
+        EXTERN  _main
+
+_start:
+        move.l  #$00080000,sp       ; stack top (well below the 1 MB / MMIO)
+        jsr     _main               ; run the program
+_done:
+        stop    #$2700              ; halt; harness breakpoints here, reads D0
+        END
