@@ -326,7 +326,8 @@ static Obj *new_gvar(char *name, Type *ty) {
 
 static char *new_unique_name(void) {
   static int id = 0;
-  return format(".L..%d", id++);
+  // c68k: asm68K rejects '.'-prefixed labels, so use a dot-free internal name.
+  return format("L__%d", id++);
 }
 
 static Obj *new_anon_gvar(Type *ty) {

@@ -1,0 +1,106 @@
+*----------------------------------------------------------------------
+* rt68k.a68 --- c68k runtime support helpers (P2 bring-up minimal set).
+*
+* 32-bit multiply / signed+unsigned divide / modulo, which the base MC68000
+* lacks as single instructions. Correct-but-simple (shift/add, restoring
+* division); P3 replaces these with optimized routines (see basrtm).
+*
+* ABI: argument a in D0, b in D1; result in D0. D2-D7/A2-A6 preserved.
+*----------------------------------------------------------------------
+        .model  flat
+        .code
+        PUBLIC  __mulsi3,__divsi3,__modsi3,__udivsi3,__umodsi3
+
+* D0 = D0 * D1  (low 32 bits), shift-and-add.
+__mulsi3:
+        movem.l d2/d3,-(sp)
+        move.l  d0,d2               ; a (shifted left)
+        move.l  d1,d3               ; b (shifted right)
+        moveq   #0,d0               ; product
+mul_lp:
+        lsr.l   #1,d3               ; b >>= 1, low bit -> C
+        bcc     mul_sk
+        add.l   d2,d0               ; product += a
+mul_sk:
+        add.l   d2,d2               ; a <<= 1
+        tst.l   d3
+        bne     mul_lp
+        movem.l (sp)+,d2/d3
+        rts
+
+* Core unsigned divide: in D0=dividend D1=divisor; out D3=quotient D2=remainder.
+* Destroys D0; uses D2/D3/D4 (callers save them).
+udivmod:
+        moveq   #0,d2               ; remainder
+        moveq   #0,d3               ; quotient
+        moveq   #31,d4              ; 32 iterations
+udm_lp:
+        add.l   d0,d0               ; dividend <<= 1, MSB -> X/C
+        addx.l  d2,d2               ; rem = (rem<<1) | carry
+        add.l   d3,d3               ; quotient <<= 1
+        cmp.l   d1,d2               ; rem - divisor
+        bcs     udm_sk              ; rem < divisor -> no subtract
+        sub.l   d1,d2               ; rem -= divisor
+        addq.l  #1,d3               ; quotient low bit = 1
+udm_sk:
+        dbra    d4,udm_lp
+        rts
+
+__udivsi3:
+        movem.l d2/d3/d4,-(sp)
+        bsr     udivmod
+        move.l  d3,d0               ; quotient
+        movem.l (sp)+,d2/d3/d4
+        rts
+
+__umodsi3:
+        movem.l d2/d3/d4,-(sp)
+        bsr     udivmod
+        move.l  d2,d0               ; remainder
+        movem.l (sp)+,d2/d3/d4
+        rts
+
+* Signed divide: quotient sign = sign(a) XOR sign(b).
+__divsi3:
+        movem.l d2/d3/d4/d5,-(sp)
+        move.l  d0,d5
+        eor.l   d1,d5               ; d5 MSB = result sign
+        tst.l   d0
+        bpl     div_a
+        neg.l   d0
+div_a:
+        tst.l   d1
+        bpl     div_b
+        neg.l   d1
+div_b:
+        bsr     udivmod
+        move.l  d3,d0               ; |quotient|
+        tst.l   d5
+        bpl     div_dn
+        neg.l   d0
+div_dn:
+        movem.l (sp)+,d2/d3/d4/d5
+        rts
+
+* Signed modulo: result sign = sign(dividend).
+__modsi3:
+        movem.l d2/d3/d4/d5,-(sp)
+        move.l  d0,d5               ; d5 MSB = dividend sign
+        tst.l   d0
+        bpl     mod_a
+        neg.l   d0
+mod_a:
+        tst.l   d1
+        bpl     mod_b
+        neg.l   d1
+mod_b:
+        bsr     udivmod
+        move.l  d2,d0               ; |remainder|
+        tst.l   d5
+        bpl     mod_dn
+        neg.l   d0
+mod_dn:
+        movem.l (sp)+,d2/d3/d4/d5
+        rts
+
+        END
