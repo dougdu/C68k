@@ -25,7 +25,7 @@ jobs:
       matrix:
         cc: [gcc, clang]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install toolchain
         run: |
           sudo apt-get update
@@ -41,7 +41,7 @@ jobs:
     name: macOS build + front-end (clang)
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Build c68k
         run: make CC=clang c68k
       - name: Front-end smoke checks
@@ -51,7 +51,7 @@ jobs:
     name: windows build + front-end (MSVC)
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Configure (CMake + MSVC)
         run: cmake -S . -B build
       - name: Build c68k
