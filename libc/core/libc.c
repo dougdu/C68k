@@ -26,6 +26,10 @@ extern int sys_unlink(const char *path);
 extern void sys_exit(int code);
 extern void *sys_sbrk(int delta);
 
+/* soft-float runtime helpers used by %f/%e/%g formatting (libieee754d). */
+extern long fpdtol(double);
+extern double floord(double);
+
 int errno;
 
 /* =====================================================================
@@ -222,6 +226,178 @@ long strtol(const char *s, char **end, int base) {
 
 int atoi(const char *s) { return (int)strtol(s, NULL, 10); }
 long atol(const char *s) { return strtol(s, NULL, 10); }
+
+unsigned long strtoul(const char *s, char **end, int base) {
+  while (isspace((unsigned char)*s))
+    s++;
+  if (*s == '+')
+    s++;
+  if ((base == 0 || base == 16) && s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) {
+    s += 2;
+    base = 16;
+  } else if (base == 0 && s[0] == '0') {
+    base = 8;
+  } else if (base == 0) {
+    base = 10;
+  }
+  unsigned long val = 0;
+  for (;;) {
+    int c = (unsigned char)*s;
+    int d;
+    if (isdigit(c))
+      d = c - '0';
+    else if (c >= 'a' && c <= 'z')
+      d = c - 'a' + 10;
+    else if (c >= 'A' && c <= 'Z')
+      d = c - 'A' + 10;
+    else
+      break;
+    if (d >= base)
+      break;
+    val = val * (unsigned long)base + (unsigned long)d;
+    s++;
+  }
+  if (end)
+    *end = (char *)s;
+  return val;
+}
+
+/* String->double lives in the soft-float archive (returns D0:D1). */
+extern double atod(const char *s);
+
+double atof(const char *s) { return atod(s); }
+
+double strtod(const char *s, char **end) {
+  const char *p = s;
+  while (isspace((unsigned char)*p))
+    p++;
+  const char *start = p;
+  if (*p == '+' || *p == '-')
+    p++;
+  while (isdigit((unsigned char)*p))
+    p++;
+  if (*p == '.') {
+    p++;
+    while (isdigit((unsigned char)*p))
+      p++;
+  }
+  if (*p == 'e' || *p == 'E') {
+    const char *e = p + 1;
+    if (*e == '+' || *e == '-')
+      e++;
+    if (isdigit((unsigned char)*e)) {
+      p = e;
+      while (isdigit((unsigned char)*p))
+        p++;
+    }
+  }
+  if (end)
+    *end = (char *)p;
+  return atod(start);
+}
+
+long labs(long n) { return n < 0 ? -n : n; }
+
+div_t div(int num, int den) {
+  div_t r;
+  r.quot = num / den;
+  r.rem = num % den;
+  return r;
+}
+
+ldiv_t ldiv(long num, long den) {
+  ldiv_t r;
+  r.quot = num / den;
+  r.rem = num % den;
+  return r;
+}
+
+static unsigned long _rand_state = 1;
+
+void srand(unsigned seed) { _rand_state = seed; }
+
+int rand(void) {
+  _rand_state = _rand_state * 1103515245UL + 12345UL;
+  return (int)((_rand_state >> 16) & 0x7FFF);
+}
+
+static void _swap(char *a, char *b, size_t size) {
+  while (size--) {
+    char t = *a;
+    *a++ = *b;
+    *b++ = t;
+  }
+}
+
+void qsort(void *base, size_t nmemb, size_t size,
+           int (*cmp)(const void *, const void *)) {
+  char *a = (char *)base;
+  for (size_t gap = nmemb / 2; gap > 0; gap /= 2) {
+    for (size_t i = gap; i < nmemb; i++) {
+      for (size_t j = i; j >= gap; j -= gap) {
+        char *x = a + (j - gap) * size;
+        char *y = a + j * size;
+        if (cmp(x, y) <= 0)
+          break;
+        _swap(x, y, size);
+      }
+    }
+  }
+}
+
+void *bsearch(const void *key, const void *base, size_t nmemb, size_t size,
+              int (*cmp)(const void *, const void *)) {
+  const char *a = (const char *)base;
+  size_t lo = 0, hi = nmemb;
+  while (lo < hi) {
+    size_t mid = lo + (hi - lo) / 2;
+    int c = cmp(key, a + mid * size);
+    if (c < 0)
+      hi = mid;
+    else if (c > 0)
+      lo = mid + 1;
+    else
+      return (void *)(a + mid * size);
+  }
+  return NULL;
+}
+
+void __assert_fail(const char *expr, const char *file, int line) {
+  fprintf(stderr, "assertion failed: %s (%s:%d)\n", expr, file, line);
+  abort();
+}
+
+/* =====================================================================
+ * <signal.h> -- minimal, synchronous. These OSes deliver no async
+ * signals, so signal() just records a disposition and raise() dispatches
+ * it directly (SIGABRT default terminates via abort()).
+ * ===================================================================== */
+#define _NSIG 32
+static void (*_sigtab[_NSIG])(int);
+
+void (*signal(int sig, void (*func)(int)))(int) {
+  if (sig < 1 || sig >= _NSIG)
+    return (void (*)(int)) - 1; /* SIG_ERR */
+  void (*old)(int) = _sigtab[sig];
+  _sigtab[sig] = func;
+  return old;
+}
+
+int raise(int sig) {
+  if (sig < 1 || sig >= _NSIG)
+    return -1;
+  void (*h)(int) = _sigtab[sig];
+  if (h == (void (*)(int))1) /* SIG_IGN */
+    return 0;
+  if (h != (void (*)(int))0) { /* installed handler */
+    h(sig);
+    return 0;
+  }
+  /* SIG_DFL */
+  if (sig == 6) /* SIGABRT */
+    abort();
+  return 0;
+}
 
 /* =====================================================================
  * <stdio.h> -- small buffered streams over the seam.
@@ -440,6 +616,85 @@ static int _u64toa(unsigned long long v, int base, int upper, char *out) {
   return n;
 }
 
+/* Fixed-point (%f): format v >= 0 with `prec` fractional digits. The integer
+   part is assumed to fit a 32-bit long (fpdtol truncates). */
+static int fmt_fixed(double v, int prec, char *buf) {
+  double r = 0.5;
+  for (int i = 0; i < prec; i++)
+    r = r / 10.0;
+  v = v + r; /* round */
+  double ip = floord(v);
+  double frac = v - ip;
+  int n = 0;
+  long li = fpdtol(ip);
+  char tmp[16];
+  int t = 0;
+  if (li == 0)
+    tmp[t++] = '0';
+  while (li > 0) {
+    tmp[t++] = (char)('0' + (int)(li % 10));
+    li = li / 10;
+  }
+  while (t > 0)
+    buf[n++] = tmp[--t];
+  if (prec > 0) {
+    buf[n++] = '.';
+    for (int i = 0; i < prec; i++) {
+      frac = frac * 10.0;
+      double d = floord(frac);
+      buf[n++] = (char)('0' + (int)fpdtol(d));
+      frac = frac - d;
+    }
+  }
+  buf[n] = 0;
+  return n;
+}
+
+/* Scientific (%e): d.ddde+XX with `prec` fractional digits. */
+static int fmt_sci(double v, int prec, char *buf) {
+  int exp = 0;
+  if (v != 0.0) {
+    while (v >= 10.0) {
+      v = v / 10.0;
+      exp++;
+    }
+    while (v < 1.0) {
+      v = v * 10.0;
+      exp--;
+    }
+  }
+  int n = fmt_fixed(v, prec, buf);
+  buf[n++] = 'e';
+  buf[n++] = (char)(exp < 0 ? '-' : '+');
+  int ae = exp < 0 ? -exp : exp;
+  buf[n++] = (char)('0' + (ae / 10) % 10);
+  buf[n++] = (char)('0' + ae % 10);
+  buf[n] = 0;
+  return n;
+}
+
+/* General (%g): pick %e for very large/small magnitudes, else %f. */
+static int fmt_gen(double v, int prec, char *buf) {
+  if (prec <= 0)
+    prec = 1;
+  int exp = 0;
+  double t = v;
+  if (t != 0.0) {
+    while (t >= 10.0) {
+      t = t / 10.0;
+      exp++;
+    }
+    while (t < 1.0) {
+      t = t * 10.0;
+      exp--;
+    }
+  }
+  if (exp < -4 || exp >= prec)
+    return fmt_sci(v, prec - 1, buf);
+  int fp = prec - 1 - exp;
+  return fmt_fixed(v, fp > 0 ? fp : 0, buf);
+}
+
 static int _vformat(_psink *s, const char *fmt, va_list ap) {
   for (; *fmt; fmt++) {
     if (*fmt != '%') {
@@ -475,7 +730,7 @@ static int _vformat(_psink *s, const char *fmt, va_list ap) {
     while (*fmt == 'h')
       fmt++;
 
-    char numbuf[26];
+    char numbuf[64];
     const char *str = numbuf;
     int slen = 0;
     char sign = 0;
@@ -521,6 +776,26 @@ static int _vformat(_psink *s, const char *fmt, va_list ap) {
       numbuf[0] = '0';
       numbuf[1] = 'x';
       slen = _u64toa(uv, 16, 0, numbuf + 2) + 2;
+      break;
+    }
+    case 'f':
+    case 'F':
+    case 'e':
+    case 'E':
+    case 'g':
+    case 'G': {
+      double dv = va_arg(ap, double);
+      int p = (prec < 0) ? 6 : prec;
+      if (dv < 0.0) {
+        sign = '-';
+        dv = -dv;
+      }
+      if (*fmt == 'e' || *fmt == 'E')
+        slen = fmt_sci(dv, p, numbuf);
+      else if (*fmt == 'g' || *fmt == 'G')
+        slen = fmt_gen(dv, p, numbuf);
+      else
+        slen = fmt_fixed(dv, p, numbuf);
       break;
     }
     case '%':
@@ -600,6 +875,146 @@ int sprintf(char *buf, const char *fmt, ...) {
   va_list ap;
   va_start(ap, fmt);
   int n = vsnprintf(buf, 0x7fffffff, fmt, ap);
+  va_end(ap);
+  return n;
+}
+
+/* =====================================================================
+ * sscanf -- formatted input from a NUL-terminated string.
+ * Supports %d %i %u %o %x %c %s %f/%e/%g %%, field width, '*' suppress,
+ * and length modifiers h / l / ll.
+ * ===================================================================== */
+int vsscanf(const char *s, const char *fmt, va_list ap) {
+  int count = 0;
+  for (; *fmt; fmt++) {
+    if (isspace((unsigned char)*fmt)) {
+      while (isspace((unsigned char)*s))
+        s++;
+      continue;
+    }
+    if (*fmt != '%') {
+      if (*s != *fmt)
+        break;
+      s++;
+      continue;
+    }
+    fmt++;
+    if (*fmt == '%') {
+      if (*s != '%')
+        break;
+      s++;
+      continue;
+    }
+    int suppress = 0;
+    if (*fmt == '*') {
+      suppress = 1;
+      fmt++;
+    }
+    int width = 0, haswidth = 0;
+    while (*fmt >= '0' && *fmt <= '9') {
+      width = width * 10 + (*fmt++ - '0');
+      haswidth = 1;
+    }
+    int lng = 0, shrt = 0;
+    while (*fmt == 'l' || *fmt == 'h') {
+      if (*fmt == 'l')
+        lng++;
+      else
+        shrt++;
+      fmt++;
+    }
+    char conv = *fmt;
+    if (conv == 'd' || conv == 'i' || conv == 'u' || conv == 'o' ||
+        conv == 'x' || conv == 'X' || conv == 'p') {
+      while (isspace((unsigned char)*s))
+        s++;
+      int base = (conv == 'x' || conv == 'X' || conv == 'p')
+                     ? 16
+                     : (conv == 'o' ? 8 : 10);
+      char *end;
+      int is_signed = (conv == 'd' || conv == 'i');
+      unsigned long uv;
+      long sv;
+      if (is_signed) {
+        sv = strtol(s, &end, base);
+        uv = (unsigned long)sv;
+      } else {
+        uv = strtoul(s, &end, base);
+        sv = (long)uv;
+      }
+      if (end == s)
+        break;
+      s = end;
+      if (!suppress) {
+        if (lng >= 2)
+          *va_arg(ap, long long *) = (long long)sv;
+        else if (lng == 1)
+          *va_arg(ap, long *) = sv;
+        else if (shrt)
+          *va_arg(ap, short *) = (short)sv;
+        else
+          *va_arg(ap, int *) = (int)sv;
+        count++;
+      }
+    } else if (conv == 'f' || conv == 'e' || conv == 'g' || conv == 'E' ||
+               conv == 'G') {
+      while (isspace((unsigned char)*s))
+        s++;
+      char *end;
+      double dv = strtod(s, &end);
+      if (end == s)
+        break;
+      s = end;
+      if (!suppress) {
+        if (lng)
+          *va_arg(ap, double *) = dv;
+        else
+          *va_arg(ap, float *) = (float)dv;
+        count++;
+      }
+    } else if (conv == 's') {
+      while (isspace((unsigned char)*s))
+        s++;
+      if (!*s)
+        break;
+      int w = haswidth ? width : 0x7fffffff;
+      char *out = suppress ? NULL : va_arg(ap, char *);
+      int k = 0;
+      while (*s && !isspace((unsigned char)*s) && k < w) {
+        if (out)
+          out[k] = *s;
+        k++;
+        s++;
+      }
+      if (out)
+        out[k] = '\0';
+      if (!suppress)
+        count++;
+    } else if (conv == 'c') {
+      int w = haswidth ? width : 1;
+      char *out = suppress ? NULL : va_arg(ap, char *);
+      int k = 0;
+      while (*s && k < w) {
+        if (out)
+          out[k] = *s;
+        k++;
+        s++;
+      }
+      if (k < w)
+        break;
+      if (!suppress)
+        count++;
+    } else {
+      break;
+    }
+  }
+  return count;
+}
+
+int sscanf(const char *s, const char *fmt, ...) {
+  va_list ap;
+  va_start(ap, fmt);
+  int n = vsscanf(s, fmt, ap);
   va_end(ap);
   return n;
 }

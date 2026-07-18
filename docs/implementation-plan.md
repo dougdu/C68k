@@ -25,7 +25,7 @@ Legend: ☐ not started · ◐ in progress · ☑ done.
 | **P4** | [libc core + Osiris backend](#p4--libc-core--osiris-backend) | ☑ | 7 / 7 | **`HELLO.PRG` runs on Osiris** |
 | **P5** | [CP/M-68K backend](#p5--cpm-68k-backend) | ☑ | 7 / 7 | **`HELLO.68K` runs on CP/M-68K; lockstep** |
 | **P6** | [C99 language completeness](#p6--c99-language-completeness) | ☑ | 6 / 6 | language suite green on both OSes |
-| **P7** | [C99 standard library](#p7--c99-standard-library) | ☐ | 0 / 7 | library + `libm` suite green |
+| **P7** | [C99 standard library](#p7--c99-standard-library) | ◐ | 5 / 7 | library + `libm` suite green |
 | **P8** | [Integrated object emitter](#p8--integrated-object-emitter) | ☐ | 0 / 5 | compiler emits ELF `.o` with no assembler |
 | **P9** | [Native LINK / LIB / mkdri](#p9--native-link--lib--mkdri) | ☐ | 0 / 6 | native link chain on both OSes |
 | **P10** | [Self-hosting bootstrap](#p10--self-hosting-bootstrap) | ☐ | 0 / 5 | **stage2 == stage3 on both OSes** |
@@ -251,13 +251,13 @@ suite goes **lockstep** across both OSes.
 **Objective:** complete the hosted-subset library + `libm`
 ([libc-and-toolchain.md §9](libc-and-toolchain.md#9-c99-library-conformance-scope)).
 
-- [ ] `printf`/`scanf` full conversion coverage (incl. `%lld`, `%f`/`%g`, `%p`, width/precision/flags).
-- [ ] `<stdlib.h>` breadth: `strtol`/`strtoul`/`strtod`, `qsort`/`bsearch`, `rand`, `div`/`ldiv`.
-- [ ] `<string.h>` full set; `<time.h>` formatting over the seam clock.
-- [ ] `<math.h>` via a ported `libm` donor (openlibm/fdlibm/picolibc) on soft-float.
-- [ ] `<inttypes.h>`, `<stdint.h>`, `<float.h>` completeness; `<assert.h>`, `<signal.h>` (minimal).
-- [ ] Freestanding mode (`-ffreestanding`) validated (headers-only + runtime lib).
-- [ ] Library conformance suite, green lockstep on both OSes.
+- [x] `printf`/`scanf` full conversion coverage (incl. `%lld`, `%f`/`%g`, `%p`, width/precision/flags). `printf` family + `sscanf`/`vsscanf`.
+- [x] `<stdlib.h>` breadth: `strtol`/`strtoul`/`strtod`, `qsort`/`bsearch`, `rand`, `div`/`ldiv`, `labs`, `atof`.
+- [ ] `<string.h>` full set; `<time.h>` formatting over the seam clock. *(string set done; `<time.h>` deferred — needs a clock seam neither OS exposes yet.)*
+- [x] `<math.h>` via the `libieee754d` soft-float donor (double transcendentals) on soft-float.
+- [x] `<inttypes.h>`, `<stdint.h>`, `<float.h>` completeness; `<assert.h>`, `<signal.h>` (minimal, synchronous).
+- [ ] Freestanding mode (`-ffreestanding`) validated (headers-only + runtime lib). *(deferred to a follow-up.)*
+- [x] Library conformance suite, green lockstep on both OSes (`mathtest` 14/14, `libtest` 26/26).
 
 **Exit (M3):** hosted library + `libm` suites pass lockstep on both OSes.
 **Depends on:** P6

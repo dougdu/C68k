@@ -434,13 +434,20 @@ static void gen_flonum_binop(Node *node) {
   case ND_MUL: println("  jsr _fpmult%s", suf); break;
   case ND_DIV: println("  jsr _fpdiv%s", suf); break;
   case ND_EQ: case ND_NE: case ND_LT: case ND_LE:
-    println("  jsr _fpcmp%s", suf); cmp = true; break;
+    // Double comparisons go through __cmpdf2 (a correct -1/0/1 compare); the
+    // soft-float lib's _fpcmpd mis-flags an operand with a zero high word
+    // (e.g. `x > 0.0`). Single-precision _fpcmp is correct.
+    println("  jsr %s", dbl ? "__cmpdf2" : "_fpcmp");
+    cmp = true;
+    break;
   default: error_tok(node->tok, "unsupported float operator");
   }
   println("  adda.w #%d,sp", sz * 2);
   depth -= (sz * 2) / 4;
 
   if (cmp) {
+    if (dbl)
+      println("  tst.l d0");   // __cmpdf2 returns -1/0/1 -> set N/Z
     // _fpcmp sets N/Z (V=0) for (lhs - rhs); reuse the signed conditions.
     char *cc = node->kind == ND_EQ ? "seq" :
                node->kind == ND_NE ? "sne" :
@@ -1033,6 +1040,7 @@ void codegen(Obj *prog, FILE *out) {
   println("  EXTERN __mulsi3,__divsi3,__udivsi3,__modsi3,__umodsi3");
   println("  EXTERN __muldi3,__divdi3,__udivdi3,__moddi3,__umoddi3");
   println("  EXTERN __ashldi3,__ashrdi3,__lshrdi3,__cmpdi2,__ucmpdi2");
+  println("  EXTERN __cmpdf2");
   println("  EXTERN _fpadd,_fpsub,_fpmult,_fpdiv,_fpcmp");
   println("  EXTERN _fpaddd,_fpsubd,_fpmultd,_fpdivd,_fpcmpd");
   println("  EXTERN _fpltof,_fpftol,_fpltod,_fpdtol,_fpftod,_fpdtof");

@@ -60,4 +60,7 @@ int snprintf(char *buf, size_t size, const char *fmt, ...);
 int vfprintf(FILE *fp, const char *fmt, va_list ap);
 int vsnprintf(char *buf, size_t size, const char *fmt, va_list ap);
 
+int sscanf(const char *s, const char *fmt, ...);
+int vsscanf(const char *s, const char *fmt, va_list ap);
+
 #endif /* _STDIO_H */
