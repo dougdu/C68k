@@ -540,19 +540,23 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
       break;
     case LONG:
     case LONG + INT:
-    case LONG + LONG:
-    case LONG + LONG + INT:
     case SIGNED + LONG:
     case SIGNED + LONG + INT:
+      ty = ty_long;
+      break;
+    case LONG + LONG:
+    case LONG + LONG + INT:
     case SIGNED + LONG + LONG:
     case SIGNED + LONG + LONG + INT:
-      ty = ty_long;
+      ty = ty_llong;
       break;
     case UNSIGNED + LONG:
     case UNSIGNED + LONG + INT:
+      ty = ty_ulong;
+      break;
     case UNSIGNED + LONG + LONG:
     case UNSIGNED + LONG + LONG + INT:
-      ty = ty_ulong;
+      ty = ty_ullong;
       break;
     case FLOAT:
       ty = ty_float;
@@ -2696,7 +2700,10 @@ static Type *struct_decl(Token **rest, Token *tok) {
         bits = align_to(bits, sz * 8);
 
       mem->offset = align_down(bits / 8, sz);
-      mem->bit_offset = bits % (sz * 8);
+      // Big-endian bit numbering: the first bitfield occupies the
+      // most-significant bits of the storage unit, so its shift from the LSB is
+      // (unit_bits - position_in_unit - width).
+      mem->bit_offset = sz * 8 - (bits % (sz * 8)) - mem->bit_width;
       bits += mem->bit_width;
     } else {
       if (!ty->is_packed)

@@ -1,21 +1,27 @@
 #include "chibicc.h"
 
+// c68k: big-endian ILP32 (m68k). int / long / pointer = 4 bytes; long long and
+// double = 8. Alignment is the GNU m68k-elf SysV default: 2-byte for every type
+// >= 16 bits (the 68000 only requires even alignment for word/long accesses).
+// See docs/architecture.md §7.1. long double aliases double.
 Type *ty_void = &(Type){TY_VOID, 1, 1};
 Type *ty_bool = &(Type){TY_BOOL, 1, 1};
 
 Type *ty_char = &(Type){TY_CHAR, 1, 1};
 Type *ty_short = &(Type){TY_SHORT, 2, 2};
-Type *ty_int = &(Type){TY_INT, 4, 4};
-Type *ty_long = &(Type){TY_LONG, 8, 8};
+Type *ty_int = &(Type){TY_INT, 4, 2};
+Type *ty_long = &(Type){TY_LONG, 4, 2};
+Type *ty_llong = &(Type){TY_LONG, 8, 2};   // long long (distinct size from long)
 
 Type *ty_uchar = &(Type){TY_CHAR, 1, 1, true};
 Type *ty_ushort = &(Type){TY_SHORT, 2, 2, true};
-Type *ty_uint = &(Type){TY_INT, 4, 4, true};
-Type *ty_ulong = &(Type){TY_LONG, 8, 8, true};
+Type *ty_uint = &(Type){TY_INT, 4, 2, true};
+Type *ty_ulong = &(Type){TY_LONG, 4, 2, true};
+Type *ty_ullong = &(Type){TY_LONG, 8, 2, true};  // unsigned long long
 
-Type *ty_float = &(Type){TY_FLOAT, 4, 4};
-Type *ty_double = &(Type){TY_DOUBLE, 8, 8};
-Type *ty_ldouble = &(Type){TY_LDOUBLE, 16, 16};
+Type *ty_float = &(Type){TY_FLOAT, 4, 2};
+Type *ty_double = &(Type){TY_DOUBLE, 8, 2};
+Type *ty_ldouble = &(Type){TY_LDOUBLE, 8, 2};
 
 static Type *new_type(TypeKind kind, int size, int align) {
   Type *ty = calloc(1, sizeof(Type));
@@ -95,7 +101,7 @@ Type *copy_type(Type *ty) {
 }
 
 Type *pointer_to(Type *base) {
-  Type *ty = new_type(TY_PTR, 8, 8);
+  Type *ty = new_type(TY_PTR, 4, 2);
   ty->base = base;
   ty->is_unsigned = true;
   return ty;
@@ -117,14 +123,14 @@ Type *array_of(Type *base, int len) {
 }
 
 Type *vla_of(Type *base, Node *len) {
-  Type *ty = new_type(TY_VLA, 8, 8);
+  Type *ty = new_type(TY_VLA, 4, 2);
   ty->base = base;
   ty->vla_len = len;
   return ty;
 }
 
 Type *enum_type(void) {
-  return new_type(TY_ENUM, 4, 4);
+  return new_type(TY_ENUM, 4, 2);
 }
 
 Type *struct_type(void) {

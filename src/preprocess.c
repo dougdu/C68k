@@ -1059,21 +1059,10 @@ static char *format_time(struct tm *tm) {
 
 void init_macros(void) {
   // Define predefined macros
-  define_macro("_LP64", "1");
+
+  // --- language / object-format (ABI-neutral; kept from chibicc) ---
   define_macro("__C99_MACRO_WITH_VA_ARGS", "1");
   define_macro("__ELF__", "1");
-  define_macro("__LP64__", "1");
-  define_macro("__SIZEOF_DOUBLE__", "8");
-  define_macro("__SIZEOF_FLOAT__", "4");
-  define_macro("__SIZEOF_INT__", "4");
-  define_macro("__SIZEOF_LONG_DOUBLE__", "8");
-  define_macro("__SIZEOF_LONG_LONG__", "8");
-  define_macro("__SIZEOF_LONG__", "8");
-  define_macro("__SIZEOF_POINTER__", "8");
-  define_macro("__SIZEOF_PTRDIFF_T__", "8");
-  define_macro("__SIZEOF_SHORT__", "2");
-  define_macro("__SIZEOF_SIZE_T__", "8");
-  define_macro("__SIZE_TYPE__", "unsigned long");
   define_macro("__STDC_HOSTED__", "1");
   define_macro("__STDC_NO_COMPLEX__", "1");
   define_macro("__STDC_UTF_16__", "1");
@@ -1082,23 +1071,52 @@ void init_macros(void) {
   define_macro("__STDC__", "1");
   define_macro("__USER_LABEL_PREFIX__", "");
   define_macro("__alignof__", "_Alignof");
-  define_macro("__amd64", "1");
-  define_macro("__amd64__", "1");
   define_macro("__chibicc__", "1");
+  define_macro("__c68k__", "1");
   define_macro("__const__", "const");
-  define_macro("__gnu_linux__", "1");
   define_macro("__inline__", "inline");
-  define_macro("__linux", "1");
-  define_macro("__linux__", "1");
   define_macro("__signed__", "signed");
   define_macro("__typeof__", "typeof");
-  define_macro("__unix", "1");
-  define_macro("__unix__", "1");
   define_macro("__volatile__", "volatile");
-  define_macro("__x86_64", "1");
-  define_macro("__x86_64__", "1");
-  define_macro("linux", "1");
-  define_macro("unix", "1");
+
+  // --- target: Motorola 68000, big-endian ILP32 ---
+  // (OS macros such as __osiris__ / __CPM68K__ are added at target-selection
+  // time in P4/P5; the code generator itself stays OS-neutral.)
+  define_macro("__m68k__", "1");
+  define_macro("__mc68000__", "1");
+  define_macro("mc68000", "1");
+
+  // Byte order: big-endian.
+  define_macro("__ORDER_LITTLE_ENDIAN__", "1234");
+  define_macro("__ORDER_BIG_ENDIAN__", "4321");
+  define_macro("__ORDER_PDP_ENDIAN__", "3412");
+  define_macro("__BYTE_ORDER__", "__ORDER_BIG_ENDIAN__");
+  define_macro("__BIG_ENDIAN__", "1");
+
+  // ILP32 type sizes: int/long/pointer = 4, long long/double = 8.
+  define_macro("__SIZEOF_SHORT__", "2");
+  define_macro("__SIZEOF_INT__", "4");
+  define_macro("__SIZEOF_LONG__", "4");
+  define_macro("__SIZEOF_LONG_LONG__", "8");
+  define_macro("__SIZEOF_POINTER__", "4");
+  define_macro("__SIZEOF_PTRDIFF_T__", "4");
+  define_macro("__SIZEOF_SIZE_T__", "4");
+  define_macro("__SIZEOF_FLOAT__", "4");
+  define_macro("__SIZEOF_DOUBLE__", "8");
+  define_macro("__SIZEOF_LONG_DOUBLE__", "8");
+  define_macro("__SIZE_TYPE__", "unsigned long");
+  define_macro("__PTRDIFF_TYPE__", "long");
+  define_macro("__WCHAR_TYPE__", "unsigned int");
+
+  // Limits (ILP32: long is 32-bit, same range as int).
+  define_macro("__CHAR_BIT__", "8");
+  define_macro("__SCHAR_MAX__", "127");
+  define_macro("__SHRT_MAX__", "32767");
+  define_macro("__INT_MAX__", "2147483647");
+  define_macro("__LONG_MAX__", "2147483647L");
+  define_macro("__LONG_LONG_MAX__", "9223372036854775807LL");
+  define_macro("__SIZE_MAX__", "4294967295UL");
+  define_macro("__PTRDIFF_MAX__", "2147483647L");
 
   add_builtin("__FILE__", file_macro);
   add_builtin("__LINE__", line_macro);

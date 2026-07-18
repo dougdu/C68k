@@ -357,7 +357,8 @@ static bool convert_pp_int(Token *tok) {
   int64_t val = strtoul(p, &p, base);
 
   // Read U, L or LL suffixes.
-  bool l = false;
+  bool l = false;   // "l"  (long)
+  bool ll = false;  // "ll" (long long)
   bool u = false;
 
   if (startswith(p, "LLU") || startswith(p, "LLu") ||
@@ -365,13 +366,13 @@ static bool convert_pp_int(Token *tok) {
       startswith(p, "ULL") || startswith(p, "Ull") ||
       startswith(p, "uLL") || startswith(p, "ull")) {
     p += 3;
-    l = u = true;
+    ll = u = true;
   } else if (!strncasecmp(p, "lu", 2) || !strncasecmp(p, "ul", 2)) {
     p += 2;
     l = u = true;
   } else if (startswith(p, "LL") || startswith(p, "ll")) {
     p += 2;
-    l = true;
+    ll = true;
   } else if (*p == 'L' || *p == 'l') {
     p++;
     l = true;
@@ -383,33 +384,28 @@ static bool convert_pp_int(Token *tok) {
   if (p != tok->loc + tok->len)
     return false;
 
-  // Infer a type.
+  // Infer a type on the big-endian ILP32 model: int == long == 32-bit,
+  // long long == 64-bit. A constant takes the first type of its class that can
+  // represent its value (C11 6.4.4.1). Decimal constants without a 'u' suffix
+  // only consider signed types.
+  bool dec = (base == 10);
   Type *ty;
-  if (base == 10) {
-    if (l && u)
-      ty = ty_ulong;
-    else if (l)
-      ty = ty_long;
-    else if (u)
-      ty = (val >> 32) ? ty_ulong : ty_uint;
-    else
-      ty = (val >> 31) ? ty_long : ty_int;
-  } else {
-    if (l && u)
-      ty = ty_ulong;
-    else if (l)
-      ty = (val >> 63) ? ty_ulong : ty_long;
-    else if (u)
-      ty = (val >> 32) ? ty_ulong : ty_uint;
-    else if (val >> 63)
-      ty = ty_ulong;
-    else if (val >> 32)
-      ty = ty_long;
-    else if (val >> 31)
-      ty = ty_uint;
-    else
-      ty = ty_int;
-  }
+  if (u && ll)
+    ty = ty_ullong;
+  else if (u && l)
+    ty = (val >> 32) ? ty_ullong : ty_ulong;
+  else if (u)
+    ty = (val >> 32) ? ty_ullong : ty_uint;
+  else if (ll)
+    ty = (val >> 63) ? ty_ullong : ty_llong;
+  else if (l)
+    ty = dec ? ((val >> 63) ? ty_ullong : (val >> 31) ? ty_llong : ty_long)
+             : ((val >> 63) ? ty_ullong : (val >> 32) ? ty_llong
+                : (val >> 31) ? ty_ulong : ty_long);
+  else
+    ty = dec ? ((val >> 63) ? ty_ullong : (val >> 31) ? ty_llong : ty_int)
+             : ((val >> 63) ? ty_ullong : (val >> 32) ? ty_llong
+                : (val >> 31) ? ty_uint : ty_int);
 
   tok->kind = TK_NUM;
   tok->val = val;

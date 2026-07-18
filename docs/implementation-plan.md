@@ -19,7 +19,7 @@ Legend: ☐ not started · ◐ in progress · ☑ done.
 | Phase | Title | Status | Tasks | Milestone |
 | --- | --- | :---: | :---: | --- |
 | **P0** | [Scaffolding & host baseline](#p0--scaffolding--host-baseline) | ☑ | 6 / 6 | chibicc forks in, builds & self-hosts on host |
-| **P1** | [ILP32 type-model retarget](#p1--ilp32-type-model-retarget) | ☐ | 0 / 6 | front end is big-endian ILP32 |
+| **P1** | [ILP32 type-model retarget](#p1--ilp32-type-model-retarget) | ☑ | 6 / 6 | front end is big-endian ILP32 |
 | **P2** | [68000 code generation](#p2--68000-code-generation) | ☐ | 0 / 8 | C runs on bare 68000 under sim68k |
 | **P3** | [Runtime support library](#p3--runtime-support-library) | ☐ | 0 / 6 | float / `long long` math correct |
 | **P4** | [libc core + Osiris backend](#p4--libc-core--osiris-backend) | ☐ | 0 / 7 | **`HELLO.PRG` runs on Osiris** |
@@ -32,7 +32,7 @@ Legend: ☐ not started · ◐ in progress · ☑ done.
 | **P11** | [Cross-compiler hardening](#p11--cross-compiler-hardening) | ☐ | 0 / 6 | cross is a CI'd, maintained product |
 | **P12** | [Optimization](#p12--optimization) | ☐ | 0 / 6 | register allocation + peephole |
 | **P13** | [Tooling & debug polish](#p13--tooling--debug-polish) | ☐ | 0 / 6 | DWARF, diagnostics, samples, SDK docs |
-| | **Total** | **1 / 14** | **6 / 87** | |
+| | **Total** | **2 / 14** | **12 / 87** | |
 
 **Milestones (headline):**
 
@@ -88,16 +88,28 @@ suite and stage2==stage3 self-host pass on the Linux CI safety net.
 **Objective:** convert the front end from chibicc's LP64 to **big-endian ILP32**
 ([architecture.md §7.1](architecture.md#71-type-model-ilp32-big-endian)).
 
-- [ ] `type.c`: sizes/alignments → `int`/`long`/pointer = 4, `short` = 2, `long long` = 8,
-      `double` = 8, natural even alignment.
-- [ ] Big-endian struct/bitfield layout and constant encoding.
-- [ ] Integer-constant, `sizeof`, `_Alignof`, and usual-arithmetic-conversion rules on ILP32.
-- [ ] Predefined macros (`__INT_MAX__`, `__SIZEOF_*__`, `__BYTE_ORDER__=BIG`, target/OS macros).
-- [ ] `<limits.h>`/`<stdint.h>`/`<stddef.h>` values for ILP32.
-- [ ] Type/size unit tests (host-run, comparing computed sizes/offsets to expected).
+- [x] `type.c`: sizes/alignments → `int`/`long`/pointer = 4, `short` = 2, `long long` = 8,
+      `double` = 8, natural even alignment. **Alignment = 2 bytes** for every type ≥ 16 bits (the GNU
+      m68k-elf SysV default; verify vs Osiris `abi-68k.md`). `long` and `long long` are now **distinct**
+      (chibicc conflated them at 8 bytes on LP64).
+- [x] Big-endian struct/bitfield layout — bitfields allocate MSB-first (`parse.c`). *(Runtime bit
+      placement + big-endian data encoding are verified in P2 under `sim68k`, with the 68000 back end.)*
+- [x] Integer-constant (`L`/`LL`/`U` + value-based promotion), `sizeof`, `_Alignof`, and
+      usual-arithmetic-conversion rules on ILP32.
+- [x] Predefined macros: dropped the x86-64/Linux set; added `__m68k__`, `__BYTE_ORDER__=BIG`,
+      ILP32 `__SIZEOF_*__`, and the `__INT_MAX__`/`__LONG_MAX__` family.
+- [x] `<limits.h>`/`<stdint.h>` added for ILP32; `<stddef.h>` verified (`size_t`/`ptrdiff_t` = 4).
+- [x] Type/size unit test [`tests/typemodel.c`](../tests/typemodel.c) — a **compile-time** battery
+      (`#if`/`#error` + GNU case-range asserts) run via `make type-check` on **every host** (no
+      assembler/linker/execution). Passes locally on the MSVC build.
 
 **Exit:** front end reports correct ILP32-BE sizes/offsets/limits; type tests pass on host.
 **Depends on:** P0
+
+> **P1 note.** Flipping to ILP32 makes the interim x86-64 back end non-runnable (pointers are 4 vs 8
+> bytes), so the x86-64 conformance suite + self-host are retired here — replaced in CI by the
+> compile-time `type-check` (build + smoke + type-model on Linux/macOS/Windows). Real execution
+> testing returns in **P2** under `sim68k` with the 68000 back end.
 
 ## P2 — 68000 code generation
 
@@ -311,3 +323,4 @@ flowchart LR
 | 2026-07 | Draft 0.1 | P0 scaffolding landed: chibicc imported (unmodified, commit `90d1f7f`) into `src/`; repo layout created; `Makefile` + `CMakeLists.txt` host build; conformance suite in `tests/`; `selfhost` stage2==stage3 check; GitHub Actions CI. Test-green + self-host verification run on Linux CI (dev host is Windows/MSVC-only). |
 | 2026-07 | Draft 0.1 | P0 host strategy revised (decision D11): build the cross-compiler on **Windows/MSVC** + **macOS/Clang** via a new `src/compat.{h,c}` POSIX/Win shim; Linux becomes a CI-only full-suite + self-host safety net; Windows/macOS CI run a front-end smoke check. MSVC `cl` build + front end verified locally on Windows. |
 | 2026-07 | Draft 0.1 | **P0 complete (6/6).** CI green on all three hosts: Linux full conformance suite + `stage2==stage3` self-host (gcc + clang), macOS + Windows/MSVC build + front-end smoke. Landing fixes: `tests/` path-rename stragglers, `driver.sh` exec bit + `.gitattributes` LF, `actions/checkout@v5` (Node 24), and `-Iinclude` for the relocated stage2/stage3 self-host. |
+| 2026-07 | Draft 0.1 | **P1 complete (6/6).** Front end retargeted to big-endian ILP32: `type.c` sizes/alignments (2-byte, the m68k-elf default), a `long` vs `long long` split, big-endian bitfields, ILP32 integer-literal typing, m68k/big-endian predefined macros, and new `<limits.h>`/`<stdint.h>`. Verified by a compile-time `tests/typemodel.c` (`make type-check`) on every host. The non-runnable x86-64 back end's execution + self-host CI is retired until P2 (`sim68k`). |

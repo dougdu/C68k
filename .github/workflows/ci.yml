@@ -1,15 +1,12 @@
 name: CI
 
-# P0 host baseline across the supported dev hosts.
+# c68k CI across the supported dev hosts: Windows (MSVC), macOS (Clang), Linux
+# (GCC/Clang). Each job builds c68k, runs the front-end smoke checks, and runs
+# the P1 big-endian ILP32 type-model check (a pure compile-time test).
 #
-# Hosts we actually build/maintain c68k on:
-#   * Windows (MSVC)  -- build + front-end checks (CMake)
-#   * macOS   (Clang) -- build + front-end checks (make)
-# chibicc's interim x86-64 back end emits Linux/ELF assembly and shells out to
-# GNU as/ld, so it can only *assemble, link, run, and self-host* on x86-64
-# Linux. We keep a Linux CI job as a correctness safety net that exercises the
-# full conformance suite and the stage2==stage3 self-host until the m68k target
-# (P2+) gives us real execution testing under sim68k on every host.
+# From P1 the interim x86-64 back end no longer produces runnable code (pointers
+# are 4 bytes), so there is no execution / self-host job yet -- real execution
+# testing returns in P2 under sim68k with the 68000 back end.
 
 on:
   push:
@@ -17,8 +14,8 @@ on:
   workflow_dispatch:
 
 jobs:
-  linux-full:
-    name: linux full suite + self-host (${{ matrix.cc }})
+  linux:
+    name: linux build + type-model (${{ matrix.cc }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -32,13 +29,13 @@ jobs:
           sudo apt-get install -y build-essential clang
       - name: Build c68k
         run: make CC=${{ matrix.cc }} c68k
-      - name: Conformance suite
-        run: make CC=${{ matrix.cc }} test
-      - name: Self-host (stage2 == stage3)
-        run: make CC=${{ matrix.cc }} selfhost
+      - name: Front-end smoke checks
+        run: make CC=${{ matrix.cc }} smoke
+      - name: Type-model check (ILP32-BE)
+        run: make CC=${{ matrix.cc }} type-check
 
-  macos-frontend:
-    name: macOS build + front-end (clang)
+  macos:
+    name: macOS build + type-model (clang)
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v5
@@ -46,9 +43,11 @@ jobs:
         run: make CC=clang c68k
       - name: Front-end smoke checks
         run: make CC=clang smoke
+      - name: Type-model check (ILP32-BE)
+        run: make CC=clang type-check
 
-  windows-frontend:
-    name: windows build + front-end (MSVC)
+  windows:
+    name: windows build + type-model (MSVC)
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v5
@@ -56,7 +55,7 @@ jobs:
         run: cmake -S . -B build
       - name: Build c68k
         run: cmake --build build --config Release
-      - name: Front-end smoke checks
+      - name: Front-end + type-model checks
         shell: pwsh
         run: |
           $cc = "build/Release/c68k.exe"
@@ -66,4 +65,6 @@ jobs:
           if (-not ($e -match 'int x')) { throw "-E preprocessing failed" }
           $h = (& $cc --help 2>&1) -join "`n"
           if (-not ($h -match 'chibicc')) { throw "--help failed" }
-          Write-Host "front-end smoke OK"
+          & $cc -Iinclude -S -o- tests/typemodel.c > $null
+          if ($LASTEXITCODE -ne 0) { throw "type-model check failed" }
+          Write-Host "front-end + type-model OK"

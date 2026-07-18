@@ -185,8 +185,10 @@ big-endian**:
 | `_Bool` | 1 | |
 
 - **Endianness:** big-endian — matching the 68000, Osiris ELF objects, and CP/M-68K. Multi-byte
-  scalars and struct layout are MSB-first; alignment is natural (2-byte for `short`, 2- or 4-byte
-  for 32-bit types per the m68k ABI; the 68000 requires **even alignment** for word/long accesses).
+  scalars and struct layout are MSB-first; alignment is the **GNU m68k-elf SysV default: 2-byte for
+  every type ≥ 16 bits** (`short`/`int`/`long`/`long long`/`float`/`double`/pointer all align to 2;
+  `char` to 1). The 68000 only requires **even alignment** for word/long accesses; `-malign-int`
+  (4-byte) is a reserved, non-default knob. `long` and `long long` are distinct types (4 vs 8 bytes).
 - **`int` is 32-bit (ILP32), not 16-bit.** This is the single most consequential type decision.
   32-bit `int` gives least-surprise C99 semantics, matches the **GNU `m68k-elf` ABI** and the Osiris
   32-bit register ABI, and interoperates cleanly with existing objects and headers. The cost is

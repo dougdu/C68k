@@ -96,8 +96,17 @@ smoke: c68k
 	@./c68k --help 2>&1 | grep -q chibicc
 	@echo "front-end smoke OK"
 
+# P1 type-model check (big-endian ILP32). Pure front end (-S, no assembler), so
+# it runs identically on Linux, macOS, and Windows. From P1 the interim x86-64
+# back end no longer produces runnable code (pointers are 4 bytes), so this
+# supersedes the `test`/`selfhost` targets as the front-end gate; real execution
+# testing returns in P2 under sim68k with the 68000 back end.
+type-check: c68k
+	./c68k -I$(INCDIR) -S -o- $(TESTDIR)/typemodel.c > /dev/null
+	@echo "type-model check OK (ILP32-BE)"
+
 clean:
 	rm -rf c68k stage2 stage3 $(TESTS) $(TESTDIR)/*.s $(TESTDIR)/*.exe
 	find . -type f '(' -name '*~' -o -name '*.o' ')' -exec rm -f {} ';'
 
-.PHONY: test test-all test-stage2 selfhost smoke clean
+.PHONY: test test-all test-stage2 selfhost smoke type-check clean
