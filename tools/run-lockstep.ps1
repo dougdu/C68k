@@ -27,6 +27,7 @@ $cases = @(
                                                               'pad=[   42] zero=[0042] left=[42   ]',
                                                               'll=1000000000000 u=4000000000') }
   @{ Run = 'CORETEST'; Src = 'tests\lockstep\coretest.c'; Expect = @('SUITE PASS') }
+  @{ Run = 'C99TEST';  Src = 'tests\lockstep\c99test.c';  Expect = @('C99 PASS') }
 )
 
 $osRun  = Join-Path $repo 'tools\osiris\run-osiris.ps1'

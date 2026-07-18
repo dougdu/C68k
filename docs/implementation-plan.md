@@ -24,7 +24,7 @@ Legend: ☐ not started · ◐ in progress · ☑ done.
 | **P3** | [Runtime support library](#p3--runtime-support-library) | ☑ | 6 / 6 | float / `long long` math correct |
 | **P4** | [libc core + Osiris backend](#p4--libc-core--osiris-backend) | ☑ | 7 / 7 | **`HELLO.PRG` runs on Osiris** |
 | **P5** | [CP/M-68K backend](#p5--cpm-68k-backend) | ☑ | 7 / 7 | **`HELLO.68K` runs on CP/M-68K; lockstep** |
-| **P6** | [C99 language completeness](#p6--c99-language-completeness) | ☐ | 0 / 6 | language suite green on both OSes |
+| **P6** | [C99 language completeness](#p6--c99-language-completeness) | ☑ | 6 / 6 | language suite green on both OSes |
 | **P7** | [C99 standard library](#p7--c99-standard-library) | ☐ | 0 / 7 | library + `libm` suite green |
 | **P8** | [Integrated object emitter](#p8--integrated-object-emitter) | ☐ | 0 / 5 | compiler emits ELF `.o` with no assembler |
 | **P9** | [Native LINK / LIB / mkdri](#p9--native-link--lib--mkdri) | ☐ | 0 / 6 | native link chain on both OSes |
@@ -227,14 +227,23 @@ suite goes **lockstep** across both OSes.
 
 **Objective:** close remaining C99 language gaps and prove them on both OSes.
 
-- [ ] Full initializer support (designated initializers, compound literals, nested aggregates).
-- [ ] Flexible array members, `_Bool`, `restrict`/`inline` semantics, `long long` everywhere.
-- [ ] Variadic functions end-to-end on the m68k ABI (`<stdarg.h>` `va_*`).
-- [ ] VLAs / variably-modified types (or a documented, tested exclusion).
-- [ ] Bitfield edge cases on big-endian ILP32.
-- [ ] A C99 language conformance battery, green on both OSes.
+- [x] Full initializer support (designated initializers, compound literals, nested aggregates).
+      _(All verified in [`tests/lockstep/c99test.c`](../tests/lockstep/c99test.c): `.field`/`[idx]`
+      designators, `(T){...}` literals incl. array compound literals, nested struct/array init.)_
+- [x] Flexible array members, `_Bool`, `restrict`/`inline` semantics, `long long` everywhere.
+      _(Flexible array member, `_Bool` (1 byte, normalize-to-0/1), and `long long` all tested;
+      `restrict`/`inline` are parsed and honored by the front end.)_
+- [x] Variadic functions end-to-end on the m68k ABI (`<stdarg.h>` `va_*`). _(P4: prologue stores the
+      first stack vararg in `__va_area__`; drives the `printf` family.)_
+- [x] VLAs / variably-modified types (or a documented, tested exclusion). _(**Documented exclusion**:
+      c68k rejects a VLA with a clear diagnostic — "variable-length arrays are not supported" — rather
+      than miscompiling; use a fixed bound or `malloc`.)_
+- [x] Bitfield edge cases on big-endian ILP32. _(Codegen does shift/mask extract + load-modify-store;
+      signed/unsigned fields and width truncation verified.)_
+- [x] A C99 language conformance battery, green on both OSes. _(`c99test.c`: **C99 PASS 18/18** on both
+      Osiris and CP/M-68K via [`tools/run-lockstep.ps1`](../tools/run-lockstep.ps1) — lockstep now 5/5.)_
 
-**Exit (M3a):** language suite passes lockstep on both OSes.
+**Exit (M3a): ✅ reached** — language battery passes lockstep on both OSes.
 **Depends on:** P5
 
 ## P7 — C99 standard library

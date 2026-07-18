@@ -149,6 +149,11 @@ static void gen_addr(Node *node) {
       return;
     }
     break;
+  case ND_VLA_PTR:
+    // Variable-length arrays are a documented c68k exclusion (they need a
+    // runtime stack allocator; use a fixed bound or malloc instead).
+    error_tok(node->tok, "variable-length arrays are not supported by c68k");
+    return;
   }
   error_tok(node->tok, "not an lvalue");
 }
@@ -361,6 +366,20 @@ static void cast(Type *from, Type *to) {
   cast_int_narrow(to);
 }
 
+// Shift `reg` by a fixed `count` (0..31) with op ("asl.l"/"lsr.l"/"asr.l").
+// The 68000 immediate shift is 1..8; larger counts load the count into
+// `scratch` first. Used for bitfield extract/insert.
+static void shift_by(char *op, int count, char *reg, char *scratch) {
+  if (count <= 0)
+    return;
+  if (count <= 8) {
+    println("  %s #%d,%s", op, count, reg);
+  } else {
+    println("  moveq #%d,%s", count, scratch);
+    println("  %s %s,%s", op, scratch, reg);
+  }
+}
+
 // Copy a struct/union whose address is in D0 onto the top of the stack,
 // occupying align_to(size,4) bytes (struct byte 0 at the lowest address). A
 // block copy is byte-order agnostic, so this is correct on big-endian m68k.
@@ -535,9 +554,20 @@ static void gen_expr(Node *node) {
       println("  neg.l d0");
     return;
   case ND_VAR:
+    gen_addr(node);
+    load(node->ty);
+    return;
   case ND_MEMBER:
     gen_addr(node);
     load(node->ty);
+    if (node->member->is_bitfield) {
+      // Isolate the field: shift it up to bit 31, then back down with sign
+      // (signed field) or zero (unsigned) extension.
+      Member *mem = node->member;
+      shift_by("asl.l", 32 - mem->bit_width - mem->bit_offset, "d0", "d1");
+      shift_by(mem->ty->is_unsigned ? "lsr.l" : "asr.l", 32 - mem->bit_width,
+               "d0", "d1");
+    }
     return;
   case ND_DEREF:
     gen_expr(node->lhs);
@@ -550,6 +580,39 @@ static void gen_expr(Node *node) {
     gen_addr(node->lhs);
     push();
     gen_expr(node->rhs);
+    if (node->lhs->kind == ND_MEMBER && node->lhs->member->is_bitfield) {
+      // Bitfield store: load-modify-store the containing storage unit.
+      Member *mem = node->lhs->member;
+      int width = mem->bit_width, offset = mem->bit_offset;
+      uint32_t fmask = (width >= 32) ? 0xFFFFFFFFu : ((1u << width) - 1u);
+      uint32_t clr = ~(fmask << offset);
+      println("  move.l d0,d3");                       // keep the value (result)
+      println("  move.l d0,d1");
+      println("  andi.l #$%08lX,d1", (unsigned long)fmask);
+      shift_by("asl.l", offset, "d1", "d0");           // position (d0 now free)
+      pop("a1");                                       // destination address
+      if (mem->ty->size == 1) {
+        println("  moveq #0,d2");
+        println("  move.b (a1),d2");
+      } else if (mem->ty->size == 2) {
+        println("  moveq #0,d2");
+        println("  move.w (a1),d2");
+      } else {
+        println("  move.l (a1),d2");
+      }
+      println("  andi.l #$%08lX,d2", (unsigned long)clr); // clear the field
+      println("  or.l d1,d2");
+      if (mem->ty->size == 1)
+        println("  move.b d2,(a1)");
+      else if (mem->ty->size == 2)
+        println("  move.w d2,(a1)");
+      else
+        println("  move.l d2,(a1)");
+      println("  move.l d3,d0");                       // result = stored value
+      shift_by("asl.l", 32 - width, "d0", "d1");
+      shift_by(mem->ty->is_unsigned ? "lsr.l" : "asr.l", 32 - width, "d0", "d1");
+      return;
+    }
     store(node->ty);
     return;
   case ND_STMT_EXPR:
