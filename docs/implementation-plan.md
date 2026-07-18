@@ -123,7 +123,8 @@ on the bare CPU under `sim68k`.
 - [ ] Control flow: `if`/`for`/`while`/`switch`/`goto`, `&&`/`||`, `?:`.
 - [ ] Pointers, arrays, structs/unions, member access, aggregate copy.
 - [ ] PC-relative addressing for code/data; even-alignment enforcement.
-- [ ] Emit `.s`; assemble with `m68k-elf-as`; link a freestanding test with a minimal stub.
+- [ ] Emit Motorola-syntax `.s`; assemble with **`asm68K`** (`/elf`); link a freestanding test (GNU
+      `m68k-elf-ld`) with a minimal stub.
 - [ ] `sim68k` bare-metal harness captures a result register / memory and diffs to golden.
 
 **Exit (M1):** arithmetic, control-flow, function-call, and struct tests run correctly on the 68000

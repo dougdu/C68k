@@ -240,10 +240,12 @@ Osiris assembly (and the binutils world) **intercall without thunks**.
 The compiler needs to turn the AST into linkable **ELF32 big-endian m68k objects**. There are two
 emit paths, introduced in that order:
 
-1. **Assembly text → `m68k-elf-as`** (bring-up, [P2](implementation-plan.md#p2--68000-code-generation)).
-   Like upstream chibicc, emit `.s` text and shell out to the GNU `m68k-elf` assembler to make the
-   `.o`. Fastest to get correct code and to debug (the `.s` is human-readable). This is the path the
-   **cross-compiler** uses throughout bring-up.
+1. **Assembly text → `asm68K`** (bring-up, [P2](implementation-plan.md#p2--68000-code-generation)).
+   Like upstream chibicc, emit assembly text and shell out to an assembler to make the `.o` — but the
+   assembler is **`asm68K`** (Motorola-syntax, MASM-style), invoked `asm68K /elf /c /Fo<obj>`, which
+   writes **ELF32-BE** objects (and DWARF 2 under `/Zi`). c68k emits **Motorola syntax**, *not* GNU
+   MIT syntax, so it does **not** use `m68k-elf-as`. Fastest to get correct code and to debug (the
+   text is human-readable). This is the path the **cross-compiler** uses throughout bring-up.
 2. **Integrated ELF object emitter** (self-hosting, [P8](implementation-plan.md#p8--integrated-object-emitter)).
    A built-in code emitter that writes ELF32-BE relocatable objects **directly** — no external
    assembler. This is required for a **self-contained native compiler**, because *Osiris has a
@@ -252,7 +254,7 @@ emit paths, introduced in that order:
 
 Both paths share the same instruction-selection layer; only the *encoder* differs (mnemonic text vs.
 binary opcodes + relocation records). The integrated emitter is validated by **byte-comparing** its
-objects against the `m68k-elf-as` output for the same input during P8.
+objects against the `asm68K` output for the same input during P8.
 
 ## 9. The C library platform split
 
@@ -277,7 +279,7 @@ Summarized here; specified in [libc-and-toolchain.md](libc-and-toolchain.md).
 ```mermaid
 flowchart LR
     C["foo.c"] --> XCC["c68k -S / -c\n(-target osiris | cpm)"]
-    XCC --> S["foo.s"] --> AS["m68k-elf-as"] --> O["foo.o (ELF32-BE)"]
+    XCC --> S["foo.s (Motorola)"] --> AS["asm68K /elf"] --> O["foo.o (ELF32-BE)"]
     XCC -. "self-hosting" .-> O
     O --> ARW{"target?"}
     LIBS["libc + crt0 + lib\n(per target)"] --> LDO
@@ -288,7 +290,8 @@ flowchart LR
     SC --> G
 ```
 
-- **Toolchain (reused from Osiris/worm68k):** `m68k-elf` binutils 2.44 (`as`/`ld`/`ar`) at
+- **Toolchain (reused from Osiris/worm68k):** the assembler is **`asm68K`** (Motorola syntax → ELF +
+  DWARF); `m68k-elf` binutils 2.44 (`ld`/`ar`) provide the linker/archiver at
   `osiris/toolchain/binutils`; `asm68K` at `osiris/toolchain/asm68k`; `sim68k` at
   `osiris/toolchain/sim68k` (it runs **both** Osiris and CP/M-68K); `mkdri` + `cpm68k.ld` from
   `worm68k`.
