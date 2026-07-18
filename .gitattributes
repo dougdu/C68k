@@ -1,0 +1,8 @@
+# Line-ending policy: this repo is edited on Windows but built and tested on
+# Linux and macOS. Shell scripts and the Makefile MUST be LF -- bash chokes on
+# a CR in the shebang/lines, and make mishandles CRLF in recipes.
+*.sh   text eol=lf
+Makefile text eol=lf
+
+# Let git normalize other text files to LF in the repo (checked out per-OS).
+* text=auto
