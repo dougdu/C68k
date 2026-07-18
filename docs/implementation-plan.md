@@ -1,0 +1,289 @@
+# c68k — Implementation Plan & Progress
+
+> **Status:** Draft 0.1 (2026-07) · Companion to [architecture.md](architecture.md) and
+> [libc-and-toolchain.md](libc-and-toolchain.md).
+> **This is the document that tracks progress.** Update the [dashboard](#progress-dashboard) and the
+> per-phase checkboxes as work lands.
+
+The plan is **14 phases, P0–P13**. Each phase has an objective, a task checklist, explicit **exit
+criteria**, and its dependencies. Phases are ordered so that every phase ends at a **runnable,
+testable** milestone — bring-up reaches "hello world on both OSes" early (P4–P5), then breadth
+(P6–P7), then self-hosting (P8–P10), then hardening and speed (P11–P13).
+
+Legend: ☐ not started · ◐ in progress · ☑ done.
+
+---
+
+## Progress dashboard
+
+| Phase | Title | Status | Tasks | Milestone |
+| --- | --- | :---: | :---: | --- |
+| **P0** | [Scaffolding & host baseline](#p0--scaffolding--host-baseline) | ☐ | 0 / 6 | chibicc forks in, builds & self-hosts on host |
+| **P1** | [ILP32 type-model retarget](#p1--ilp32-type-model-retarget) | ☐ | 0 / 6 | front end is big-endian ILP32 |
+| **P2** | [68000 code generation](#p2--68000-code-generation) | ☐ | 0 / 8 | C runs on bare 68000 under sim68k |
+| **P3** | [Runtime support library](#p3--runtime-support-library) | ☐ | 0 / 6 | float / `long long` math correct |
+| **P4** | [libc core + Osiris backend](#p4--libc-core--osiris-backend) | ☐ | 0 / 7 | **`HELLO.PRG` runs on Osiris** |
+| **P5** | [CP/M-68K backend](#p5--cpm-68k-backend) | ☐ | 0 / 7 | **`HELLO.68K` runs on CP/M-68K; lockstep** |
+| **P6** | [C99 language completeness](#p6--c99-language-completeness) | ☐ | 0 / 6 | language suite green on both OSes |
+| **P7** | [C99 standard library](#p7--c99-standard-library) | ☐ | 0 / 7 | library + `libm` suite green |
+| **P8** | [Integrated object emitter](#p8--integrated-object-emitter) | ☐ | 0 / 5 | compiler emits ELF `.o` with no assembler |
+| **P9** | [Native LINK / LIB / mkdri](#p9--native-link--lib--mkdri) | ☐ | 0 / 6 | native link chain on both OSes |
+| **P10** | [Self-hosting bootstrap](#p10--self-hosting-bootstrap) | ☐ | 0 / 5 | **stage2 == stage3 on both OSes** |
+| **P11** | [Cross-compiler hardening](#p11--cross-compiler-hardening) | ☐ | 0 / 6 | cross is a CI'd, maintained product |
+| **P12** | [Optimization](#p12--optimization) | ☐ | 0 / 6 | register allocation + peephole |
+| **P13** | [Tooling & debug polish](#p13--tooling--debug-polish) | ☐ | 0 / 6 | DWARF, diagnostics, samples, SDK docs |
+| | **Total** | **0 / 14** | **0 / 87** | |
+
+**Milestones (headline):**
+
+1. **M1 — Bare-metal C** (end P2): compiled C executes correctly on the 68000 under `sim68k`.
+2. **M2 — Hello, both OSes** (end P5): the same C source builds and runs as a `.PRG` on Osiris and a
+   `.68K` on CP/M-68K, verified in lockstep.
+3. **M3 — Conforming C99** (end P7): the language + hosted library suites pass on both OSes.
+4. **M4 — Self-hosting** (end P10): the native `CC` recompiles itself to a byte-identical binary on
+   both OSes.
+5. **M5 — Product** (end P11): the cross-compiler is hardened, CI-gated, and building real tools.
+
+---
+
+## P0 — Scaffolding & host baseline
+
+**Objective:** fork chibicc into the repo, establish the build, and confirm the untouched compiler
+builds and self-hosts on the host as a known-good baseline.
+
+- [ ] Import chibicc into `src/`, **preserving its MIT copyright/notices** ([LICENSE](../LICENSE)).
+- [ ] Create the [repository layout](architecture.md#11-repository-layout) (`src`, `libc`, `lib`,
+      `tools`, `tests`, `include`, `samples`).
+- [ ] `makefile` + `CMakeLists.txt` build `c68k` with host GCC/Clang.
+- [ ] Bring chibicc's own test suite over; it passes on the host (x86-64) unchanged.
+- [ ] Confirm the imported compiler **self-hosts on the host** (stage2 == stage3) as the baseline.
+- [ ] CI skeleton: build + host test on every commit.
+
+**Exit:** an unmodified-behavior `c68k` builds, tests green, self-hosts on the host.
+**Depends on:** —
+
+## P1 — ILP32 type-model retarget
+
+**Objective:** convert the front end from chibicc's LP64 to **big-endian ILP32**
+([architecture.md §7.1](architecture.md#71-type-model-ilp32-big-endian)).
+
+- [ ] `type.c`: sizes/alignments → `int`/`long`/pointer = 4, `short` = 2, `long long` = 8,
+      `double` = 8, natural even alignment.
+- [ ] Big-endian struct/bitfield layout and constant encoding.
+- [ ] Integer-constant, `sizeof`, `_Alignof`, and usual-arithmetic-conversion rules on ILP32.
+- [ ] Predefined macros (`__INT_MAX__`, `__SIZEOF_*__`, `__BYTE_ORDER__=BIG`, target/OS macros).
+- [ ] `<limits.h>`/`<stdint.h>`/`<stddef.h>` values for ILP32.
+- [ ] Type/size unit tests (host-run, comparing computed sizes/offsets to expected).
+
+**Exit:** front end reports correct ILP32-BE sizes/offsets/limits; type tests pass on host.
+**Depends on:** P0
+
+## P2 — 68000 code generation
+
+**Objective:** replace `codegen.c` with a **68000** generator emitting assembly text; run compiled C
+on the bare CPU under `sim68k`.
+
+- [ ] `codegen68k.c`: stack-machine lowering (accumulator = `D0`, spill via `-(SP)`).
+- [ ] The **m68k C ABI** ([architecture.md §7.2](architecture.md#72-calling-convention--abi)):
+      stack args, `D0(:D1)` return, `D2–D7/A2–A6` callee-saved, `A6` frame via `LINK`/`UNLK`.
+- [ ] Integer arithmetic, comparisons, logical/bitwise, shifts (helper calls where needed).
+- [ ] Control flow: `if`/`for`/`while`/`switch`/`goto`, `&&`/`||`, `?:`.
+- [ ] Pointers, arrays, structs/unions, member access, aggregate copy.
+- [ ] PC-relative addressing for code/data; even-alignment enforcement.
+- [ ] Emit `.s`; assemble with `m68k-elf-as`; link a freestanding test with a minimal stub.
+- [ ] `sim68k` bare-metal harness captures a result register / memory and diffs to golden.
+
+**Exit (M1):** arithmetic, control-flow, function-call, and struct tests run correctly on the 68000
+under `sim68k`.
+**Depends on:** P1
+
+## P3 — Runtime support library
+
+**Objective:** the helper library the generator calls
+([libc-and-toolchain.md §5](libc-and-toolchain.md#5-the-runtime-support-library)).
+
+- [ ] 32-bit integer helpers: `__mulsi3`, `__divsi3`/`__udivsi3`, `__modsi3`/`__umodsi3`, shifts.
+- [ ] 64-bit `long long`: `__muldi3`, `__divdi3`/`__udivdi3`, `__moddi3`, shifts, compares.
+- [ ] Soft **single** float: add/sub/mul/div/compare/convert.
+- [ ] Soft **double** float: add/sub/mul/div/compare/convert/extend/truncate (big-endian word order).
+- [ ] `memcpy`/`memset` fast paths + struct-copy thunks.
+- [ ] Numeric tests vs. host `double`/`long long` golden values (both OSes once P4/P5 land).
+
+**Exit:** float and `long long` programs compute results matching host golden.
+**Depends on:** P2
+
+## P4 — libc core + Osiris backend
+
+**Objective:** the OS-independent core + the **Osiris** seam and `crt0`; a real `.PRG` runs on
+Osiris under `sim68k`.
+
+- [ ] Osiris seam over DOS `TRAP #1` ([libc-and-toolchain.md §3](libc-and-toolchain.md#3-the-syscall-seam)).
+- [ ] `crt0.osiris` (relocs/argv/heap/`_exit` via `4Ch`).
+- [ ] Core `<string.h>`, `<ctype.h>`, `<stdlib.h>` (`malloc` over `_sbrk`), `<errno.h>`.
+- [ ] Core `<stdio.h>`: buffered `FILE`, `printf`/`fwrite`/`fopen`/`fread`/`fseek`.
+- [ ] `-target osiris` driver: assemble + link with `osiris-prg.ld` → `.PRG`.
+- [ ] `HELLO.PRG` and a file-read/write program run correctly on Osiris under `sim68k`.
+- [ ] Osiris lockstep harness (compile → run under `sim68k` → diff golden).
+
+**Exit:** `HELLO.PRG` + file-I/O programs pass on Osiris.
+**Depends on:** P3
+
+## P5 — CP/M-68K backend
+
+**Objective:** the **CP/M-68K** seam, FCB shim, and `crt0`; the same programs run as `.68K`, and the
+suite goes **lockstep** across both OSes.
+
+- [ ] CP/M seam over BDOS `TRAP #2`, incl. the FCB/record/DMA→byte-stream shim.
+- [ ] `crt0.cpm` (base-page cmd tail → `argv`, TPA heap/stack, BDOS-0 exit).
+- [ ] `errno` mapping for CP/M status codes; console-routed `stdin/stdout/stderr`.
+- [ ] `-target cpm` driver: link with `cpm68k.ld`, then `mkdri` → `.68K`.
+- [ ] `HELLO.68K` + file-I/O run correctly on CP/M-68K under `sim68k`.
+- [ ] Lockstep runner: every test compiled for **both** OSes, one golden file, both must match.
+- [ ] Port the P0–P4 tests into the lockstep suite.
+
+**Exit (M2):** the same C source runs as `.PRG` (Osiris) and `.68K` (CP/M-68K) with matching output.
+**Depends on:** P4
+
+## P6 — C99 language completeness
+
+**Objective:** close remaining C99 language gaps and prove them on both OSes.
+
+- [ ] Full initializer support (designated initializers, compound literals, nested aggregates).
+- [ ] Flexible array members, `_Bool`, `restrict`/`inline` semantics, `long long` everywhere.
+- [ ] Variadic functions end-to-end on the m68k ABI (`<stdarg.h>` `va_*`).
+- [ ] VLAs / variably-modified types (or a documented, tested exclusion).
+- [ ] Bitfield edge cases on big-endian ILP32.
+- [ ] A C99 language conformance battery, green on both OSes.
+
+**Exit (M3a):** language suite passes lockstep on both OSes.
+**Depends on:** P5
+
+## P7 — C99 standard library
+
+**Objective:** complete the hosted-subset library + `libm`
+([libc-and-toolchain.md §9](libc-and-toolchain.md#9-c99-library-conformance-scope)).
+
+- [ ] `printf`/`scanf` full conversion coverage (incl. `%lld`, `%f`/`%g`, `%p`, width/precision/flags).
+- [ ] `<stdlib.h>` breadth: `strtol`/`strtoul`/`strtod`, `qsort`/`bsearch`, `rand`, `div`/`ldiv`.
+- [ ] `<string.h>` full set; `<time.h>` formatting over the seam clock.
+- [ ] `<math.h>` via a ported `libm` donor (openlibm/fdlibm/picolibc) on soft-float.
+- [ ] `<inttypes.h>`, `<stdint.h>`, `<float.h>` completeness; `<assert.h>`, `<signal.h>` (minimal).
+- [ ] Freestanding mode (`-ffreestanding`) validated (headers-only + runtime lib).
+- [ ] Library conformance suite, green lockstep on both OSes.
+
+**Exit (M3):** hosted library + `libm` suites pass lockstep on both OSes.
+**Depends on:** P6
+
+## P8 — Integrated object emitter
+
+**Objective:** emit **ELF32-BE relocatable objects directly**, removing the external-assembler
+dependency ([architecture.md §8](architecture.md#8-object-emission-text-asm-now-integrated-elf-later)).
+
+- [ ] `emit_elf.c`: ELF32-BE object writer (headers, `.text`/`.data`/`.bss`/`.rodata`, symtab, strtab).
+- [ ] 68000 instruction **binary encoder** shared with the text path's instruction selection.
+- [ ] Relocation records: `R_68K_32`, `R_68K_PC16`/`PC32`, `R_68K_RELATIVE` as needed.
+- [ ] `-c` integrated-emit mode in the driver.
+- [ ] **Byte-diff** integrated objects vs. `m68k-elf-as` across the whole corpus; links must match.
+
+**Exit:** the compiler produces linkable objects with **no assembler**; validated against `as`.
+**Depends on:** P7
+
+## P9 — Native LINK / LIB / mkdri
+
+**Objective:** a **native** link/archive chain on both OSes
+([libc-and-toolchain.md §7](libc-and-toolchain.md#7-the-native-toolchain)).
+
+- [ ] Verify Osiris `LINK.PRG` / `LIB.PRG` consume c68k objects/archives; wire the native recipe.
+- [ ] Port `LINK` to CP/M-68K (`LINK.68K`) — file I/O moved to BDOS FCBs.
+- [ ] Port `LIB` to CP/M-68K (`LIB.68K`).
+- [ ] Build `mkdri` as a native `.68K` (or confirm the host path) for the CP/M final step.
+- [ ] Native recipes: Osiris `CC→LINK→.PRG`; CP/M `CC→LINK→mkdri→.68K`.
+- [ ] A multi-object + archive program links natively on both OSes and runs under `sim68k`.
+
+**Exit:** native linking/archiving builds real (multi-TU) programs on both OSes.
+**Depends on:** P8
+
+## P10 — Self-hosting bootstrap
+
+**Objective:** the native compiler compiles **its own source** to a byte-identical binary.
+
+- [ ] Cross-compile the compiler for m68k → `CC.PRG` / `CC.68K` (stage2).
+- [ ] Run `CC` under `sim68k` to compile its own source → stage3.
+- [ ] **stage2 == stage3** (byte-identical) on **both** OSes.
+- [ ] Fit/perf pass: the native compiler runs within a realistic Osiris/CP/M memory budget.
+- [ ] Make the three-stage check a permanent CI gate.
+
+**Exit (M4):** `CC` self-hosts to a byte-identical binary on both OSes.
+**Depends on:** P9
+
+## P11 — Cross-compiler hardening
+
+**Objective:** treat the cross-compiler as a **maintained product** for building any Osiris/CP/M-68K
+tool.
+
+- [ ] Driver/option parity (`-c`/`-S`/`-o`/`-I`/`-D`/`-L`/`-l`/`-O`/`-g`/`-target`/`-ffreestanding`).
+- [ ] Robust diagnostics (carets, notes, sane messages) and exit codes.
+- [ ] Packaging/install for host OSes; documented invocation.
+- [ ] CI **matrix**: build cross + run the **full lockstep suite** on both OSes per commit.
+- [ ] Build a **real external tool** (e.g. an Osiris/CP/M utility) with c68k as a proof.
+- [ ] SDK usage docs for third-party programs.
+
+**Exit (M5):** cross-compiler is CI-gated, packaged, and building real programs for both OSes.
+**Depends on:** P10 (usable earlier; hardened here)
+
+## P12 — Optimization
+
+**Objective:** move beyond the stack machine to reasonable code quality — **without** regressing
+correctness.
+
+- [ ] Temporary/register allocator: keep hot values in `D2–D7`/`A2–A5`, spill on pressure.
+- [ ] Peephole pass (kill push/pop pairs, redundant moves, `tst` after arithmetic).
+- [ ] Constant folding/propagation and strength reduction in the back end.
+- [ ] 68000 addressing-mode selection (indexed/PC-relative/`Dn` predecrement) for common patterns.
+- [ ] `-O` levels; size vs. speed knobs.
+- [ ] Full suite still green lockstep; record size/speed deltas.
+
+**Exit:** measurable size/speed improvement; all tests still pass on both OSes.
+**Depends on:** P10
+
+## P13 — Tooling & debug polish
+
+**Objective:** debuggability and developer experience.
+
+- [ ] DWARF (or a `sim68k`-friendly) line/symbol info; `-g`.
+- [ ] Assembly listings and link map output.
+- [ ] Diagnostic quality pass (warnings set, `-W` flags).
+- [ ] `samples/` gallery building for both OSes.
+- [ ] Finalize the SDK docs; per-phase changelogs reconciled.
+- [ ] Source-level debugging demonstrated under `sim68k` / `m68k-elf-gdb`.
+
+**Exit:** compiled programs are source-debuggable; docs and samples complete.
+**Depends on:** P11, P12
+
+---
+
+## Dependency graph
+
+```mermaid
+flowchart LR
+    P0 --> P1 --> P2 --> P3 --> P4 --> P5 --> P6 --> P7 --> P8 --> P9 --> P10
+    P10 --> P11
+    P10 --> P12 --> P13
+    P11 --> P13
+```
+
+## How to update this document
+
+1. Flip the task checkbox (`[ ]`→`[x]`) as each task lands.
+2. Update the phase **Status** (☐/◐/☑) and its **Tasks n / N** count in the
+   [dashboard](#progress-dashboard).
+3. Update the **Total** row (`x / 14` phases, `n / 87` tasks).
+4. When a milestone's phase closes, note it in the phase changelog and here.
+
+---
+
+### Changelog
+
+| Date | Version | Change |
+| --- | --- | --- |
+| 2026-07 | Draft 0.1 | Initial 14-phase plan (P0–P13), progress dashboard, milestones, dependency graph. |

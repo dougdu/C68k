@@ -1,0 +1,40 @@
+# ---- Build output --------------------------------------------------------
+/build/
+/out/
+/stage1/
+/stage2/
+/stage3/
+
+# Object / archive / image artifacts
+*.o
+*.a
+*.elf
+*.bin
+*.map
+*.lst
+*.sym
+
+# Target executables (build products)
+*.prg
+*.PRG
+*.68k
+*.68K
+
+# Host build of the cross-compiler
+*.obj
+*.exe
+/cc
+/c68k
+
+# Emulator / test transcripts
+*.tee
+*.log
+build/*.img
+*.nv
+
+# ---- Editor / OS ---------------------------------------------------------
+.vscode/
+*.swp
+*~
+.DS_Store
+Thumbs.db
