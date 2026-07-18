@@ -37,6 +37,8 @@ param(
   [switch]$NoIntegrated,    # compile C via asm68K (isolate integrated-emitter issues)
   [switch]$Bare,            # link crt0/seam + program + runtime only (no libc/float)
   [switch]$NoFloat,         # link libc.o but not the float archive (isolate FLOAT.A)
+  [string]$Cpu = '',        # sim68k --cpu (e.g. 68000 for the full 24-bit/16MB model)
+  [string]$Mem = '',        # sim68k --mem (e.g. MAX)
   [int]$BootWait = 5,
   [int]$LinkWait = 10,
   [int]$RunWait = 3,
@@ -179,7 +181,11 @@ if (-not (Test-Path $rtc)) { [IO.File]::WriteAllBytes($rtc,(New-Object byte[] 64
 # ---- boot + drive the shell ----
 $psi=New-Object System.Diagnostics.ProcessStartInfo
 $psi.FileName=$sim
-foreach($a in @("--rom:$rom",'--fd0',$img,'--acia-port','none','--fdc-threads','off','--rtc-nv',$rtc,'--tee-acia',$log)){ [void]$psi.ArgumentList.Add($a) }
+$simArgs=@()
+if ($Cpu) { $simArgs += @('--cpu',$Cpu) }
+if ($Mem) { $simArgs += @('--mem',$Mem) }
+$simArgs += @("--rom:$rom",'--fd0',$img,'--acia-port','none','--fdc-threads','off','--rtc-nv',$rtc,'--tee-acia',$log)
+foreach($a in $simArgs){ [void]$psi.ArgumentList.Add($a) }
 $psi.RedirectStandardInput=$true; $psi.UseShellExecute=$false
 $p=[System.Diagnostics.Process]::Start($psi)
 function _send($proc,[string]$s){ $b=[Text.Encoding]::ASCII.GetBytes($s); $proc.StandardInput.BaseStream.Write($b,0,$b.Length); $proc.StandardInput.BaseStream.Flush() }
