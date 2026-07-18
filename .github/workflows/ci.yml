@@ -1,0 +1,69 @@
+name: CI
+
+# P0 host baseline across the supported dev hosts.
+#
+# Hosts we actually build/maintain c68k on:
+#   * Windows (MSVC)  -- build + front-end checks (CMake)
+#   * macOS   (Clang) -- build + front-end checks (make)
+# chibicc's interim x86-64 back end emits Linux/ELF assembly and shells out to
+# GNU as/ld, so it can only *assemble, link, run, and self-host* on x86-64
+# Linux. We keep a Linux CI job as a correctness safety net that exercises the
+# full conformance suite and the stage2==stage3 self-host until the m68k target
+# (P2+) gives us real execution testing under sim68k on every host.
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  linux-full:
+    name: linux full suite + self-host (${{ matrix.cc }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        cc: [gcc, clang]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential clang
+      - name: Build c68k
+        run: make CC=${{ matrix.cc }} c68k
+      - name: Conformance suite
+        run: make CC=${{ matrix.cc }} test
+      - name: Self-host (stage2 == stage3)
+        run: make CC=${{ matrix.cc }} selfhost
+
+  macos-frontend:
+    name: macOS build + front-end (clang)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build c68k
+        run: make CC=clang c68k
+      - name: Front-end smoke checks
+        run: make CC=clang smoke
+
+  windows-frontend:
+    name: windows build + front-end (MSVC)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure (CMake + MSVC)
+        run: cmake -S . -B build
+      - name: Build c68k
+        run: cmake --build build --config Release
+      - name: Front-end smoke checks
+        shell: pwsh
+        run: |
+          $cc = "build/Release/c68k.exe"
+          $s = 'int main(){return 41+1;}' | & $cc -S -o- -xc -
+          if (-not ($s -match 'main:')) { throw "-S did not emit 'main:'" }
+          $e = 'int x=1+2;' | & $cc -E -xc -
+          if (-not ($e -match 'int x')) { throw "-E preprocessing failed" }
+          $h = (& $cc --help 2>&1) -join "`n"
+          if (-not ($h -match 'chibicc')) { throw "--help failed" }
+          Write-Host "front-end smoke OK"

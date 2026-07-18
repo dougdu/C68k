@@ -8,6 +8,7 @@
 # Object / archive / image artifacts
 *.o
 *.a
+*.s
 *.elf
 *.bin
 *.map

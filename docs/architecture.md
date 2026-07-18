@@ -370,6 +370,7 @@ flowchart LR
 | D8 | **CP/M-68K native linking via ported LINK/LIB + `mkdri`** | Gives CP/M-68K a native build chain matching Osiris's, converging on `mkdri` for the final `.68K`. |
 | D9 | **Soft-float + `long long` in a runtime lib** | Base 68000 has no FPU and no 32×32/64-bit unit; helpers keep codegen simple and OS-independent. |
 | D10 | **Lockstep dual-OS testing under sim68k** | One golden file, both OSes must match — catches seam and codegen faults together. |
+| D11 | **Host the cross-compiler on Windows (MSVC) + macOS (Clang); Linux is CI-only** | Those are the maintainers' tools. A thin `src/compat.{h,c}` shim isolates the POSIX/Win32 differences (spawn, `open_memstream`, `strndup`, `dirname`/`basename`, `mkstemp`, `ctime_r`). chibicc's interim x86-64 back end still assembles/links/self-hosts only on Linux, so an x86-64 Linux CI job is retained as a full-suite + stage2==stage3 safety net until the 68000 back end (P2+) moves execution testing under `sim68k` on every host. |
 
 ## 14. Risks & mitigations
 
