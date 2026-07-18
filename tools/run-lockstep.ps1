@@ -26,6 +26,7 @@ $cases = @(
   @{ Run = 'PRINTF'; Src = 'samples\printftest.c'; Expect = @('int=42 hex=ff str=abc char=Z',
                                                               'pad=[   42] zero=[0042] left=[42   ]',
                                                               'll=1000000000000 u=4000000000') }
+  @{ Run = 'CORETEST'; Src = 'tests\lockstep\coretest.c'; Expect = @('SUITE PASS') }
 )
 
 $osRun  = Join-Path $repo 'tools\osiris\run-osiris.ps1'

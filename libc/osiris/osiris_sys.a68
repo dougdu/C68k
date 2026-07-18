@@ -63,9 +63,9 @@ _start:
         subi.l  #STKSIZE,d0         ; heap length = arena - reserved stack
         move.l  d0,c_heaplen
 
-        lea     c_envp(pc),a0       ; main(argc=1, argv, envp)
+        lea     c_envp,a0           ; main(argc=1, argv, envp)
         move.l  a0,-(sp)
-        lea     c_argv(pc),a0
+        lea     c_argv,a0
         move.l  a0,-(sp)
         moveq   #1,d0
         move.l  d0,-(sp)

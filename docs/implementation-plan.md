@@ -23,7 +23,7 @@ Legend: ☐ not started · ◐ in progress · ☑ done.
 | **P2** | [68000 code generation](#p2--68000-code-generation) | ☑ | 8 / 8 | C runs on bare 68000 under sim68k |
 | **P3** | [Runtime support library](#p3--runtime-support-library) | ☑ | 6 / 6 | float / `long long` math correct |
 | **P4** | [libc core + Osiris backend](#p4--libc-core--osiris-backend) | ☑ | 7 / 7 | **`HELLO.PRG` runs on Osiris** |
-| **P5** | [CP/M-68K backend](#p5--cpm-68k-backend) | ◐ | 6 / 7 | **`HELLO.68K` runs on CP/M-68K; lockstep** |
+| **P5** | [CP/M-68K backend](#p5--cpm-68k-backend) | ☑ | 7 / 7 | **`HELLO.68K` runs on CP/M-68K; lockstep** |
 | **P6** | [C99 language completeness](#p6--c99-language-completeness) | ☐ | 0 / 6 | language suite green on both OSes |
 | **P7** | [C99 standard library](#p7--c99-standard-library) | ☐ | 0 / 7 | library + `libm` suite green |
 | **P8** | [Integrated object emitter](#p8--integrated-object-emitter) | ☐ | 0 / 5 | compiler emits ELF `.o` with no assembler |
@@ -216,8 +216,9 @@ suite goes **lockstep** across both OSes.
 - [x] Lockstep runner: every test compiled for **both** OSes, one golden file, both must match.
       _([`tools/run-lockstep.ps1`](../tools/run-lockstep.ps1): hello / filerw / printftest — **3/3
       identical on Osiris and CP/M-68K**.)_
-- [ ] Port the P0–P4 tests into the lockstep suite. _(3 representative console cases are in lockstep;
-      the bare-metal P2/P3 return-code tests need console-output wrappers to join it.)_
+- [x] Port the P0–P4 tests into the lockstep suite. _([`tests/lockstep/coretest.c`](../tests/lockstep/coretest.c):
+      a 41-check self-verifying battery (arithmetic, control flow, structs/unions, long long,
+      float/double, string, snprintf) — `SUITE PASS 41/41` on both OSes.)_
 
 **Exit (M2): ✅ reached** — the same C source runs as `.PRG` (Osiris) and `.68K` (CP/M-68K) with matching output.
 **Depends on:** P4
