@@ -22,7 +22,7 @@ Legend: ☐ not started · ◐ in progress · ☑ done.
 | **P1** | [ILP32 type-model retarget](#p1--ilp32-type-model-retarget) | ☑ | 6 / 6 | front end is big-endian ILP32 |
 | **P2** | [68000 code generation](#p2--68000-code-generation) | ☑ | 8 / 8 | C runs on bare 68000 under sim68k |
 | **P3** | [Runtime support library](#p3--runtime-support-library) | ☑ | 6 / 6 | float / `long long` math correct |
-| **P4** | [libc core + Osiris backend](#p4--libc-core--osiris-backend) | ☐ | 0 / 7 | **`HELLO.PRG` runs on Osiris** |
+| **P4** | [libc core + Osiris backend](#p4--libc-core--osiris-backend) | ◐ | 6 / 7 | **`HELLO.PRG` runs on Osiris** |
 | **P5** | [CP/M-68K backend](#p5--cpm-68k-backend) | ☐ | 0 / 7 | **`HELLO.68K` runs on CP/M-68K; lockstep** |
 | **P6** | [C99 language completeness](#p6--c99-language-completeness) | ☐ | 0 / 6 | language suite green on both OSes |
 | **P7** | [C99 standard library](#p7--c99-standard-library) | ☐ | 0 / 7 | library + `libm` suite green |
@@ -168,13 +168,25 @@ under `sim68k`.
 **Objective:** the OS-independent core + the **Osiris** seam and `crt0`; a real `.PRG` runs on
 Osiris under `sim68k`.
 
-- [ ] Osiris seam over DOS `TRAP #1` ([libc-and-toolchain.md §3](libc-and-toolchain.md#3-the-syscall-seam)).
-- [ ] `crt0.osiris` (relocs/argv/heap/`_exit` via `4Ch`).
-- [ ] Core `<string.h>`, `<ctype.h>`, `<stdlib.h>` (`malloc` over `_sbrk`), `<errno.h>`.
-- [ ] Core `<stdio.h>`: buffered `FILE`, `printf`/`fwrite`/`fopen`/`fread`/`fseek`.
-- [ ] `-target osiris` driver: assemble + link with `osiris-prg.ld` → `.PRG`.
-- [ ] `HELLO.PRG` and a file-read/write program run correctly on Osiris under `sim68k`.
-- [ ] Osiris lockstep harness (compile → run under `sim68k` → diff golden).
+- [x] Osiris seam over DOS `TRAP #1` ([libc-and-toolchain.md §3](libc-and-toolchain.md#3-the-syscall-seam)).
+      _(`libc/osiris/osiris_sys.a68`: write/read/open/creat/close/seek/unlink/exit/sbrk over TRAP #1.)_
+- [x] `crt0.osiris` (relocs/argv/heap/`_exit` via `4Ch`). _(`_start` in `osiris_sys.a68`: DOS 48h arena
+      claim, stack+heap, `main`, exit via 4Ch; loader applies the R_68K_RELATIVE relocs & zero-fills
+      bss. argv is minimal (argc=1) — full command-tail parsing is a refinement.)_
+- [x] Core `<string.h>`, `<ctype.h>`, `<stdlib.h>` (`malloc` over `_sbrk`), `<errno.h>`.
+      _([`libc/core/libc.c`](../libc/core/libc.c) + [`libc/include/`](../libc/include); malloc is a
+      bump allocator over `sys_sbrk`.)_
+- [ ] Core `<stdio.h>`: buffered `FILE`, `printf`/`fwrite`/`fopen`/`fread`/`fseek`. _(Buffered `FILE`,
+      `fopen`/`fclose`/`fread`/`fwrite`/`fgets`/`fputs`/`puts`/`fseek` done & running on Osiris;
+      **`printf` pending** — needs m68k `va_arg` codegen.)_
+- [x] `-target osiris` driver: assemble + link with `osiris-prg.ld` → `.PRG`.
+      _(via [`tools/osiris/build-prg.ps1`](../tools/osiris/build-prg.ps1): asm68K + c68k + the osiris
+      binutils `ld -pie -T osiris-prg.ld`. A c68k-internal `-target osiris` flag is a follow-up.)_
+- [x] `HELLO.PRG` and a file-read/write program run correctly on Osiris under `sim68k`.
+      _([`samples/hello.c`](../samples/hello.c), [`samples/filerw.c`](../samples/filerw.c) — both PASS.)_
+- [x] Osiris lockstep harness (compile → run under `sim68k` → diff golden).
+      _([`tools/osiris/run-osiris.ps1`](../tools/osiris/run-osiris.ps1): build → FAT12 deploy → boot
+      `c68k-sim68k` → capture ACIA → assert.)_
 
 **Exit:** `HELLO.PRG` + file-I/O programs pass on Osiris.
 **Depends on:** P3

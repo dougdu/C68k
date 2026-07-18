@@ -1,0 +1,295 @@
+**********************************************************
+* osiris_sys.a68 --- c68k Osiris backend: crt0 (_start) + the libc syscall
+* seam over Osiris DOS (TRAP #1), plus the sbrk heap that C malloc grows.
+*
+* Osiris loads a .PRG (ELF32-MSB static-PIE): the loader maps the segments,
+* ZERO-FILLS .bss, applies the R_68K_RELATIVE relocs, and enters _start in
+* USER MODE with  A0 = PSP,  A1 = PSP+$80 (command tail / DTA),  USP = a
+* loader stack.  A program must terminate via DOS 4Ch; never rts from _start.
+*
+* Seam ABI is the ordinary c68k C stack convention (args on the stack, result
+* in D0). Register use inside each TRAP follows dos-api.md: function selector
+* AH in D0 high byte, handle in D1.W (BX), byte count in D2 (CX), buffer in A0.
+**********************************************************
+        .model  flat
+
+        PUBLIC  _start
+        PUBLIC  _sys_write,_sys_read,_sys_open,_sys_creat,_sys_close
+        PUBLIC  _sys_seek,_sys_unlink,_sys_exit,_sys_sbrk
+        EXTERN  _main
+
+* DOS TRAP #1 function selectors (AH, high byte of D0.W).
+DOSF_EXIT    equ  $4C00
+DOSF_CREATE  equ  $3C00
+DOSF_OPEN    equ  $3D00
+DOSF_CLOSE   equ  $3E00
+DOSF_READ    equ  $3F00
+DOSF_WRITE   equ  $4000
+DOSF_UNLINK  equ  $4100
+DOSF_LSEEK   equ  $4200
+DOSF_ALLOC   equ  $4800
+
+STKSIZE      equ  $4000       ; 16 KiB user stack reserved at the arena top
+HEAPSLOP     equ  $100
+CHUNK        equ  32768       ; max bytes per DOS read/write (CX is 16-bit)
+
+        .code
+
+**********************************************************
+* _start --- Osiris entry (user mode). Claim the largest free block, put a
+* fresh stack at its top and the C heap below, then call main; exit via 4Ch.
+**********************************************************
+_start:
+        move.l  a0,c_psp            ; save PSP (bss already zeroed by loader)
+
+        move.l  #$7FFFFFFF,d1       ; DOS 48h probe: ask for more than exists
+        move.w  #DOSF_ALLOC,d0
+        trap    #1                  ; fails -> carry set, D1 = largest free
+        move.l  d1,d2
+        subi.l  #HEAPSLOP,d2
+        bls     start_nomem
+        move.l  d2,d1
+        move.w  #DOSF_ALLOC,d0
+        trap    #1                  ; claim it -> A0 = block base
+        bcs     start_nomem
+
+        move.l  a0,d3               ; D3 = arena base
+        move.l  d3,d4
+        add.l   d2,d4               ; D4 = arena top
+        movea.l d4,a7               ; USP = arena top (fresh user stack)
+        move.l  d3,c_heapbase
+        move.l  d3,c_brk
+        move.l  d2,d0
+        subi.l  #STKSIZE,d0         ; heap length = arena - reserved stack
+        move.l  d0,c_heaplen
+
+        lea     c_envp(pc),a0       ; main(argc=1, argv, envp)
+        move.l  a0,-(sp)
+        lea     c_argv(pc),a0
+        move.l  a0,-(sp)
+        moveq   #1,d0
+        move.l  d0,-(sp)
+        jsr     _main
+        lea     12(sp),sp
+
+        move.l  d0,-(sp)            ; exit(main's return code)
+        jsr     _sys_exit
+start_nomem:
+        move.w  #DOSF_EXIT+1,d0     ; out of memory: terminate, non-zero code
+        trap    #1
+sn_spin:
+        bra     sn_spin
+
+**********************************************************
+* void _sys_exit(int code) --- DOS 4Ch. Never returns.
+**********************************************************
+_sys_exit:
+        move.l  4(sp),d0
+        andi.w  #$FF,d0
+        ori.w   #DOSF_EXIT,d0       ; D0.W = $4C00 | (code & FF)
+        trap    #1
+sx_spin:
+        bra     sx_spin
+
+**********************************************************
+* int _sys_write(int fd, const void *buf, int n) -> bytes written.
+**********************************************************
+_sys_write:
+        link    a6,#0
+        movem.l d2-d5/a2,-(sp)
+        move.l  8(a6),d5            ; fd (handle)
+        movea.l 12(a6),a2          ; buf
+        move.l  16(a6),d4          ; n
+        moveq   #0,d3              ; total
+sw_lp:
+        tst.l   d4
+        beq     sw_done
+        move.l  d4,d2
+        cmpi.l  #CHUNK,d2
+        bls     sw_sz
+        move.l  #CHUNK,d2
+sw_sz:
+        move.w  d5,d1              ; handle (BX)
+        movea.l a2,a0
+        adda.l  d3,a0              ; buf + total
+        move.w  #DOSF_WRITE,d0
+        trap    #1
+        bcs     sw_done
+        andi.l  #$FFFF,d0          ; bytes written this call
+        add.l   d0,d3
+        sub.l   d0,d4
+        cmp.l   d0,d2              ; short write -> stop
+        bne     sw_done
+        bra     sw_lp
+sw_done:
+        move.l  d3,d0
+        movem.l (sp)+,d2-d5/a2
+        unlk    a6
+        rts
+
+**********************************************************
+* int _sys_read(int fd, void *buf, int n) -> bytes read (0 = EOF).
+**********************************************************
+_sys_read:
+        link    a6,#0
+        movem.l d2-d5/a2,-(sp)
+        move.l  8(a6),d5           ; fd
+        movea.l 12(a6),a2         ; buf
+        move.l  16(a6),d4         ; n
+        moveq   #0,d3             ; total
+sr_lp:
+        tst.l   d4
+        beq     sr_done
+        move.l  d4,d2
+        cmpi.l  #CHUNK,d2
+        bls     sr_sz
+        move.l  #CHUNK,d2
+sr_sz:
+        move.w  d5,d1
+        movea.l a2,a0
+        adda.l  d3,a0
+        move.w  #DOSF_READ,d0
+        trap    #1
+        bcs     sr_done
+        andi.l  #$FFFF,d0
+        add.l   d0,d3
+        sub.l   d0,d4
+        tst.w   d0
+        beq     sr_done           ; 0 bytes -> EOF
+        cmp.l   d0,d2             ; short read -> EOF
+        bne     sr_done
+        bra     sr_lp
+sr_done:
+        move.l  d3,d0
+        movem.l (sp)+,d2-d5/a2
+        unlk    a6
+        rts
+
+**********************************************************
+* int _sys_open(const char *path, int mode) -> handle, or -1.
+**********************************************************
+_sys_open:
+        link    a6,#0
+        movea.l 8(a6),a0
+        move.l  12(a6),d0
+        andi.w  #$FF,d0
+        ori.w   #DOSF_OPEN,d0
+        trap    #1
+        bcs     so_err
+        andi.l  #$FFFF,d0
+        unlk    a6
+        rts
+so_err:
+        moveq   #-1,d0
+        unlk    a6
+        rts
+
+**********************************************************
+* int _sys_creat(const char *path, int attr) -> handle, or -1.
+**********************************************************
+_sys_creat:
+        link    a6,#0
+        movea.l 8(a6),a0
+        move.l  12(a6),d2          ; attr (CX)
+        move.w  #DOSF_CREATE,d0
+        trap    #1
+        bcs     scr_err
+        andi.l  #$FFFF,d0
+        unlk    a6
+        rts
+scr_err:
+        moveq   #-1,d0
+        unlk    a6
+        rts
+
+**********************************************************
+* int _sys_close(int fd) -> 0, or -1.
+**********************************************************
+_sys_close:
+        link    a6,#0
+        move.l  8(a6),d1
+        move.w  #DOSF_CLOSE,d0
+        trap    #1
+        bcs     scl_err
+        moveq   #0,d0
+        unlk    a6
+        rts
+scl_err:
+        moveq   #-1,d0
+        unlk    a6
+        rts
+
+**********************************************************
+* long _sys_seek(int fd, long off, int whence) -> new position, or -1.
+**********************************************************
+_sys_seek:
+        link    a6,#0
+        move.l  8(a6),d1           ; handle
+        move.l  12(a6),d3          ; offset
+        move.l  16(a6),d0          ; whence (method)
+        andi.w  #$FF,d0
+        ori.w   #DOSF_LSEEK,d0
+        trap    #1
+        bcs     sk_err
+        unlk    a6
+        rts
+sk_err:
+        moveq   #-1,d0
+        unlk    a6
+        rts
+
+**********************************************************
+* int _sys_unlink(const char *path) -> 0, or -1.
+**********************************************************
+_sys_unlink:
+        link    a6,#0
+        movea.l 8(a6),a0
+        move.w  #DOSF_UNLINK,d0
+        trap    #1
+        bcs     su_err
+        moveq   #0,d0
+        unlk    a6
+        rts
+su_err:
+        moveq   #-1,d0
+        unlk    a6
+        rts
+
+**********************************************************
+* void *_sys_sbrk(int delta) -> old break, or (void*)-1 on OOM.
+**********************************************************
+_sys_sbrk:
+        link    a6,#0
+        move.l  8(a6),d0           ; delta
+        move.l  c_brk,d1           ; current break
+        movea.l d1,a0              ; return = old break
+        add.l   d0,d1              ; new break
+        move.l  c_heapbase,d0
+        cmp.l   d0,d1
+        bcs     sbrk_err           ; new < base
+        add.l   c_heaplen,d0       ; heap top
+        cmp.l   d0,d1
+        bhi     sbrk_err           ; new > top
+        move.l  d1,c_brk
+        move.l  a0,d0              ; old break
+        unlk    a6
+        rts
+sbrk_err:
+        moveq   #-1,d0
+        unlk    a6
+        rts
+
+        .data
+c_progname  dc.b  'PROG',0
+        ALIGN 2
+c_argv      dc.l  c_progname       ; argv[0]
+            dc.l  0                 ; argv[1] = NULL
+c_envp      dc.l  0                 ; envp[0] = NULL
+
+        .bss
+c_psp       ds.l  1
+c_heapbase  ds.l  1
+c_heaplen   ds.l  1
+c_brk       ds.l  1
+
+        end

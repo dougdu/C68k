@@ -960,9 +960,21 @@ void codegen(Obj *prog, FILE *out) {
 
   // Import every global declared but not defined here (external functions like
   // memcpy, extern variables) so asm68K can resolve the references (A2006).
-  for (Obj *var = prog; var; var = var->next)
-    if (!var->is_local && !var->is_definition)
+  // A name that is both extern-declared and defined in this module (e.g.
+  // `extern FILE *stdout;` in a header + its definition) must NOT be imported,
+  // else asm68K rejects the later definition (A2005/A2014).
+  for (Obj *var = prog; var; var = var->next) {
+    if (var->is_local || var->is_definition)
+      continue;
+    bool defined = false;
+    for (Obj *o = prog; o; o = o->next)
+      if (o != var && o->is_definition && !strcmp(o->name, var->name)) {
+        defined = true;
+        break;
+      }
+    if (!defined)
       println("  EXTERN %s", sym(var->name));
+  }
 
   assign_lvar_offsets(prog);
   emit_data(prog);
