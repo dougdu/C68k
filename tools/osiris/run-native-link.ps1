@@ -40,7 +40,7 @@ param(
   [string]$Cpu = '',        # sim68k --cpu (e.g. 68000 for the full 24-bit/16MB model)
   [string]$Mem = '',        # sim68k --mem (e.g. MAX)
   [int]$BootWait = 5,
-  [int]$LinkWait = 10,
+  [int]$LinkWait = 40,
   [int]$RunWait = 3,
   [switch]$KeepArtifacts
 )
