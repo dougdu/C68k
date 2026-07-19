@@ -71,6 +71,7 @@ int c68k_fclose(FILE *fp);
 #include <string.h>
 #include <strings.h>
 #include <libgen.h>
+#include <unistd.h>
 #ifndef noreturn
 #define noreturn
 #endif

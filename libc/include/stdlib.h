@@ -41,6 +41,7 @@ void *bsearch(const void *key, const void *base, size_t nmemb, size_t size,
               int (*cmp)(const void *, const void *));
 
 void exit(int code);
+int atexit(void (*fn)(void));
 void abort(void);
 
 #define EXIT_SUCCESS 0

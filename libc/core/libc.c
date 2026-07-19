@@ -882,6 +882,9 @@ int fstat(int fd, struct stat *st) {
   return -1;
 }
 
+int unlink(const char *path) { return sys_unlink(path); }
+int close(int fd) { return sys_close(fd); }
+
 int fseek(FILE *fp, long off, int whence) {
   fflush(fp);
   fp->cnt = 0;
@@ -1563,7 +1566,21 @@ size_t strftime(char *s, size_t max, const char *fmt, const struct tm *tm) {
 /* =====================================================================
  * process exit -- flush all output streams, then hand off to the OS.
  * ===================================================================== */
+/* atexit handlers, run LIFO at normal exit. */
+#define _ATEXIT_MAX 32
+static void (*_atexit_fns[_ATEXIT_MAX])(void);
+static int _atexit_n;
+
+int atexit(void (*fn)(void)) {
+  if (_atexit_n >= _ATEXIT_MAX)
+    return -1;
+  _atexit_fns[_atexit_n++] = fn;
+  return 0;
+}
+
 void exit(int code) {
+  while (_atexit_n > 0)
+    _atexit_fns[--_atexit_n]();
   fflush(NULL);
   sys_exit(code);
   for (;;)

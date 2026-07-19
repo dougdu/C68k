@@ -394,7 +394,11 @@ static void cleanup(void) {
 }
 
 static char *create_tmpfile(void) {
-#ifdef _WIN32
+#ifdef C68K_SELFHOST
+  // The native compiler compiles one .c per invocation, so a fixed name for
+  // the intermediate assembly is sufficient (between cc1() and assemble_to_elf).
+  char *path = "CC_TMP.S";
+#elif defined(_WIN32)
   // On Windows asm68K reads a leading '/' as a switch, so temp source paths
   // must be native (backslashed, under %TMP%). _tempnam honors %TMP% and
   // returns a Windows path; a `.a68` extension keeps it a conventional source.
@@ -419,6 +423,7 @@ static char *create_tmpfile(void) {
   return path;
 }
 
+#ifndef C68K_SELFHOST
 static void run_subprocess(char **argv) {
   // If -### is given, dump the subprocess's command line.
   if (opt_hash_hash_hash) {
@@ -450,6 +455,7 @@ static void run_cc1(int argc, char **argv, char *input, char *output) {
 
   run_subprocess(args);
 }
+#endif // !C68K_SELFHOST
 
 // Print tokens to stdout. Used for -E.
 static void print_tokens(Token *tok) {
@@ -598,12 +604,14 @@ static void assemble(char *input, char *output) {
     assemble_to_elf(input, output);
     return;
   }
+#ifndef C68K_SELFHOST
   char *cmd[] = {"asm68K", "/Cx", "/elf", "/c", "/nologo",
                  format("/Fo%s", output), input, NULL};
   run_subprocess(cmd);
+#endif
 }
 
-#ifndef _WIN32
+#if !defined(_WIN32) && !defined(C68K_SELFHOST)
 static char *find_file(char *pattern) {
   char *path = NULL;
   glob_t buf = {};
@@ -616,12 +624,22 @@ static char *find_file(char *pattern) {
 #endif // !_WIN32
 
 // Returns true if a given file exists.
+#ifdef C68K_SELFHOST
+bool file_exists(char *path) {
+  FILE *f = fopen(path, "rb");
+  if (!f)
+    return false;
+  fclose(f);
+  return true;
+}
+#else
 bool file_exists(char *path) {
   struct stat st;
   return !stat(path, &st);
 }
+#endif
 
-#ifndef _WIN32
+#if !defined(_WIN32) && !defined(C68K_SELFHOST)
 static char *find_libpath(void) {
   if (file_exists("/usr/lib/x86_64-linux-gnu/crti.o"))
     return "/usr/lib/x86_64-linux-gnu";
@@ -712,18 +730,16 @@ static void run_linker(StringArray *inputs, char *output) {
 
   run_subprocess(arr.data);
 }
-#else  // _WIN32
-// Native x86-64 linking drives GNU ld with Linux crt/libc paths, which is a
-// POSIX-host facility. On Windows the P0 baseline only builds and runs the
-// front-end checks (-E/-S/preprocess); real linking arrives with the m68k
-// target (P2+), which drives the m68k-elf toolchain instead.
+#else  // _WIN32 or C68K_SELFHOST: no in-driver linker
+// x86-64 linking drives GNU ld with Linux crt/libc paths (a POSIX-host
+// facility).  On Windows the baseline runs only the front-end checks; native
+// c68k does not link at all -- LINK.PRG / LINK.68K do, as a separate step.
 static void run_linker(StringArray *inputs, char *output) {
   (void)inputs;
   (void)output;
-  error("native x86-64 linking is unavailable on this host; use -E/-S "
-        "(the m68k target and its linker land in P2+)");
+  error("this c68k build does not link; compile with -c and link separately");
 }
-#endif // !_WIN32
+#endif
 
 static FileType get_file_type(char *filename) {
   if (opt_x != FILE_NONE)
@@ -743,6 +759,53 @@ static FileType get_file_type(char *filename) {
   error("<command line>: unknown file extension: %s", filename);
 }
 
+#ifdef C68K_SELFHOST
+// Native driver (Osiris / CP/M-68K): compile C to ELF objects in-process with
+// the integrated emitter.  There is no subprocess, no external assembler, and
+// no linker -- linking is a separate step (LINK.PRG / LINK.68K).
+int main(int argc, char **argv) {
+  atexit(cleanup);
+  init_macros();
+  opt_integrated_as = true;
+  parse_args(argc, argv);
+  if (opt_ffreestanding)
+    define_macro("__STDC_HOSTED__", "0");
+  add_default_include_paths(argv[0]);
+
+  if (input_paths.len > 1 && opt_o && (opt_c || opt_S || opt_E))
+    error("cannot specify '-o' with '-c'/'-S'/'-E' and multiple files");
+
+  for (int i = 0; i < input_paths.len; i++) {
+    char *input = input_paths.data[i];
+    if (get_file_type(input) != FILE_C)
+      error("%s: native c68k compiles only C sources (link separately)", input);
+
+    char *output;
+    if (opt_o)
+      output = opt_o;
+    else if (opt_S)
+      output = replace_extn(input, ".s");
+    else
+      output = replace_extn(input, ".o");
+
+    base_file = input;
+
+    // -E / -M (preprocess) or -S (assembly): cc1 writes straight to the output.
+    if (opt_E || opt_M || opt_S) {
+      output_file = opt_S ? output : (opt_o ? opt_o : "-");
+      cc1();
+      continue;
+    }
+
+    // Default: compile to a temp .s, then assemble to an ELF .o.
+    char *tmp = create_tmpfile();
+    output_file = tmp;
+    cc1();
+    assemble_to_elf(tmp, output);
+  }
+  return 0;
+}
+#else
 int main(int argc, char **argv) {
   atexit(cleanup);
   init_macros();
@@ -840,3 +903,4 @@ int main(int argc, char **argv) {
     run_linker(&ld_args, opt_o ? opt_o : "a.out");
   return 0;
 }
+#endif // C68K_SELFHOST

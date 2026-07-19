@@ -319,9 +319,16 @@ dependency ([architecture.md §8](architecture.md#8-object-emission-text-asm-now
 > (signed/unsigned aware), implemented in `libc.c` by decomposition over the existing 32-bit
 > conversions + IEEE double arithmetic (correctly rounded, no hand-rolled asm). Verified on Osiris
 > ([`samples/fp64conv.c`](../samples/fp64conv.c)): all int64⇄double round-trips, the `2^63` uint64
-> edge, truncation-toward-zero, and float rounding are correct. **Next:** a native `main.c` driver
-> (integrated emitter, no subprocess), linking `CC.PRG`/`CC.68K`, the stage3 run under `sim68k`
-> (memory-fit — the 1 MB CP/M TPA is the risk), and byte-identity.
+> edge, truncation-toward-zero, and float rounding are correct. The **native `main.c` driver** is
+> now in too: under `C68K_SELFHOST`, `main()` forces the integrated emitter and compiles each `.c`
+> to an ELF `.o` **in-process** (no subprocess, no external assembler, no linker — linking is the
+> separate `LINK.PRG`/`LINK.68K` step); the host spawn/`run_cc1`/`run_linker`/`find_*` paths are
+> `#ifdef`'d out, and libc gained `atexit`/`unlink`/`close` + a native `file_exists`/`create_tmpfile`
+> (new `<unistd.h>`). So **all 10 compiler translation units + `libc.c` self-compile**, and
+> [`tools/osiris/build-cc.ps1`](../tools/osiris/build-cc.ps1) **links the stage2 `CC.PRG`** (a
+> ~440 KB static-PIE Osiris binary) from them + crt0 + runtime + the soft-float archive. **Next:**
+> smoke-run `CC.PRG` under `sim68k` (compile a `.c` → `.o` on-target; the compiler's arena vs. the
+> memory model is the risk), then the stage3 self-recompile and the byte-identity check, then CP/M.
 
 **Exit (M4):** `CC` self-hosts to a byte-identical binary on both OSes.
 **Depends on:** P9
