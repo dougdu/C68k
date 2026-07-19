@@ -22,7 +22,10 @@ long atol(const char *s);
 double atof(const char *s);
 long strtol(const char *s, char **end, int base);
 unsigned long strtoul(const char *s, char **end, int base);
+long long strtoll(const char *s, char **end, int base);
+unsigned long long strtoull(const char *s, char **end, int base);
 double strtod(const char *s, char **end);
+long double strtold(const char *s, char **end);
 
 int abs(int n);
 long labs(long n);

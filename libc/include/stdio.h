@@ -17,6 +17,7 @@
 #define _SF_EOF 0x04
 #define _SF_ERR 0x08
 #define _SF_USED 0x10
+#define _SF_MEM 0x20
 
 typedef struct _FILE {
   int fd;      /* Osiris file handle */
@@ -24,6 +25,12 @@ typedef struct _FILE {
   int cnt;     /* input: bytes left in buf; output: bytes buffered */
   unsigned char *p;              /* input: next byte to serve */
   unsigned char buf[BUFSIZ];
+  /* open_memstream() backing store (mem == NULL for ordinary streams). */
+  unsigned char *mem;
+  size_t memcap;
+  size_t memlen;
+  char **memuptr;
+  size_t *memusize;
 } FILE;
 
 extern FILE *stdin;
@@ -62,5 +69,7 @@ int vsnprintf(char *buf, size_t size, const char *fmt, va_list ap);
 
 int sscanf(const char *s, const char *fmt, ...);
 int vsscanf(const char *s, const char *fmt, va_list ap);
+
+FILE *open_memstream(char **ptr, size_t *sizeloc);
 
 #endif /* _STDIO_H */

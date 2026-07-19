@@ -303,6 +303,22 @@ dependency ([architecture.md §8](architecture.md#8-object-emission-text-asm-now
 - [ ] Fit/perf pass: the native compiler runs within a realistic Osiris/CP/M memory budget.
 - [ ] Make the three-stage check a permanent CI gate.
 
+> **Progress (self-host groundwork).** The self-host build **configuration** and the **libc gaps**
+> are in: a `-DC68K_SELFHOST` mode in [`src/compat.h`](../src/compat.h) bypasses the host driver
+> shims and pulls only the POSIX headers c68k's own libc provides, and [`libc/core/libc.c`](../libc/core/libc.c)
+> gained the functions the compiler's source needs — `open_memstream` (a growing memory-backed
+> `FILE`), `strdup`/`strndup`, `strncasecmp`/`strcasecmp`, `strtoull`/`strtoll`/`strtold`, `strtok`,
+> `strerror`, `dirname`/`basename`, `ctime_r`, and a stub `stat` (so `__TIMESTAMP__` takes its
+> "unknown" fallback) — plus new `<strings.h>`/`<libgen.h>`/`<sys/stat.h>`/`<sys/types.h>` headers.
+> With these, **8 of the 9 core compiler translation units self-compile** with the cross-compiler's
+> integrated ELF emitter (`strings`, `hashmap`, `unicode`, `type`, `tokenize`, `preprocess`,
+> `codegen68k`, `emit_elf`); the extended libc still builds and existing programs are unregressed
+> (`printftest` runs, incl. 64-bit `printf`). **Remaining blocker:** `parse.c` needs `long long ↔
+> float/double` conversion — a genuine **P3-completeness** gap ([`codegen68k.c`](../src/codegen68k.c)
+> `cast()` still `error()`s on 64-bit int⇄IEEE; the soft-float runtime has only 32-bit `ltof`/`ftol`).
+> Then: a native `main.c` driver (integrated emitter, no subprocess), linking `CC.PRG`/`CC.68K`, the
+> stage3 run under `sim68k` (memory-fit — the 1 MB CP/M TPA is the risk), and byte-identity.
+
 **Exit (M4):** `CC` self-hosts to a byte-identical binary on both OSes.
 **Depends on:** P9
 

@@ -14,6 +14,7 @@
 #include <stdio.h>
 #include <stdarg.h>
 #include <errno.h>
+#include <sys/stat.h>
 
 /* ---- syscall seam (asm _sys_*; C name has no leading underscore) ---- */
 extern int sys_write(int fd, const void *buf, int n);
@@ -262,6 +263,87 @@ unsigned long strtoul(const char *s, char **end, int base) {
   return val;
 }
 
+unsigned long long strtoull(const char *s, char **end, int base) {
+  while (isspace((unsigned char)*s))
+    s++;
+  int neg = 0;
+  if (*s == '+' || *s == '-')
+    neg = (*s++ == '-');
+  if ((base == 0 || base == 16) && s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) {
+    s += 2;
+    base = 16;
+  } else if (base == 0 && s[0] == '0') {
+    base = 8;
+  } else if (base == 0) {
+    base = 10;
+  }
+  unsigned long long val = 0;
+  for (;;) {
+    int c = (unsigned char)*s;
+    int d;
+    if (isdigit(c))
+      d = c - '0';
+    else if (c >= 'a' && c <= 'z')
+      d = c - 'a' + 10;
+    else if (c >= 'A' && c <= 'Z')
+      d = c - 'A' + 10;
+    else
+      break;
+    if (d >= base)
+      break;
+    val = val * (unsigned long long)base + (unsigned long long)d;
+    s++;
+  }
+  if (end)
+    *end = (char *)s;
+  return neg ? -val : val;
+}
+
+long long strtoll(const char *s, char **end, int base) {
+  return (long long)strtoull(s, end, base);
+}
+
+char *strerror(int errnum) {
+  switch (errnum) {
+  case 0:
+    return "Success";
+  case ENOENT:
+    return "No such file or directory";
+  case EINVAL:
+    return "Invalid argument";
+  case EMFILE:
+    return "Too many open files";
+  default:
+    return "Error";
+  }
+}
+
+char *strtok(char *s, const char *delim) {
+  static char *save;
+  if (!s)
+    s = save;
+  if (!s)
+    return NULL;
+  while (*s && strchr(delim, (unsigned char)*s))
+    s++;
+  if (!*s) {
+    save = NULL;
+    return NULL;
+  }
+  char *tok = s;
+  while (*s && !strchr(delim, (unsigned char)*s))
+    s++;
+  if (*s) {
+    *s = 0;
+    save = s + 1;
+  } else {
+    save = NULL;
+  }
+  return tok;
+}
+
+long double strtold(const char *s, char **end) { return strtod(s, end); }
+
 /* String->double lives in the soft-float archive (returns D0:D1). */
 extern double atod(const char *s);
 
@@ -412,6 +494,31 @@ FILE *stdin = &_streams[0];
 FILE *stdout = &_streams[1];
 FILE *stderr = &_streams[2];
 
+/* open_memstream() growth: append n bytes to fp->mem, keeping it NUL-
+ * terminated, and republish the user's *ptr / *sizeloc.  Returns 0 / -1. */
+static int _memstream_append(FILE *fp, const void *data, int n) {
+  size_t need = fp->memlen + (size_t)n + 1;
+  if (need > fp->memcap) {
+    size_t ncap = fp->memcap ? fp->memcap : 64;
+    while (ncap < need)
+      ncap *= 2;
+    unsigned char *nm = realloc(fp->mem, ncap);
+    if (!nm)
+      return -1;
+    fp->mem = nm;
+    fp->memcap = ncap;
+  }
+  if (n)
+    memcpy(fp->mem + fp->memlen, data, n);
+  fp->memlen += n;
+  fp->mem[fp->memlen] = 0;
+  if (fp->memuptr)
+    *fp->memuptr = (char *)fp->mem;
+  if (fp->memusize)
+    *fp->memusize = fp->memlen;
+  return 0;
+}
+
 int fflush(FILE *fp) {
   if (!fp) {
     for (int i = 0; i < NSTREAM; i++)
@@ -420,7 +527,12 @@ int fflush(FILE *fp) {
     return 0;
   }
   if ((fp->flags & _SF_WRITE) && fp->cnt > 0) {
-    if (sys_write(fp->fd, fp->buf, fp->cnt) != fp->cnt) {
+    if (fp->flags & _SF_MEM) {
+      if (_memstream_append(fp, fp->buf, fp->cnt) != 0) {
+        fp->flags |= _SF_ERR;
+        return EOF;
+      }
+    } else if (sys_write(fp->fd, fp->buf, fp->cnt) != fp->cnt) {
       fp->flags |= _SF_ERR;
       return EOF;
     }
@@ -566,9 +678,145 @@ int fclose(FILE *fp) {
   if (!fp || !(fp->flags & _SF_USED))
     return EOF;
   fflush(fp);
-  int r = sys_close(fp->fd);
+  int r = 0;
+  if (fp->flags & _SF_MEM) {
+    if (!fp->mem)                 /* empty stream still yields a valid buffer */
+      _memstream_append(fp, "", 0);
+    if (fp->memuptr)
+      *fp->memuptr = (char *)fp->mem;
+    if (fp->memusize)
+      *fp->memusize = fp->memlen;
+  } else {
+    r = sys_close(fp->fd);
+  }
   fp->flags = 0;
   return r;
+}
+
+/* POSIX open_memstream(): a write stream backed by a malloc'd buffer that
+ * grows on flush; on fclose the caller owns *ptr (size in *sizeloc). */
+FILE *open_memstream(char **ptr, size_t *sizeloc) {
+  FILE *fp = NULL;
+  for (int i = 3; i < NSTREAM; i++)
+    if (!(_streams[i].flags & _SF_USED)) {
+      fp = &_streams[i];
+      break;
+    }
+  if (!fp) {
+    errno = EMFILE;
+    return NULL;
+  }
+  fp->fd = -1;
+  fp->flags = _SF_WRITE | _SF_MEM | _SF_USED;
+  fp->cnt = 0;
+  fp->p = fp->buf;
+  fp->mem = NULL;
+  fp->memcap = 0;
+  fp->memlen = 0;
+  fp->memuptr = ptr;
+  fp->memusize = sizeloc;
+  if (ptr)
+    *ptr = NULL;
+  if (sizeloc)
+    *sizeloc = 0;
+  return fp;
+}
+
+/* =====================================================================
+ * self-host support: <string.h>/<strings.h>/<libgen.h>/<sys/stat.h>
+ * helpers the compiler's own source needs.
+ * ===================================================================== */
+char *strdup(const char *s) {
+  size_t n = strlen(s);
+  char *p = malloc(n + 1);
+  if (p)
+    memcpy(p, s, n + 1);
+  return p;
+}
+
+char *strndup(const char *s, size_t n) {
+  size_t len = 0;
+  while (len < n && s[len])
+    len++;
+  char *p = malloc(len + 1);
+  if (p) {
+    memcpy(p, s, len);
+    p[len] = 0;
+  }
+  return p;
+}
+
+static int _lc(int c) { return (c >= 'A' && c <= 'Z') ? c + 32 : c; }
+
+int strncasecmp(const char *a, const char *b, size_t n) {
+  for (size_t i = 0; i < n; i++) {
+    int ca = _lc((unsigned char)a[i]), cb = _lc((unsigned char)b[i]);
+    if (ca != cb)
+      return ca - cb;
+    if (!ca)
+      return 0;
+  }
+  return 0;
+}
+
+int strcasecmp(const char *a, const char *b) {
+  for (;; a++, b++) {
+    int ca = _lc((unsigned char)*a), cb = _lc((unsigned char)*b);
+    if (ca != cb)
+      return ca - cb;
+    if (!ca)
+      return 0;
+  }
+}
+
+/* dirname()/basename(): may modify `path` (POSIX).  Handle both separators. */
+char *dirname(char *path) {
+  if (!path || !*path)
+    return ".";
+  char *end = path + strlen(path) - 1;
+  while (end > path && (*end == '/' || *end == '\\'))
+    *end-- = 0;
+  char *slash = NULL;
+  for (char *p = path; *p; p++)
+    if (*p == '/' || *p == '\\')
+      slash = p;
+  if (!slash)
+    return ".";
+  if (slash == path) {
+    path[1] = 0;
+    return path;
+  }
+  *slash = 0;
+  return path;
+}
+
+char *basename(char *path) {
+  if (!path || !*path)
+    return ".";
+  char *end = path + strlen(path) - 1;
+  while (end > path && (*end == '/' || *end == '\\'))
+    *end-- = 0;
+  char *slash = NULL;
+  for (char *p = path; *p; p++)
+    if (*p == '/' || *p == '\\')
+      slash = p;
+  return slash ? slash + 1 : path;
+}
+
+/* No general stat() on these targets: fail so __TIMESTAMP__ takes its
+ * "unknown" fallback (the compiler reads nothing else from stat). */
+int stat(const char *path, struct stat *st) {
+  (void)path;
+  (void)st;
+  errno = EINVAL;
+  return -1;
+}
+
+int fstat(int fd, struct stat *st) {
+  (void)fd;
+  (void)st;
+  errno = EINVAL;
+  return -1;
 }
 
 int fseek(FILE *fp, long off, int whence) {
@@ -1150,6 +1398,17 @@ char *asctime(const struct tm *tm) {
 }
 
 char *ctime(const time_t *timer) { return asctime(localtime(timer)); }
+
+char *ctime_r(const time_t *timer, char *buf) {
+  char *s = asctime(localtime(timer));
+  size_t i = 0;
+  while (s[i]) {
+    buf[i] = s[i];
+    i++;
+  }
+  buf[i] = 0;
+  return buf;
+}
 
 size_t strftime(char *s, size_t max, const char *fmt, const struct tm *tm) {
   size_t n = 0;

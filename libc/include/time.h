@@ -31,6 +31,7 @@ struct tm *gmtime(const time_t *timer);
 struct tm *localtime(const time_t *timer);
 char *asctime(const struct tm *tm);
 char *ctime(const time_t *timer);
+char *ctime_r(const time_t *timer, char *buf);
 size_t strftime(char *s, size_t max, const char *fmt, const struct tm *tm);
 
 #endif /* _TIME_H */

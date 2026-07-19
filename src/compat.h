@@ -60,6 +60,21 @@ FILE *open_memstream(char **ptr, size_t *sizeloc);
 int c68k_fclose(FILE *fp);
 #define fclose(f) c68k_fclose(f)
 
+#elif defined(C68K_SELFHOST)
+// ---------------------------------------------------------------------------
+// c68k native self-host (Osiris / CP/M-68K) --- the compiler runs on the
+// target with c68k's own libc; there is no subprocess and no external
+// assembler.  The libc supplies strndup/strncasecmp/dirname/open_memstream
+// (and a stub stat/ctime_r), so we only pull the POSIX headers that declare
+// them.  `noreturn` is just a hint, so it maps to nothing here.
+// ---------------------------------------------------------------------------
+#include <string.h>
+#include <strings.h>
+#include <libgen.h>
+#ifndef noreturn
+#define noreturn
+#endif
+
 #else
 // ---------------------------------------------------------------------------
 // POSIX (Linux, macOS) --- the headers chibicc used directly
