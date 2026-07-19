@@ -310,14 +310,18 @@ dependency ([architecture.md §8](architecture.md#8-object-emission-text-asm-now
 > `FILE`), `strdup`/`strndup`, `strncasecmp`/`strcasecmp`, `strtoull`/`strtoll`/`strtold`, `strtok`,
 > `strerror`, `dirname`/`basename`, `ctime_r`, and a stub `stat` (so `__TIMESTAMP__` takes its
 > "unknown" fallback) — plus new `<strings.h>`/`<libgen.h>`/`<sys/stat.h>`/`<sys/types.h>` headers.
-> With these, **8 of the 9 core compiler translation units self-compile** with the cross-compiler's
-> integrated ELF emitter (`strings`, `hashmap`, `unicode`, `type`, `tokenize`, `preprocess`,
-> `codegen68k`, `emit_elf`); the extended libc still builds and existing programs are unregressed
-> (`printftest` runs, incl. 64-bit `printf`). **Remaining blocker:** `parse.c` needs `long long ↔
-> float/double` conversion — a genuine **P3-completeness** gap ([`codegen68k.c`](../src/codegen68k.c)
-> `cast()` still `error()`s on 64-bit int⇄IEEE; the soft-float runtime has only 32-bit `ltof`/`ftol`).
-> Then: a native `main.c` driver (integrated emitter, no subprocess), linking `CC.PRG`/`CC.68K`, the
-> stage3 run under `sim68k` (memory-fit — the 1 MB CP/M TPA is the risk), and byte-identity.
+> With these, **all 9 core compiler translation units self-compile** with the cross-compiler's
+> integrated ELF emitter (`strings`, `hashmap`, `unicode`, `type`, `tokenize`, `preprocess`, `parse`,
+> `codegen68k`, `emit_elf`), and so does the extended `libc.c`; existing programs are unregressed
+> (`printftest` runs, incl. 64-bit `printf`). The last front-end blocker — `parse.c`'s `long long ↔
+> float/double` conversion (a **P3-completeness** gap) — is now **closed**: [`codegen68k.c`](../src/codegen68k.c)
+> `cast()` emits `_fplltod`/`_fpulltod`/`_fplltof`/`_fpulltof`/`_fpdtoll`/`_fpdtoull`/`_fpftoll`/`_fpftoull`
+> (signed/unsigned aware), implemented in `libc.c` by decomposition over the existing 32-bit
+> conversions + IEEE double arithmetic (correctly rounded, no hand-rolled asm). Verified on Osiris
+> ([`samples/fp64conv.c`](../samples/fp64conv.c)): all int64⇄double round-trips, the `2^63` uint64
+> edge, truncation-toward-zero, and float rounding are correct. **Next:** a native `main.c` driver
+> (integrated emitter, no subprocess), linking `CC.PRG`/`CC.68K`, the stage3 run under `sim68k`
+> (memory-fit — the 1 MB CP/M TPA is the risk), and byte-identity.
 
 **Exit (M4):** `CC` self-hosts to a byte-identical binary on both OSes.
 **Depends on:** P9

@@ -325,15 +325,33 @@ static void cast(Type *from, Type *to) {
   }
 
   if (!ff && tf) {                      // integer -> float/double
-    if (from->size == 8)
-      error("long long -> float/double not yet supported (P3)");
+    if (is_integer(from) && from->size == 8) {
+      // 64-bit long long / unsigned long long -> double/float (soft-float
+      // runtime; the signed/unsigned split matters above 2^63).
+      char *fn;
+      if (td)
+        fn = from->is_unsigned ? "_fpulltod" : "_fplltod";
+      else
+        fn = from->is_unsigned ? "_fpulltof" : "_fplltof";
+      cast_call(8, fn);
+      return;
+    }
     cast_call(4, td ? "_fpltod" : "_fpltof");
     return;
   }
 
   if (ff && !tf) {                      // float/double -> integer
-    if (to->size == 8)
-      error("float/double -> long long not yet supported (P3)");
+    if (is_integer(to) && to->size == 8) {
+      // double/float -> 64-bit long long / unsigned long long.  The result is
+      // already 64-bit in D0:D1, so no cast_int_narrow().
+      char *fn;
+      if (fd)
+        fn = to->is_unsigned ? "_fpdtoull" : "_fpdtoll";
+      else
+        fn = to->is_unsigned ? "_fpftoull" : "_fpftoll";
+      cast_call(fd ? 8 : 4, fn);
+      return;
+    }
     cast_call(fd ? 8 : 4, fd ? "_fpdtol" : "_fpftol");
     cast_int_narrow(to);
     return;
