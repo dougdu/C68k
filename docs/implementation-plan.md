@@ -29,7 +29,7 @@ Legend: ☐ not started · ◐ in progress · ☑ done.
 | **P8** | [Integrated object emitter](#p8--integrated-object-emitter) | ☑ | 5 / 5 | compiler emits ELF `.o` with no assembler |
 | **P9** | [Native LINK / LIB / mkdri](#p9--native-link--lib--mkdri) | ☑ | 6 / 6 | native link chain on both OSes |
 | **P10** | [Self-hosting bootstrap](#p10--self-hosting-bootstrap) | ☐ | 4 / 5 | **stage2 == stage3: Osiris all 11; CP/M within 1 MB** |
-| **P11** | [Cross-compiler hardening](#p11--cross-compiler-hardening) | ☐ | 4 / 6 | cross is a CI'd, maintained product |
+| **P11** | [Cross-compiler hardening](#p11--cross-compiler-hardening) | ☑ | 6 / 6 | cross is a CI'd, maintained product |
 | **P12** | [Optimization](#p12--optimization) | ☐ | 0 / 6 | register allocation + peephole |
 | **P13** | [Tooling & debug polish](#p13--tooling--debug-polish) | ☐ | 0 / 6 | DWARF, diagnostics, samples, SDK docs |
 | | **Total** | **2 / 14** | **12 / 87** | |
@@ -45,6 +45,11 @@ Legend: ☐ not started · ◐ in progress · ☑ done.
    identical for every TU that fits the 1 MB TPA (`strings`); the full front-end exceeds base CP/M's
    ~583 KB heap — a hard memory wall, not a correctness gap (see P10 note).
 5. **M5 — Product** (end P11): the cross-compiler is hardened, CI-gated, and building real tools.
+   **✅ reached** — driver parity (`-target`/`--version`) + `file:line:col` caret diagnostics; SDK
+   docs ([sdk.md](sdk.md)) + packaging ([tools/package.ps1](../tools/package.ps1)); the full sim
+   lockstep suite runs on both OSes via a self-hosted runner ([lockstep.yml](../.github/workflows/lockstep.yml));
+   and `HEXDUMP` ([samples/hexdump.c](../samples/hexdump.c)) is a real utility running byte-identically
+   on Osiris and CP/M-68K.
 
 ---
 
@@ -402,8 +407,8 @@ tool.
 - [x] Driver/option parity (`-c`/`-S`/`-o`/`-I`/`-D`/`-L`/`-l`/`-O`/`-g`/`-target`/`-ffreestanding`).
 - [x] Robust diagnostics (carets, notes, sane messages) and exit codes.
 - [x] Packaging/install for host OSes; documented invocation.
-- [ ] CI **matrix**: build cross + run the **full lockstep suite** on both OSes per commit.
-- [ ] Build a **real external tool** (e.g. an Osiris/CP/M utility) with c68k as a proof.
+- [x] CI **matrix**: build cross + run the **full lockstep suite** on both OSes per commit.
+- [x] Build a **real external tool** (e.g. an Osiris/CP/M utility) with c68k as a proof.
 - [x] SDK usage docs for third-party programs.
 
 **Exit (M5):** cross-compiler is CI-gated, packaged, and building real programs for both OSes.
@@ -426,9 +431,16 @@ tool.
 > `mkdri`, `asm68K`, `sim68k`) is documented as a prerequisite rather than vendored. The
 > **SDK quickstart** is [`docs/sdk.md`](sdk.md): the driver options, the predefined macros, the per-OS
 > link recipes (`.PRG` via `osiris-prg.ld`, `.68K` via `cpm68k.ld` + `mkdri`), and a worked
-> one-source/two-target `hello`. **Remaining:** the CI matrix that runs the full sim-based lockstep
-> suite (blocked on distributing the sim binary + boot images + native toolchain, which live in the
-> sibling repos, to CI), and a real external tool built with c68k as an end-to-end proof.
+> one-source/two-target `hello`. **The CI matrix** now runs the full sim-based lockstep suite on a
+> self-hosted Windows runner ([`.github/workflows/lockstep.yml`](../.github/workflows/lockstep.yml),
+> label `c68k-sim`): it builds c68k, stages the sim environment, and runs every case on **both** OSes
+> — the hosted matrix ([`ci.yml`](../.github/workflows/ci.yml)) still covers the front end on
+> Windows/macOS/Linux. **The external-tool proof** is [`samples/hexdump.c`](../samples/hexdump.c): a
+> real `HEXDUMP <file>` utility (argv, binary `fopen`/`fread`/`fwrite`, `printf` hex formatting) that
+> runs **byte-identically** on Osiris (`.PRG`) and CP/M-68K (`.68K`) and is wired into the lockstep
+> gate. Building it surfaced a genuine platform difference now documented in the SDK guide: CP/M-68K
+> files are 128-byte record-granular (short files read back `0x1A`-padded), unlike Osiris's exact
+> FAT12 lengths — the self-test fills a full record so its dump matches on both OSes.
 
 ## P12 — Optimization
 

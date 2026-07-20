@@ -1,0 +1,57 @@
+name: lockstep (self-hosted)
+
+# Full dual-target execution gate: build c68k, compile each sample for BOTH
+# targets, and run it on Osiris (.PRG) and CP/M-68K (.68K) under the local
+# sim68k, requiring identical golden output on both OSes.
+#
+# This job runs on a SELF-HOSTED Windows runner because it needs binaries that
+# are not redistributable here and live in sibling repos on the host:
+#   * sim68k + boot ROM + boot floppy/RAM images  (from C:\git\worm68k, C:\git\osiris)
+#   * the native link toolchain: asm68K, m68k-elf-ld, mkdri, cpmcp
+# tools/bootstrap-simenv.ps1 stages them into simenv/ on first run.
+#
+# Runner setup (once, on your Windows machine):
+#   1. Clone the sibling repos next to this one so the tool paths resolve:
+#        C:\git\worm68k   and   C:\git\osiris   (see tools/bootstrap-simenv.ps1)
+#   2. Settings > Actions > Runners > New self-hosted runner (Windows x64),
+#      and add the label  c68k-sim  when configuring it.
+#   3. Ensure a C toolchain is available (VS 2022 "cl" on PATH, used by CMake).
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+# Only attempt on the canonical repo (forks have no matching runner) and never
+# run two sim jobs at once on the single shared runner.
+concurrency:
+  group: lockstep-selfhosted
+  cancel-in-progress: false
+
+jobs:
+  lockstep:
+    name: dual-target lockstep (Osiris + CP/M-68K)
+    if: github.repository == 'dougdu/C68k'
+    runs-on: [self-hosted, windows, c68k-sim]
+    env:
+      # Use c68k's integrated ELF emitter for C compiles (no external asm68K on
+      # PATH needed for the .c files; crt0/runtime .a68 still go through asm68K).
+      C68K_INTEGRATED_AS: '1'
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Build c68k (CMake + MSVC)
+        run: |
+          cmake -S . -B build
+          cmake --build build --config Release
+
+      - name: Stage sim environment
+        shell: pwsh
+        run: pwsh -File tools/bootstrap-simenv.ps1
+
+      - name: Full dual-target lockstep suite
+        shell: pwsh
+        run: |
+          $cc = (Resolve-Path 'build/Release/c68k.exe').Path
+          & pwsh -File tools/run-lockstep.ps1 -Cc $cc
+          if ($LASTEXITCODE -ne 0) { throw "lockstep suite failed ($LASTEXITCODE case(s))" }

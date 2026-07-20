@@ -31,6 +31,9 @@ $cases = @(
   @{ Run = 'MATHTEST'; Src = 'tests\lockstep\mathtest.c'; Expect = @('MATH PASS') }
   @{ Run = 'LIBTEST';  Src = 'tests\lockstep\libtest.c';  Expect = @('LIB PASS') }
   @{ Run = 'TIMETEST'; Src = 'tests\lockstep\timetest.c'; Expect = @('TIME PASS') }
+  @{ Run = 'HEXDUMP';  Src = 'samples\hexdump.c';         Expect = @('hexdump of HEXTEST.BIN',
+                                                                     '|c68k hexdump OK.|',
+                                                                     '63 36 38 6b', '128 bytes') }
 )
 
 $osRun  = Join-Path $repo 'tools\osiris\run-osiris.ps1'

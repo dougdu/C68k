@@ -58,6 +58,27 @@ pwsh tools/cpm/build-68k.ps1 -Src hello.c
 Run under the simulator with the per-OS harnesses in `tools/osiris/` and `tools/cpm/`
 (e.g. [`tools/osiris/run-osiris.ps1`](../tools/osiris/run-osiris.ps1)).
 
+### 2.1 A worked example — `hexdump`
+
+[`samples/hexdump.c`](../samples/hexdump.c) is a complete, real utility built with the SDK: it
+takes a filename on the command line (`HEXDUMP <file>`) and prints the classic offset / hex / ASCII
+dump; with no argument it writes a known payload and dumps it back. One source builds for both OSes
+and — because the code generator is identical — the self-test produces **byte-identical** output on
+Osiris and CP/M-68K. It exercises the pieces a genuine program depends on: `argv` from the command
+tail, binary file I/O (`fopen`/`fread`/`fwrite`), and `printf` width/zero-pad/hex conversions.
+
+```
+A>HEXDUMP
+hexdump of HEXTEST.BIN
+00000000  63 36 38 6b 20 68 65 78  64 75 6d 70 20 4f 4b 0a  |c68k hexdump OK.|
+00000010  20 21 22 23 24 25 26 27  28 29 2a 2b 2c 2d 2e 2f  | !"#$%&'()*+,-./|
+...
+128 bytes
+```
+
+It runs on both OSes on every commit through the dual-target lockstep gate
+([`tools/run-lockstep.ps1`](../tools/run-lockstep.ps1)).
+
 ## 3. Compiler options
 
 `c68k` follows GCC/Clang driver conventions:
@@ -132,5 +153,10 @@ programs (`-ffreestanding`) can skip the hosted library entirely and use only th
   soft-float.
 - `long double` is `double` (64-bit IEEE).
 - The 68008 Osiris board and CP/M-68K are ≤ 1 MB machines; large programs should mind the heap.
+- **CP/M record granularity.** CP/M-68K files are stored in 128-byte records with no exact byte
+  length; a short file reads back **padded to the next 128-byte boundary with `0x1A`** (Ctrl-Z, the
+  CP/M soft-EOF). Osiris FAT12 stores the exact length instead. A tool that must behave identically
+  on both OSes should either round its own data to 128-byte records (as `samples/hexdump.c` does for
+  its self-test) or treat `0x1A` as end-of-text for CP/M text files.
 - The compiler does not link; linking is a separate `m68k-elf-ld` (+ `mkdri` for CP/M) step, or the
   on-target `LINK.PRG` / `LINK.68K`.
