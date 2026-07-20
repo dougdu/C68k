@@ -28,7 +28,7 @@ Legend: ☐ not started · ◐ in progress · ☑ done.
 | **P7** | [C99 standard library](#p7--c99-standard-library) | ☑ | 7 / 7 | library + `libm` suite green |
 | **P8** | [Integrated object emitter](#p8--integrated-object-emitter) | ☑ | 5 / 5 | compiler emits ELF `.o` with no assembler |
 | **P9** | [Native LINK / LIB / mkdri](#p9--native-link--lib--mkdri) | ☑ | 6 / 6 | native link chain on both OSes |
-| **P10** | [Self-hosting bootstrap](#p10--self-hosting-bootstrap) | ☐ | 0 / 5 | **stage2 == stage3 on both OSes** |
+| **P10** | [Self-hosting bootstrap](#p10--self-hosting-bootstrap) | ☐ | 2 / 5 | **stage2 == stage3 on both OSes** |
 | **P11** | [Cross-compiler hardening](#p11--cross-compiler-hardening) | ☐ | 0 / 6 | cross is a CI'd, maintained product |
 | **P12** | [Optimization](#p12--optimization) | ☐ | 0 / 6 | register allocation + peephole |
 | **P13** | [Tooling & debug polish](#p13--tooling--debug-polish) | ☐ | 0 / 6 | DWARF, diagnostics, samples, SDK docs |
@@ -298,8 +298,8 @@ dependency ([architecture.md §8](architecture.md#8-object-emission-text-asm-now
 **Objective:** the native compiler compiles **its own source** to a byte-identical binary.
 
 - [x] Cross-compile the compiler for m68k → `CC.PRG` / `CC.68K` (stage2).
-- [ ] Run `CC` under `sim68k` to compile its own source → stage3.
-- [ ] **stage2 == stage3** (byte-identical) on **both** OSes.
+- [x] Run `CC` under `sim68k` to compile its own source → stage3. *(Osiris — all 11 TUs.)*
+- [ ] **stage2 == stage3** (byte-identical) on **both** OSes. *(Osiris ✅; CP/M pending.)*
 - [ ] Fit/perf pass: the native compiler runs within a realistic Osiris/CP/M memory budget.
 - [ ] Make the three-stage check a permanent CI gate.
 
@@ -341,8 +341,22 @@ dependency ([architecture.md §8](architecture.md#8-object-emission-text-asm-now
 > returns a 40-byte `EA`, so every operand parsed as empty); (2) **`%ld` with an `int64_t` arg** in
 > `load_imm` read the wrong half on the big-endian LP32 target (a literal `1` compiled to `moveq #0`);
 > (3) c68k's libc `printf` never parsed the **`+` flag**, so the codegen's `"%s%+ld"` relocation
-> addend leaked the format string literally. **Next:** the full stage3 self-recompile and the
-> byte-identity check, then CP/M and the CI gate.
+> addend leaked the format string literally.
+>
+> **Stage3 passes on Osiris — stage2 == stage3, all 11 TUs byte-identical.**
+> [`tools/osiris/stage3-cc.ps1`](../tools/osiris/stage3-cc.ps1) recompiles the compiler's **own
+> source** with the on-target `CC.PRG`: each TU is preprocessed on the host to a **self-contained**
+> file (`c68k -E`, so the on-target compile needs no headers, `-I` paths, or FAT12 subdirs — Osiris
+> is a DOS clone that wants `\`, not the `/` the include-joiner emits), cross-compiled to a
+> **reference** object (verified identical to the stage2 object — the `-E` output round-trips), then
+> compiled **on-target** and byte-compared. `CC.PRG` lives on the boot floppy (`A:`) and the source +
+> its large scratch assembly on a blank 1.44 MB data floppy (`B:`); `parse.c`'s intermediate `.s` is
+> ~646 KB. Result: **11/11 byte-identical** (`strings`, `hashmap`, `unicode`, `type`, `main`,
+> `tokenize`, `preprocess`, `codegen68k`, `emit_elf`, `parse`, and `libc.c`). The harness drives the
+> guest over the sim's **TCP ACIA console** (`--acia-tcp-port`) — the only live, lock-free channel
+> for polling the shell prompt (the `--tee-acia` file is held with an exclusive lock during the run,
+> and piped stdout is block-buffered), so each compile exits as soon as `CC` returns to the prompt.
+> **Next:** CP/M stage3 and the CI gate.
 
 **Exit (M4):** `CC` self-hosts to a byte-identical binary on both OSes.
 **Depends on:** P9
