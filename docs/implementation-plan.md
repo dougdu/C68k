@@ -30,8 +30,8 @@ Legend: ☐ not started · ◐ in progress · ☑ done.
 | **P9** | [Native LINK / LIB / mkdri](#p9--native-link--lib--mkdri) | ☑ | 6 / 6 | native link chain on both OSes |
 | **P10** | [Self-hosting bootstrap](#p10--self-hosting-bootstrap) | ☐ | 4 / 5 | **stage2 == stage3: Osiris all 11; CP/M within 1 MB** |
 | **P11** | [Cross-compiler hardening](#p11--cross-compiler-hardening) | ☑ | 6 / 6 | cross is a CI'd, maintained product |
-| **P12** | [Optimization](#p12--optimization) | ☐ | 4 / 6 | register allocation + peephole |
-| **P13** | [Tooling & debug polish](#p13--tooling--debug-polish) | ☐ | 0 / 6 | DWARF, diagnostics, samples, SDK docs |
+| **P12** | [Optimization](#p12--optimization) | ☑ | 4 / 4 | -O1: immediate select, strength reduction, peephole |
+| **P13** | [Tooling & debug polish](#p13--tooling--debug-polish) | ☐ | 0 / 8 | register allocator, DWARF, diagnostics, samples |
 | | **Total** | **2 / 14** | **12 / 87** | |
 
 **Milestones (headline):**
@@ -447,12 +447,13 @@ tool.
 **Objective:** move beyond the stack machine to reasonable code quality — **without** regressing
 correctness.
 
-- [ ] Temporary/register allocator: keep hot values in `D2–D7`/`A2–A5`, spill on pressure.
 - [x] Peephole pass (kill push/pop pairs, redundant moves, `tst` after arithmetic).
 - [x] Constant folding/propagation and strength reduction in the back end.
-- [ ] 68000 addressing-mode selection (indexed/PC-relative/`Dn` predecrement) for common patterns.
 - [x] `-O` levels; size vs. speed knobs.
 - [x] Full suite still green lockstep; record size/speed deltas.
+
+_(The temporary/register allocator and the richer 68000 addressing-mode selection moved to
+[P13](#p13--tooling--debug-polish).)_
 
 **Exit:** measurable size/speed improvement; all tests still pass on both OSes.
 **Depends on:** P10
@@ -474,16 +475,19 @@ correctness.
 > on both OSes at `-O1`** (libc *and* program optimized), and `CORETEST.PRG` drops from 95,824 to
 > 78,736 bytes — a **17.8 % size cut**; the default `-O0` self-host stays byte-identical. The build
 > scripts honour `C68K_OPT=1` to compile at `-O1`, and the front-end smoke/CI checks assert both the
-> `-O1` transform and the unchanged `-O0` behaviour. **Deferred** (kept out to protect the self-host
-> guarantee and correctness): the full register allocator (values still live in `D0`/`D1` around the
-> stack; no callee-saved `MOVEM` yet) and the richer addressing-mode selection (indexed / PC-relative
-> / predecrement). The milestone exit — measurable improvement with every test green on both OSes —
-> is met.
+> `-O1` transform and the unchanged `-O0` behaviour. **Moved to [P13](#p13--tooling--debug-polish)**
+> (kept out here to protect the self-host guarantee and correctness): the full register allocator
+> (values still live in `D0`/`D1` around the stack; no callee-saved `MOVEM` yet) and the richer
+> addressing-mode selection (indexed / PC-relative / predecrement). The milestone exit — measurable
+> improvement with every test green on both OSes — is met.
 
 ## P13 — Tooling & debug polish
 
-**Objective:** debuggability and developer experience.
+**Objective:** finish the back-end code-quality work carried over from P12, then debuggability and
+developer experience.
 
+- [ ] Temporary/register allocator: keep hot values in `D2–D7`/`A2–A5`, spill on pressure. _(from P12)_
+- [ ] 68000 addressing-mode selection (indexed/PC-relative/`Dn` predecrement) for common patterns. _(from P12)_
 - [ ] DWARF (or a `sim68k`-friendly) line/symbol info; `-g`.
 - [ ] Assembly listings and link map output.
 - [ ] Diagnostic quality pass (warnings set, `-W` flags).
@@ -491,7 +495,8 @@ correctness.
 - [ ] Finalize the SDK docs; per-phase changelogs reconciled.
 - [ ] Source-level debugging demonstrated under `sim68k` / `m68k-elf-gdb`.
 
-**Exit:** compiled programs are source-debuggable; docs and samples complete.
+**Exit:** measurable further code-quality gains; compiled programs are source-debuggable; docs and
+samples complete.
 **Depends on:** P11, P12
 
 ---
