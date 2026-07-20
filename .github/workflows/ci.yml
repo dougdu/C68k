@@ -71,6 +71,10 @@ jobs:
           if (-not ($h -match 'c68k')) { throw "--help failed" }
           $v = (& $cc --version 2>&1) -join "`n"
           if (-not ($v -match 'c68k')) { throw "--version failed" }
+          $o1 = 'int f(int x){return x*8;}' | & $cc -O1 -S -o- -xc -
+          if (-not ($o1 -match 'asl.l')) { throw "-O1 strength reduction (x*8 -> asl) missing" }
+          $o0 = 'int f(int x){return x*8;}' | & $cc -S -o- -xc -
+          if (-not ($o0 -match '__mulsi3')) { throw "-O0 default should still call __mulsi3" }
           & $cc -Iinclude -S -o- tests/typemodel.c > $null
           if ($LASTEXITCODE -ne 0) { throw "type-model check failed" }
           Write-Host "front-end + type-model OK"

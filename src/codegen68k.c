@@ -25,6 +25,11 @@ static FILE *output_file;
 static int depth;
 static Obj *current_fn;
 
+// At -O1+ every emitted line is buffered here so a peephole pass can run over
+// the whole module before it is written out. At -O0 this stays empty and
+// println writes straight through (byte-identical to the pre-P12 output).
+static StringArray outbuf;
+
 static void gen_expr(Node *node);
 static void gen_stmt(Node *node);
 
@@ -32,9 +37,18 @@ __attribute__((format(printf, 1, 2)))
 static void println(char *fmt, ...) {
   va_list ap;
   va_start(ap, fmt);
-  vfprintf(output_file, fmt, ap);
+  if (opt_level >= 1) {
+    char *buf;
+    size_t buflen;
+    FILE *m = open_memstream(&buf, &buflen);
+    vfprintf(m, fmt, ap);
+    fclose(m);
+    strarray_push(&outbuf, buf);
+  } else {
+    vfprintf(output_file, fmt, ap);
+    fprintf(output_file, "\n");
+  }
   va_end(ap);
-  fprintf(output_file, "\n");
 }
 
 static int count(void) {
@@ -551,6 +565,146 @@ static void gen_int64_binop(Node *node) {
   error_tok(node->tok, "unsupported long long operator");
 }
 
+// --- P12 back-end optimizations (enabled at -O1 and above) -----------------
+//
+// These fire only when opt_level >= 1, so the default (-O0) output is exactly
+// the naive stack-machine code the rest of this file emits -- which keeps the
+// self-host byte-identity and the existing golden/lockstep baselines intact.
+
+static bool is_pow2_32(uint32_t v) { return v != 0 && (v & (v - 1)) == 0; }
+
+// log2 of a power of two (count trailing zeros).
+static int ctz32(uint32_t v) {
+  int n = 0;
+  while (!(v & 1u)) {
+    v >>= 1;
+    n++;
+  }
+  return n;
+}
+
+// Add a signed 32-bit immediate to D0 using the tightest encoding available
+// (nothing for 0, ADDQ/SUBQ for +/-1..8, ADDI otherwise).
+static void add_imm(int32_t c) {
+  if (c == 0)
+    return;
+  if (c >= 1 && c <= 8)
+    println("  addq.l #%ld,d0", (long)c);
+  else if (c >= -8 && c <= -1)
+    println("  subq.l #%ld,d0", (long)(-c));
+  else
+    println("  add.l #%ld,d0", (long)c);
+}
+
+// If `node` is an integer constant -- possibly wrapped in width-preserving
+// integer casts, which usual_arith_conv inserts around every binary operand --
+// store its 32-bit value in *out and return true. Casts to sub-int (< 4-byte)
+// types are refused so a narrowing like (char)300 is never mis-folded; the
+// generic path evaluates those correctly.
+static bool const_int32(Node *node, int32_t *out) {
+  while (node->kind == ND_CAST) {
+    if (!is_integer(node->ty) || node->ty->size < 4)
+      return false;
+    node = node->lhs;
+  }
+  if (node->kind != ND_NUM || !is_integer(node->ty) || node->ty->size < 4)
+    return false;
+  *out = (int32_t)node->val;
+  return true;
+}
+
+// Integer binary op whose right operand is the compile-time constant `c`.
+// Emits the left operand into D0 and folds the constant directly into an
+// immediate / shift, avoiding the stack round-trip (and the mul/div runtime
+// call when the constant is a power of two). Returns false -- having emitted
+// NOTHING -- when the op/constant is not specialized, so the caller falls back
+// to the generic push/pop path.
+static bool gen_const_binop(Node *node, int32_t c) {
+  bool u = node->lhs->ty->is_unsigned;
+  uint32_t uc = (uint32_t)c;
+
+  switch (node->kind) {
+  case ND_ADD:
+    gen_expr(node->lhs);
+    add_imm(c);
+    return true;
+  case ND_SUB:
+    gen_expr(node->lhs);
+    add_imm(-c); // x - c == x + (-c)
+    return true;
+  case ND_BITAND:
+    gen_expr(node->lhs);
+    println("  andi.l #%ld,d0", (long)c);
+    return true;
+  case ND_BITOR:
+    gen_expr(node->lhs);
+    println("  ori.l #%ld,d0", (long)c);
+    return true;
+  case ND_BITXOR:
+    gen_expr(node->lhs);
+    println("  eori.l #%ld,d0", (long)c);
+    return true;
+  case ND_EQ:
+  case ND_NE:
+  case ND_LT:
+  case ND_LE: {
+    gen_expr(node->lhs);
+    println("  cmp.l #%ld,d0", (long)c); // flags for (lhs - c)
+    char *cc = node->kind == ND_EQ ? "seq" :
+               node->kind == ND_NE ? "sne" :
+               node->kind == ND_LT ? (u ? "scs" : "slt") :
+                                     (u ? "sls" : "sle");
+    println("  %s d0", cc);
+    println("  andi.l #1,d0");
+    return true;
+  }
+  case ND_SHL:
+    if (c < 1 || c > 31)
+      return false;
+    gen_expr(node->lhs);
+    shift_by("asl.l", c, "d0", "d1");
+    return true;
+  case ND_SHR:
+    if (c < 1 || c > 31)
+      return false;
+    gen_expr(node->lhs);
+    shift_by(u ? "lsr.l" : "asr.l", c, "d0", "d1");
+    return true;
+  case ND_MUL:
+    // Strength-reduce x*const: 0/1/-1 trivially, powers of two to a shift.
+    // (The left operand is still evaluated for its side effects.)
+    if (c == 0 || c == 1 || c == -1 || is_pow2_32(uc)) {
+      gen_expr(node->lhs);
+      if (c == 0)
+        println("  moveq #0,d0");
+      else if (c == -1)
+        println("  neg.l d0");
+      else if (c != 1)
+        shift_by("asl.l", ctz32(uc), "d0", "d1");
+      return true;
+    }
+    return false; // non-power-of-two -> generic __mulsi3
+  case ND_DIV:
+    // Only unsigned power-of-two is a plain shift; signed rounds toward zero,
+    // so leave it (and every non-pow2) to the runtime helper.
+    if (u && is_pow2_32(uc)) {
+      gen_expr(node->lhs);
+      shift_by("lsr.l", ctz32(uc), "d0", "d1");
+      return true;
+    }
+    return false;
+  case ND_MOD:
+    if (u && is_pow2_32(uc)) {
+      gen_expr(node->lhs);
+      println("  andi.l #%ld,d0", (long)(uc - 1));
+      return true;
+    }
+    return false;
+  default:
+    return false;
+  }
+}
+
 static void gen_expr(Node *node) {
   switch (node->kind) {
   case ND_NULL_EXPR:
@@ -754,6 +908,14 @@ static void gen_expr(Node *node) {
   }
 
   // Integer binary operators: evaluate rhs, push; evaluate lhs; pop rhs->D1.
+  // At -O1+, a constant right operand is folded into an immediate/shift with no
+  // stack traffic (gen_const_binop emits nothing and returns false when it does
+  // not specialize the op, so the generic path below still runs).
+  int32_t cst;
+  if (opt_level >= 1 && is_integer(node->rhs->ty) && node->rhs->ty->size <= 4 &&
+      const_int32(node->rhs, &cst) && gen_const_binop(node, cst))
+    return;
+
   gen_expr(node->rhs);
   push();
   gen_expr(node->lhs);
@@ -1054,6 +1216,65 @@ static void emit_text(Obj *prog) {
   }
 }
 
+// --- P12 peephole (opt_level >= 1) -----------------------------------------
+//
+// A deliberately tiny pass over the buffered instruction stream. Every rule is
+// an exact-string match on the fixed vocabulary this file emits, and each is a
+// pure semantic no-op or dead-store elimination, so no data-flow analysis is
+// needed and correctness does not depend on surrounding context.
+
+static bool line_eq(char *l, char *s) { return l && !strcmp(l, s); }
+
+// Index of the next non-deleted line after i, or -1.
+static int peep_next(int i) {
+  for (int j = i + 1; j < outbuf.len; j++)
+    if (outbuf.data[j])
+      return j;
+  return -1;
+}
+
+// Instructions that overwrite ALL 32 bits of D0 without reading D0, so a
+// preceding "move.l a0,d0" (which only copied an address into D0) is dead.
+// Byte/word loads are deliberately excluded: they leave D0's high bits intact.
+static bool kills_d0(char *l) {
+  return line_eq(l, "  move.l (a0),d0") || line_eq(l, "  moveq #0,d0");
+}
+
+static void peephole(void) {
+  for (int i = 0; i < outbuf.len; i++) {
+    char *a = outbuf.data[i];
+    if (!a)
+      continue;
+    int j = peep_next(i);
+    if (j < 0)
+      break;
+    char *n = outbuf.data[j];
+
+    // R1: address<->data round-trip. gen_addr() leaves an address in D0 via
+    // "move.l a0,d0"; load()/deref immediately move it back with "movea.l
+    // d0,a0". A0 already equals D0 and MOVEA sets no flags, so drop the MOVEA.
+    if (line_eq(a, "  move.l a0,d0") && line_eq(n, "  movea.l d0,a0")) {
+      outbuf.data[j] = NULL;
+      i--; // re-examine i: the copy may now be dead (R2)
+      continue;
+    }
+
+    // R2: a "move.l a0,d0" whose result is overwritten before any use is dead.
+    if (line_eq(a, "  move.l a0,d0") && kills_d0(n))
+      outbuf.data[i] = NULL;
+  }
+}
+
+// Write the buffered module out (running the peephole first at -O1+). At -O0
+// nothing is buffered -- println wrote straight through -- so this is a no-op.
+static void flush_output(void) {
+  if (opt_level >= 1)
+    peephole();
+  for (int i = 0; i < outbuf.len; i++)
+    if (outbuf.data[i])
+      fprintf(output_file, "%s\n", outbuf.data[i]);
+}
+
 void codegen(Obj *prog, FILE *out) {
   output_file = out;
 
@@ -1091,4 +1312,5 @@ void codegen(Obj *prog, FILE *out) {
   emit_text(prog);
 
   println("  END");
+  flush_output();
 }

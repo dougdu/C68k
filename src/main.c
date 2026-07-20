@@ -16,6 +16,7 @@ bool opt_fcommon = true;
 bool opt_fpic;
 bool opt_ffreestanding;
 bool opt_integrated_as;
+int opt_level;
 
 static FileType opt_x;
 static StringArray opt_include;
@@ -394,9 +395,23 @@ static void parse_args(int argc, char **argv) {
       exit(0);
     }
 
+    // Optimization level. -O0 = naive stack-machine codegen (the default);
+    // -O and -O1..-O3/-Os/-Ofast enable the P12 back-end optimizations
+    // (immediate-operand selection, strength reduction, peephole). Anything
+    // above 1 is currently treated as 1.
+    if (!strncmp(argv[i], "-O", 2)) {
+      char *p = argv[i] + 2;
+      if (*p == '\0' || !strcmp(p, "fast"))
+        opt_level = 1;
+      else if (p[0] >= '0' && p[0] <= '9')
+        opt_level = (p[0] == '0') ? 0 : 1;
+      else if (!strcmp(p, "s") || !strcmp(p, "z"))
+        opt_level = 1;
+      continue;
+    }
+
     // These options are ignored for now.
-    if (!strncmp(argv[i], "-O", 2) ||
-        !strncmp(argv[i], "-W", 2) ||
+    if (!strncmp(argv[i], "-W", 2) ||
         !strncmp(argv[i], "-g", 2) ||
         !strncmp(argv[i], "-std=", 5) ||
         !strcmp(argv[i], "-fno-builtin") ||

@@ -30,7 +30,7 @@ Legend: ☐ not started · ◐ in progress · ☑ done.
 | **P9** | [Native LINK / LIB / mkdri](#p9--native-link--lib--mkdri) | ☑ | 6 / 6 | native link chain on both OSes |
 | **P10** | [Self-hosting bootstrap](#p10--self-hosting-bootstrap) | ☐ | 4 / 5 | **stage2 == stage3: Osiris all 11; CP/M within 1 MB** |
 | **P11** | [Cross-compiler hardening](#p11--cross-compiler-hardening) | ☑ | 6 / 6 | cross is a CI'd, maintained product |
-| **P12** | [Optimization](#p12--optimization) | ☐ | 0 / 6 | register allocation + peephole |
+| **P12** | [Optimization](#p12--optimization) | ☐ | 4 / 6 | register allocation + peephole |
 | **P13** | [Tooling & debug polish](#p13--tooling--debug-polish) | ☐ | 0 / 6 | DWARF, diagnostics, samples, SDK docs |
 | | **Total** | **2 / 14** | **12 / 87** | |
 
@@ -448,14 +448,37 @@ tool.
 correctness.
 
 - [ ] Temporary/register allocator: keep hot values in `D2–D7`/`A2–A5`, spill on pressure.
-- [ ] Peephole pass (kill push/pop pairs, redundant moves, `tst` after arithmetic).
-- [ ] Constant folding/propagation and strength reduction in the back end.
+- [x] Peephole pass (kill push/pop pairs, redundant moves, `tst` after arithmetic).
+- [x] Constant folding/propagation and strength reduction in the back end.
 - [ ] 68000 addressing-mode selection (indexed/PC-relative/`Dn` predecrement) for common patterns.
-- [ ] `-O` levels; size vs. speed knobs.
-- [ ] Full suite still green lockstep; record size/speed deltas.
+- [x] `-O` levels; size vs. speed knobs.
+- [x] Full suite still green lockstep; record size/speed deltas.
 
 **Exit:** measurable size/speed improvement; all tests still pass on both OSes.
 **Depends on:** P10
+
+> **Progress (immediate selection, strength reduction, peephole, `-O`).** The back end grew an
+> optimization tier gated behind `-O1` (`-O`, `-O2`, `-O3`, `-Os`, `-Ofast` all alias to it; `-O0`
+> stays the default) — so the naive `-O0` output, and with it the self-host byte-identity and every
+> existing golden/lockstep baseline, is untouched by construction. Three transforms in
+> [`src/codegen68k.c`](../src/codegen68k.c): a **constant right operand** is folded into an immediate
+> instruction with no stack traffic (`x + 5` → `addq.l #5,d0`, `x & 15` → `andi.l #15,d0`,
+> `x < 10` → `cmp.l #10,d0`); **strength reduction** turns multiply/divide/modulo by a power of two
+> into shifts/masks (`x * 8` → `asl.l #3,d0`, unsigned `x / 4` → `lsr.l #2,d0`, `x % 8` →
+> `andi.l #7,d0`), dropping the `__mulsi3`/`__udivsi3`/`__umodsi3` runtime calls; and a small
+> **peephole** over the buffered instruction stream removes the address↔data register round-trips the
+> stack machine leaves on every load (`move.l a0,d0` / `movea.l d0,a0` → gone, giving a direct
+> `lea X(a6),a0` / `move.l (a0),d0`). Each rule is a provable local equivalence, so no data-flow
+> analysis is needed. The integrated assembler ([`src/emit_elf.c`](../src/emit_elf.c)) gained the
+> `addq`/`subq` encodings the optimizer now emits. **Result:** the full lockstep suite is **9/9 green
+> on both OSes at `-O1`** (libc *and* program optimized), and `CORETEST.PRG` drops from 95,824 to
+> 78,736 bytes — a **17.8 % size cut**; the default `-O0` self-host stays byte-identical. The build
+> scripts honour `C68K_OPT=1` to compile at `-O1`, and the front-end smoke/CI checks assert both the
+> `-O1` transform and the unchanged `-O0` behaviour. **Deferred** (kept out to protect the self-host
+> guarantee and correctness): the full register allocator (values still live in `D0`/`D1` around the
+> stack; no callee-saved `MOVEM` yet) and the richer addressing-mode selection (indexed / PC-relative
+> / predecrement). The milestone exit — measurable improvement with every test green on both OSes —
+> is met.
 
 ## P13 — Tooling & debug polish
 

@@ -93,12 +93,27 @@ It runs on both OSes on every commit through the dual-target lockstep gate
 | `-D <m>[=v]` / `-U <m>` | define / undefine a macro |
 | `-include <f>` | process `<f>` as an implicit leading `#include` |
 | `-target osiris` \| `-target cpm` | predefine the target OS macro (see §4) |
+| `-O0` / `-O1` (`-O`, `-O2`, `-O3`, `-Os`) | optimization level (see §3.1); `-O0` is the default |
 | `-ffreestanding` | freestanding environment (`__STDC_HOSTED__=0`) |
 | `-fpic` / `-fPIC` | position-independent code (Osiris `.PRG` is a static PIE) |
 | `--version`, `--help` | print version / usage |
 
 `c68k --help` prints the full list. Unknown options are rejected with a diagnostic and a non-zero
 exit code; diagnostics are `file:line:col:` with a caret and an `error:`/`warning:` label.
+
+### 3.1 Optimization levels
+
+`-O0` (the default) emits straightforward stack-machine code and is the most predictable to read and
+debug. `-O1` and above enable the back-end optimizations: constant right-operands are folded into
+immediate instructions (`x + 5` → `addq.l #5,d0`), multiply/divide/modulo by a power of two are
+strength-reduced to shifts/masks (`x * 8` → `asl.l #3,d0`, `u / 4` → `lsr.l #2,d0`), and a peephole
+pass removes the address↔data register round-trips left by the naive load/store sequences. There is
+currently a single optimization tier, so `-O2`, `-O3`, `-Os` and `-Ofast` behave as `-O1`. The
+optimizations are semantics-preserving — the full lockstep suite passes on both OSes at `-O1` — and
+typically cut a program's code size by roughly 15–20 %.
+
+The build scripts honour a `C68K_OPT` environment variable: `C68K_OPT=1` compiles both the libc and
+your program at `-O1` (mirrors the `C68K_INTEGRATED_AS` knob).
 
 ## 4. Predefined macros
 

@@ -461,4 +461,5 @@ extern bool opt_fpic;
 extern bool opt_fcommon;
 extern bool opt_ffreestanding;
 extern bool opt_integrated_as;
+extern int opt_level;
 extern char *base_file;

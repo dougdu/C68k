@@ -98,6 +98,8 @@ smoke: c68k
 	@printf '#ifdef __CPM68K__\nint P;\n#endif\n' | ./c68k -E -xc --target=cpm - | grep -q 'int P'
 	@./c68k --help 2>&1 | grep -q c68k
 	@./c68k --version 2>&1 | grep -q c68k
+	@printf 'int f(int x){return x*8;}\n' | ./c68k -O1 -S -o- -xc - | grep -q 'asl.l'
+	@printf 'int f(int x){return x*8;}\n' | ./c68k -S -o- -xc - | grep -q '__mulsi3'
 	@echo "front-end smoke OK"
 
 # P1 type-model check (big-endian ILP32). Pure front end (-S, no assembler), so

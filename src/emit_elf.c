@@ -524,6 +524,20 @@ static void encode_insn(char *mnem, char *o1, char *o2) {
     return;
   }
 
+  // addq/subq #imm,<ea>  (immediate 1..8; data-register or memory dest). The
+  // adda/suba path above emits the same 0101 encoding for An destinations; this
+  // handles the explicit ADDQ/SUBQ the P12 optimizer emits into data regs.
+  if (!strcmp(base, "addq") || !strcmp(base, "subq")) {
+    EA s = parse_ea(o1, sz), d = parse_ea(o2, sz);
+    bool issub = base[0] == 's';
+    int data = (int)s.imm & 7; // 8 -> 0
+    int op = (5 << 12) | (data << 9) | (issub << 8) | (std_size_field(sz) << 6) |
+             (d.mode << 3) | d.reg;
+    b16(&text, op);
+    emit_ext(&d);
+    return;
+  }
+
   if (!strcmp(base, "addx") || !strcmp(base, "subx")) {
     EA s = parse_ea(o1, sz), d = parse_ea(o2, sz); // Dy,Dx
     int topnib = base[0] == 's' ? 0x9 : 0xd;
