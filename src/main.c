@@ -373,10 +373,25 @@ static FILE *open_file(char *path) {
   return out;
 }
 
-static bool endswith(char *p, char *q) {
+// Case-insensitive suffix test.  The Osiris/CP/M-68K filesystems are
+// case-folding (filenames arrive uppercase, e.g. FOO.C / FOO.O), so file-type
+// detection must accept an uppercase extension as readily as a lowercase one.
+static bool endswith_ci(char *p, char *q) {
   int len1 = strlen(p);
   int len2 = strlen(q);
-  return (len1 >= len2) && !strcmp(p + len1 - len2, q);
+  if (len1 < len2)
+    return false;
+  p += len1 - len2;
+  for (int i = 0; i < len2; i++) {
+    char a = p[i], b = q[i];
+    if (a >= 'A' && a <= 'Z')
+      a += 'a' - 'A';
+    if (b >= 'A' && b <= 'Z')
+      b += 'a' - 'A';
+    if (a != b)
+      return false;
+  }
+  return true;
 }
 
 // Replace file extension
@@ -745,15 +760,15 @@ static FileType get_file_type(char *filename) {
   if (opt_x != FILE_NONE)
     return opt_x;
 
-  if (endswith(filename, ".a"))
+  if (endswith_ci(filename, ".a"))
     return FILE_AR;
-  if (endswith(filename, ".so"))
+  if (endswith_ci(filename, ".so"))
     return FILE_DSO;
-  if (endswith(filename, ".o"))
+  if (endswith_ci(filename, ".o"))
     return FILE_OBJ;
-  if (endswith(filename, ".c"))
+  if (endswith_ci(filename, ".c"))
     return FILE_C;
-  if (endswith(filename, ".s"))
+  if (endswith_ci(filename, ".s"))
     return FILE_ASM;
 
   error("<command line>: unknown file extension: %s", filename);
@@ -777,7 +792,8 @@ int main(int argc, char **argv) {
 
   for (int i = 0; i < input_paths.len; i++) {
     char *input = input_paths.data[i];
-    if (get_file_type(input) != FILE_C)
+    int ft = get_file_type(input);
+    if (ft != FILE_C && ft != FILE_ASM)
       error("%s: native c68k compiles only C sources (link separately)", input);
 
     char *output;
@@ -789,6 +805,12 @@ int main(int argc, char **argv) {
       output = replace_extn(input, ".o");
 
     base_file = input;
+
+    // A pre-assembled .s input: run only the integrated assembler.
+    if (ft == FILE_ASM) {
+      assemble_to_elf(input, output);
+      continue;
+    }
 
     // -E / -M (preprocess) or -S (assembly): cc1 writes straight to the output.
     if (opt_E || opt_M || opt_S) {

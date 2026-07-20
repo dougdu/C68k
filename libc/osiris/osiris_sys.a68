@@ -36,6 +36,13 @@ STKSIZE      equ  $4000       ; 16 KiB user stack reserved at the arena top
 HEAPSLOP     equ  $100
 CHUNK        equ  32768       ; max bytes per DOS read/write (CX is 16-bit)
 
+* Command-tail (argv) parsing.  The loader leaves the DOS-style tail in the
+* PSP: a length byte at PSP+80h and the chars (CR-terminated) at PSP+81h.
+PSP_CMDLEN   equ  $80         ; byte: command-tail length
+PSP_CMDTAIL  equ  $81         ; command-tail characters
+ARGVMAX      equ  32          ; argv[] slots (argv[0] + args + NULL terminator)
+ARGBUFSZ     equ  128         ; mutable copy of the tail
+
         .code
 
 **********************************************************
@@ -66,11 +73,11 @@ _start:
         subi.l  #STKSIZE,d0         ; heap length = arena - reserved stack
         move.l  d0,c_heaplen
 
-        lea     c_envp,a0           ; main(argc=1, argv, envp)
+        lea     c_envp,a0           ; main(argc, argv, envp)
         move.l  a0,-(sp)
         lea     c_argv,a0
         move.l  a0,-(sp)
-        moveq   #1,d0
+        bsr     build_argv          ; parse the command tail -> c_argv[]; D0 = argc
         move.l  d0,-(sp)
         jsr     _main
         lea     12(sp),sp
@@ -82,6 +89,77 @@ start_nomem:
         trap    #1
 sn_spin:
         bra     sn_spin
+
+**********************************************************
+* build_argv --- tokenise the DOS command tail into the argv[] array.
+* argv[0] is a placeholder program name; argv[1..] are the whitespace-
+* delimited tail tokens; the array is NULL-terminated.  The tail is copied
+* into c_argbuf so each token can be NUL-terminated in place.  Returns
+* D0 = argc.  (Matches the cmdlib cl_args tokeniser: split on space/tab.)
+**********************************************************
+build_argv:
+        movem.l d1-d4/a0-a3,-(sp)
+        movea.l c_psp,a0            ; A0 = PSP
+        moveq   #0,d1
+        move.b  PSP_CMDLEN(a0),d1   ; D1 = tail length (0..127)
+        cmpi.w  #ARGBUFSZ-1,d1
+        bls     ba_lenok
+        move.w  #ARGBUFSZ-1,d1      ; clamp to the buffer
+ba_lenok:
+        lea     PSP_CMDTAIL(a0),a1  ; A1 = tail chars (source)
+        lea     c_argbuf,a2         ; A2 = mutable copy (dest)
+        move.w  d1,d2
+        bra     ba_ctest
+ba_copy:
+        move.b  (a1)+,(a2)+
+        subq.w  #1,d2
+ba_ctest:
+        tst.w   d2
+        bne     ba_copy
+        clr.b   (a2)               ; NUL-terminate the copy
+
+        lea     c_argv,a3          ; A3 = argv[] cursor
+        lea     c_progname,a0
+        move.l  a0,(a3)+           ; argv[0] = program-name placeholder
+        moveq   #1,d3              ; D3 = argc = 1
+        lea     c_argbuf,a2        ; A2 = scan cursor
+ba_skip:
+        move.b  (a2),d4
+        beq     ba_end             ; NUL -> tail exhausted
+        cmpi.b  #' ',d4
+        beq     ba_wsp
+        cmpi.b  #9,d4              ; tab
+        beq     ba_wsp
+        cmpi.b  #13,d4             ; CR (defensive; not normally copied)
+        beq     ba_end
+        bra     ba_token
+ba_wsp:
+        addq.l  #1,a2
+        bra     ba_skip
+ba_token:
+        cmpi.w  #ARGVMAX-1,d3      ; leave a slot for the NULL terminator
+        bhs     ba_end
+        move.l  a2,(a3)+           ; argv[argc] = token start
+        addq.w  #1,d3
+ba_tchar:
+        move.b  (a2),d4
+        beq     ba_end             ; end of buffer -> last token
+        cmpi.b  #' ',d4
+        beq     ba_cut
+        cmpi.b  #9,d4
+        beq     ba_cut
+        cmpi.b  #13,d4
+        beq     ba_cut
+        addq.l  #1,a2
+        bra     ba_tchar
+ba_cut:
+        clr.b   (a2)+             ; terminate the token, step past the delimiter
+        bra     ba_skip
+ba_end:
+        clr.l   (a3)              ; argv[argc] = NULL
+        move.l  d3,d0             ; return argc
+        movem.l (sp)+,d1-d4/a0-a3
+        rts
 
 **********************************************************
 * void _sys_exit(int code) --- DOS 4Ch. Never returns.
@@ -323,8 +401,6 @@ _sys_time:
         .data
 c_progname  dc.b  'PROG',0
         ALIGN 2
-c_argv      dc.l  c_progname       ; argv[0]
-            dc.l  0                 ; argv[1] = NULL
 c_envp      dc.l  0                 ; envp[0] = NULL
 
         .bss
@@ -332,5 +408,7 @@ c_psp       ds.l  1
 c_heapbase  ds.l  1
 c_heaplen   ds.l  1
 c_brk       ds.l  1
+c_argv      ds.l  ARGVMAX           ; argv[] built from the command tail
+c_argbuf    ds.b  ARGBUFSZ          ; mutable copy of the command tail
 
         end

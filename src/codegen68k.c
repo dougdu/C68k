@@ -83,10 +83,15 @@ static void pop64(char *hi, char *lo) {
 
 // Materialize an integer constant into D0 (MOVEQ when it fits a signed byte).
 static void load_imm(int64_t val) {
+  // NB: cast to (long) so the varargs width matches the "%ld" conversion.
+  // int64_t is "long long" here; passing it to a "%ld" (32-bit long) slot
+  // reads the wrong half on a big-endian LP32 self-host (68k) -- e.g. "1"
+  // would print as "0". This function only handles 32-bit-representable
+  // values (64-bit constants go through load_imm64), so (long) is exact.
   if (val >= -128 && val <= 127)
-    println("  moveq #%ld,d0", val);
+    println("  moveq #%ld,d0", (long)val);
   else
-    println("  move.l #%ld,d0", val);
+    println("  move.l #%ld,d0", (long)val);
 }
 
 // Materialize a 64-bit integer constant into D0:D1 (D0=high, D1=low).

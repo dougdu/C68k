@@ -1017,12 +1017,16 @@ static int _vformat(_psink *s, const char *fmt, va_list ap) {
     }
     fmt++;
 
-    int left = 0, zero = 0;
+    int left = 0, zero = 0, plus = 0, space = 0;
     for (;; fmt++) {
       if (*fmt == '-')
         left = 1;
       else if (*fmt == '0')
         zero = 1;
+      else if (*fmt == '+')
+        plus = 1;
+      else if (*fmt == ' ')
+        space = 1;
       else
         break;
     }
@@ -1059,6 +1063,7 @@ static int _vformat(_psink *s, const char *fmt, va_list ap) {
         uv = (unsigned long long)(-v);
       } else {
         uv = (unsigned long long)v;
+        sign = plus ? '+' : (space ? ' ' : 0);
       }
       slen = _u64toa(uv, 10, 0, numbuf);
       break;
@@ -1103,6 +1108,8 @@ static int _vformat(_psink *s, const char *fmt, va_list ap) {
       if (dv < 0.0) {
         sign = '-';
         dv = -dv;
+      } else {
+        sign = plus ? '+' : (space ? ' ' : 0);
       }
       if (*fmt == 'e' || *fmt == 'E')
         slen = fmt_sci(dv, p, numbuf);

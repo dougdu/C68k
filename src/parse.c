@@ -3241,11 +3241,13 @@ static Token *function(Token *tok, Type *basety, VarAttr *attr) {
   enter_scope();
   create_param_lvars(ty->params);
 
-  // A buffer for a struct/union return value is passed
-  // as the hidden first parameter.
-  Type *rty = ty->return_ty;
-  if ((rty->kind == TY_STRUCT || rty->kind == TY_UNION) && rty->size > 16)
-    new_lvar("", pointer_to(rty));
+  // NB: a struct/union return value is passed via a hidden pointer to the
+  // caller's buffer at 8(a6). On the c68k m68k ABI that hidden slot is NOT a
+  // member of fn->params: the codegen reserves it uniformly (assign_lvar_offsets
+  // adds +4 for any aggregate return, and ND_RETURN copies through 8(a6)
+  // directly). Adding it as a param here too would double-count the slot and
+  // shift every real parameter up by 4 (a self-host miscompile of any function
+  // returning an aggregate larger than 16 bytes, e.g. the assembler's parse_ea).
 
   fn->params = locals;
 

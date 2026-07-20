@@ -297,7 +297,7 @@ dependency ([architecture.md §8](architecture.md#8-object-emission-text-asm-now
 
 **Objective:** the native compiler compiles **its own source** to a byte-identical binary.
 
-- [ ] Cross-compile the compiler for m68k → `CC.PRG` / `CC.68K` (stage2).
+- [x] Cross-compile the compiler for m68k → `CC.PRG` / `CC.68K` (stage2).
 - [ ] Run `CC` under `sim68k` to compile its own source → stage3.
 - [ ] **stage2 == stage3** (byte-identical) on **both** OSes.
 - [ ] Fit/perf pass: the native compiler runs within a realistic Osiris/CP/M memory budget.
@@ -326,9 +326,23 @@ dependency ([architecture.md §8](architecture.md#8-object-emission-text-asm-now
 > `#ifdef`'d out, and libc gained `atexit`/`unlink`/`close` + a native `file_exists`/`create_tmpfile`
 > (new `<unistd.h>`). So **all 10 compiler translation units + `libc.c` self-compile**, and
 > [`tools/osiris/build-cc.ps1`](../tools/osiris/build-cc.ps1) **links the stage2 `CC.PRG`** (a
-> ~440 KB static-PIE Osiris binary) from them + crt0 + runtime + the soft-float archive. **Next:**
-> smoke-run `CC.PRG` under `sim68k` (compile a `.c` → `.o` on-target; the compiler's arena vs. the
-> memory model is the risk), then the stage3 self-recompile and the byte-identity check, then CP/M.
+> ~440 KB static-PIE Osiris binary) from them + crt0 + runtime + the soft-float archive.
+>
+> **Stage2 smoke-run passes.** [`tools/osiris/smoke-cc.ps1`](../tools/osiris/smoke-cc.ps1) boots
+> `CC.PRG` under `sim68k` (16 MB model), runs `CC -c X.C -o X.O` on-target, extracts the object from
+> the FAT12 floppy and **byte-compares it to the cross-compiler's object** — a per-file stage2⇒stage3
+> result. It is now **byte-identical** for a trivial function, a hand-written `.s` (the native driver
+> also assembles `.s`→`.o` directly), and a multi-feature sample (globals, loops, pointers, calls,
+> rodata). Getting there surfaced and fixed **three self-host-only miscompiles** (each latent because
+> the host `c68k.exe` is MSVC-built, so only the *generated* 68k code was wrong): (1) a **struct-
+> return-by-value ABI double-count** — [`parse.c`](../src/parse.c) added a hidden return-buffer
+> parameter for aggregates > 16 bytes *and* the codegen reserved the same hidden `8(a6)` slot, so
+> every real parameter of any aggregate-returning function shifted +4 (the assembler's `parse_ea`
+> returns a 40-byte `EA`, so every operand parsed as empty); (2) **`%ld` with an `int64_t` arg** in
+> `load_imm` read the wrong half on the big-endian LP32 target (a literal `1` compiled to `moveq #0`);
+> (3) c68k's libc `printf` never parsed the **`+` flag**, so the codegen's `"%s%+ld"` relocation
+> addend leaked the format string literally. **Next:** the full stage3 self-recompile and the
+> byte-identity check, then CP/M and the CI gate.
 
 **Exit (M4):** `CC` self-hosts to a byte-identical binary on both OSes.
 **Depends on:** P9
