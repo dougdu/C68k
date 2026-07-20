@@ -34,6 +34,13 @@ if ($env:C68K_INTEGRATED_AS -eq '1') { $asArgs = @('-fintegrated-as') }
 $optArgs = @()
 if ($env:C68K_OPT) { $optArgs = @("-O$($env:C68K_OPT)") }
 
+# Debug info (P13): set C68K_G=1 to compile the program with -g (DWARF) and keep
+# the symbols/debug sections in the linked .PRG (the link omits -s). The .PRG
+# still runs -- the loader ignores the non-alloc debug/symbol sections.
+$gArgs = @()
+$stripArgs = @('-s')
+if ($env:C68K_G) { $gArgs = @('-g'); $stripArgs = @() }
+
 $repo = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
 $inc  = Join-Path $repo 'libc\include'
 $sysA = Join-Path $repo 'libc\osiris\osiris_sys.a68'
@@ -76,8 +83,8 @@ $prg   = Join-Path $OutDir "$Name.PRG"
 Invoke-Step 'asm crt0/seam' { & $Asm /Cx /elf /c /nologo "/Fo$sysO" $sysA }
 Invoke-Step 'asm runtime'   { & $Asm /Cx /elf /c /nologo "/Fo$rtO"  $rtA }
 Invoke-Step 'cc libc'       { & $Cc @asArgs @optArgs -c $libcC -o $libcO "-I$inc" }
-Invoke-Step 'cc program'    { & $Cc @asArgs @optArgs -c $Src   -o $progO "-I$inc" }
-Invoke-Step 'link .PRG'     { & $Ld -pie --no-dynamic-linker -z max-page-size=0x20 -s -T $LdScript "-Map=$([IO.Path]::ChangeExtension($prg,'.map'))" $sysO $progO $libcO $rtO $FloatLib -o $prg }
+Invoke-Step 'cc program'    { & $Cc @asArgs @optArgs @gArgs -c $Src   -o $progO "-I$inc" }
+Invoke-Step 'link .PRG'     { & $Ld -pie --no-dynamic-linker -z max-page-size=0x20 @stripArgs -T $LdScript "-Map=$([IO.Path]::ChangeExtension($prg,'.map'))" $sysO $progO $libcO $rtO $FloatLib -o $prg }
 
 Write-Host "build-prg: $prg" -ForegroundColor Green
 $prg

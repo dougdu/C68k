@@ -56,6 +56,21 @@ static int count(void) {
   return i++;
 }
 
+// -g line info: emit a ";@loc N" marker (a comment external assemblers ignore;
+// the integrated assembler turns it into a DWARF .debug_line row) when the
+// source line changes. last_loc suppresses consecutive duplicates.
+static int last_loc;
+
+static void gen_loc(Node *node) {
+  if (!opt_g || !node || !node->tok)
+    return;
+  int line = node->tok->line_no;
+  if (line <= 0 || line == last_loc)
+    return;
+  last_loc = line;
+  println(";@loc %d", line);
+}
+
 // C symbols get a leading underscore in the emitted asm: no 68000 mnemonic
 // begins with '_', so this avoids collisions (e.g. a C function named `add`
 // vs the ADD instruction). Traditional m68k/CP/M-68K C ABI convention.
@@ -982,6 +997,7 @@ static void gen_expr(Node *node) {
 }
 
 static void gen_stmt(Node *node) {
+  gen_loc(node);
   switch (node->kind) {
   case ND_IF: {
     int c = count();
@@ -1183,6 +1199,8 @@ static void emit_text(Obj *prog) {
       println("  PUBLIC %s", sym(fn->name));
 
     println("  .code");
+    if (opt_g)
+      println(";@func %s", sym(fn->name));
     println("%s:", sym(fn->name));
     current_fn = fn;
 
@@ -1213,6 +1231,8 @@ static void emit_text(Obj *prog) {
     println("L_return_%s:", fn->name);
     println("  unlk a6");
     println("  rts");
+    if (opt_g)
+      println(";@endfunc %s", sym(fn->name));
   }
 }
 
@@ -1278,6 +1298,9 @@ static void flush_output(void) {
 void codegen(Obj *prog, FILE *out) {
   output_file = out;
 
+  last_loc = 0;
+  if (opt_g && base_file)
+    println(";@file \"%s\"", base_file);
   println("  .model flat");
   // Runtime helpers the 68000 lacks as single instructions: 32/64-bit integer
   // mul/div/mod/shift/compare (rt68k) and IEEE soft-float (libieee754d).

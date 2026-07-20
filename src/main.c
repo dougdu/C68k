@@ -18,6 +18,7 @@ bool opt_ffreestanding;
 bool opt_integrated_as;
 int opt_level;
 bool opt_Werror;
+bool opt_g;
 
 static FileType opt_x;
 static StringArray opt_include;
@@ -418,9 +419,15 @@ static void parse_args(int argc, char **argv) {
       continue;
     }
 
+    // Debug info. -g emits DWARF line/symbol info (via the integrated
+    // assembler); -g0 explicitly disables it. Other -g variants map to on.
+    if (!strncmp(argv[i], "-g", 2)) {
+      opt_g = strcmp(argv[i], "-g0") != 0;
+      continue;
+    }
+
     // These options are ignored for now.
     if (!strncmp(argv[i], "-W", 2) ||
-        !strncmp(argv[i], "-g", 2) ||
         !strncmp(argv[i], "-std=", 5) ||
         !strcmp(argv[i], "-fno-builtin") ||
         !strcmp(argv[i], "-fno-omit-frame-pointer") ||

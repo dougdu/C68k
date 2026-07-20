@@ -49,6 +49,29 @@ static void buf_align(Buf *b, int a) {
     b8(b, 0);
 }
 
+// DWARF LEB128 encoders.
+static void uleb(Buf *b, uint64_t v) {
+  do {
+    uint8_t byte = v & 0x7f;
+    v >>= 7;
+    if (v)
+      byte |= 0x80;
+    b8(b, byte);
+  } while (v);
+}
+static void sleb(Buf *b, int64_t v) {
+  for (;;) {
+    uint8_t byte = v & 0x7f;
+    v >>= 7; // arithmetic shift
+    bool done = (v == 0 && !(byte & 0x40)) || (v == -1 && (byte & 0x40));
+    if (!done)
+      byte |= 0x80;
+    b8(b, byte);
+    if (done)
+      return;
+  }
+}
+
 // Append a NUL-terminated string to a buffer; return its starting offset.
 static int add_str(Buf *b, char *s) {
   int o = b->len;
@@ -76,6 +99,8 @@ enum { S_NULL, S_TEXT, S_DATA, S_BSS, S_RODATA };
 #define STB_LOCAL 0
 #define STB_GLOBAL 1
 #define STT_NOTYPE 0
+#define STT_FUNC 2
+#define STT_SECTION 3
 #define SHN_UNDEF 0
 #define SHN_ABS 0xfff1
 #define R_68K_32 1
@@ -87,6 +112,7 @@ typedef struct {
   uint32_t value; // offset within section
   uint32_t size;
   int bind;       // STB_*
+  bool is_section; // STT_SECTION marker (for debug relocations)
   int nameoff;    // .strtab offset (filled at write)
   int index;      // final symtab index (filled after ordering)
 } Sym;
@@ -117,6 +143,17 @@ static int nfix, capfix;
 
 static StringArray public_names;
 static StringArray extern_names;
+static StringArray func_names; // names marked STT_FUNC via ;@func (see -g)
+
+// -g line table: (address, source line) rows collected from ;@loc directives,
+// plus the source filename from ;@file. Drives the DWARF .debug_line program.
+typedef struct {
+  uint32_t addr;
+  int line;
+} LineRow;
+static LineRow *lrows;
+static int nlrow, caplrow;
+static char *dbg_file;
 
 // ------------------------------------------------------------------ symbols
 static Sym *sym_find(char *name) {
@@ -145,6 +182,23 @@ static void sym_define(char *name, int shndx, uint32_t value) {
   Sym *s = sym_intern(name);
   s->shndx = shndx;
   s->value = value;
+}
+
+// Append an STT_SECTION symbol (used as the target of debug-section
+// relocations) and return its syms[] slot; shndx is the referenced section's
+// header index.
+static int add_section_sym(int shndx) {
+  if (nsym == capsym) {
+    capsym = capsym ? capsym * 2 : 64;
+    syms = realloc(syms, capsym * sizeof(Sym));
+  }
+  Sym *s = &syms[nsym];
+  memset(s, 0, sizeof(*s));
+  s->name = "";
+  s->is_section = true;
+  s->shndx = shndx;
+  s->bind = STB_LOCAL;
+  return nsym++;
 }
 
 static bool in_list(StringArray *a, char *name) {
@@ -661,6 +715,46 @@ static void encode_insn(char *mnem, char *o1, char *o2) {
 // ------------------------------------------------------------------ line
 static bool starts(char *s, char *pfx) { return !strncmp(s, pfx, strlen(pfx)); }
 
+// Debug directives ride in as ";@..." comments (external assemblers ignore
+// them); codegen emits them under -g. ;@func / ;@endfunc bracket a function so
+// its symbol becomes STT_FUNC with a size.
+static void handle_debug_dir(char *s) {
+  s = trim(s);
+  if (starts(s, "func ")) {
+    char *name = trim(s + 5);
+    strarray_push(&func_names, xstrndup(name, (int)strlen(name)));
+  } else if (starts(s, "endfunc ")) {
+    Sym *fn = sym_find(trim(s + 8));
+    if (fn && fn->shndx == S_TEXT)
+      fn->size = text.len - fn->value;
+  } else if (starts(s, "file ")) {
+    char *p = trim(s + 5);
+    if (*p == '"') {
+      p++;
+      char *q = p;
+      while (*q && *q != '"')
+        q++;
+      *q = 0;
+    }
+    dbg_file = xstrndup(p, (int)strlen(p));
+  } else if (starts(s, "loc ")) {
+    int line = (int)parse_num(trim(s + 4));
+    // One row per address: a later ;@loc at the same offset (no instruction
+    // between) just updates the line.
+    if (nlrow > 0 && lrows[nlrow - 1].addr == text.len) {
+      lrows[nlrow - 1].line = line;
+      return;
+    }
+    if (nlrow == caplrow) {
+      caplrow = caplrow ? caplrow * 2 : 128;
+      lrows = realloc(lrows, caplrow * sizeof(LineRow));
+    }
+    lrows[nlrow].addr = text.len;
+    lrows[nlrow].line = line;
+    nlrow++;
+  }
+}
+
 static void do_data_dir(char *first, char *rest) {
   // first (uppercased) is DC.B / DC.L / DS.B; rest is the value/expr.
   char up[8] = {0};
@@ -696,6 +790,10 @@ static void do_data_dir(char *first, char *rest) {
 
 static void assemble_line(char *line) {
   char *s = trim(line);
+  if (s[0] == ';' && s[1] == '@') {
+    handle_debug_dir(s + 2);
+    return;
+  }
   if (!*s || *s == '*' || *s == ';')
     return;
 
@@ -843,8 +941,113 @@ static void put16(FILE *f, int v) {
   fputc(v, f);
 }
 
+// Patch a big-endian 32-bit value into a buffer at a byte offset.
+static void patch32(Buf *b, int off, uint32_t v) {
+  b->data[off + 0] = v >> 24;
+  b->data[off + 1] = v >> 16;
+  b->data[off + 2] = v >> 8;
+  b->data[off + 3] = v;
+}
+
+// Emit a NUL-terminated string into a buffer (no length prefix).
+static void put_cstr(Buf *b, char *s) {
+  for (char *c = s; *c; c++)
+    b8(b, *c);
+  b8(b, 0);
+}
+
+// Build the DWARF-4 debug sections from the collected line rows. Fills the
+// abbrev / info / line buffers and reports the byte offsets that need an
+// R_68K_32 relocation:
+//   *info_abbrev_off -> .debug_abbrev, *info_lowpc_off + *line_addr_off -> .text,
+//   *info_stmt_off   -> .debug_line.
+static void build_debug(Buf *abbrev, Buf *info, Buf *line, int *info_abbrev_off,
+                        int *info_lowpc_off, int *info_stmt_off,
+                        int *line_addr_off) {
+  char *fname = dbg_file ? dbg_file : "a.c";
+
+  // ---- .debug_abbrev: one abbrev, DW_TAG_compile_unit, no children ----
+  uleb(abbrev, 1);                        // abbrev code
+  uleb(abbrev, 0x11);                     // DW_TAG_compile_unit
+  b8(abbrev, 0);                          // DW_CHILDREN_no
+  uleb(abbrev, 0x25); uleb(abbrev, 0x08); // DW_AT_producer, DW_FORM_string
+  uleb(abbrev, 0x13); uleb(abbrev, 0x0b); // DW_AT_language, DW_FORM_data1
+  uleb(abbrev, 0x03); uleb(abbrev, 0x08); // DW_AT_name,     DW_FORM_string
+  uleb(abbrev, 0x11); uleb(abbrev, 0x01); // DW_AT_low_pc,   DW_FORM_addr
+  uleb(abbrev, 0x12); uleb(abbrev, 0x06); // DW_AT_high_pc,  DW_FORM_data4
+  uleb(abbrev, 0x10); uleb(abbrev, 0x17); // DW_AT_stmt_list, DW_FORM_sec_offset
+  uleb(abbrev, 0); uleb(abbrev, 0);       // end of attributes
+  uleb(abbrev, 0);                        // end of abbrev table
+
+  // ---- .debug_info: CU header + one compile_unit DIE ----
+  int info_start = info->len;
+  b32(info, 0);         // unit_length (patched below)
+  b16(info, 4);         // version
+  *info_abbrev_off = info->len;
+  b32(info, 0);         // debug_abbrev_offset (reloc -> .debug_abbrev)
+  b8(info, 4);          // address_size
+  uleb(info, 1);        // abbrev code 1
+  put_cstr(info, "c68k");
+  b8(info, 0x0c);       // DW_LANG_C99
+  put_cstr(info, fname);
+  *info_lowpc_off = info->len;
+  b32(info, 0);         // low_pc (reloc -> .text)
+  b32(info, text.len);  // high_pc (offset form, DWARF 4)
+  *info_stmt_off = info->len;
+  b32(info, 0);         // stmt_list (reloc -> .debug_line)
+  patch32(info, info_start, info->len - (info_start + 4));
+
+  // ---- .debug_line: header + line-number program ----
+  int line_start = line->len;
+  b32(line, 0);         // unit_length (patched)
+  b16(line, 4);         // version
+  int hlen_off = line->len;
+  b32(line, 0);         // header_length (patched)
+  b8(line, 1);          // minimum_instruction_length
+  b8(line, 1);          // maximum_operations_per_instruction
+  b8(line, 1);          // default_is_stmt
+  b8(line, (uint8_t)(-5)); // line_base
+  b8(line, 14);         // line_range
+  b8(line, 13);         // opcode_base
+  static const uint8_t sol[12] = {0, 1, 1, 1, 1, 0, 0, 0, 1, 0, 0, 1};
+  for (int i = 0; i < 12; i++) // standard_opcode_lengths[1..12]
+    b8(line, sol[i]);
+  b8(line, 0);          // include_directories: empty
+  put_cstr(line, fname); // file_names[1]: name
+  uleb(line, 0);        //   dir index
+  uleb(line, 0);        //   mtime
+  uleb(line, 0);        //   length
+  b8(line, 0);          // end of file_names
+  patch32(line, hlen_off, line->len - (hlen_off + 4));
+
+  // line-number program: set address 0 (relocated), then a row per ;@loc.
+  b8(line, 0); uleb(line, 5); b8(line, 0x02); // DW_LNE_set_address
+  *line_addr_off = line->len;
+  b32(line, 0);         // address (reloc -> .text)
+  int cur_line = 1;
+  uint32_t cur_addr = 0;
+  for (int i = 0; i < nlrow; i++) {
+    if (lrows[i].addr != cur_addr) {
+      b8(line, 2); // DW_LNS_advance_pc
+      uleb(line, lrows[i].addr - cur_addr);
+      cur_addr = lrows[i].addr;
+    }
+    if (lrows[i].line != cur_line) {
+      b8(line, 3); // DW_LNS_advance_line
+      sleb(line, lrows[i].line - cur_line);
+      cur_line = lrows[i].line;
+    }
+    b8(line, 1); // DW_LNS_copy -> append a row
+  }
+  if (text.len > cur_addr) {
+    b8(line, 2); // advance_pc to end of text
+    uleb(line, text.len - cur_addr);
+  }
+  b8(line, 0); uleb(line, 1); b8(line, 0x01); // DW_LNE_end_sequence
+  patch32(line, line_start, line->len - (line_start + 4));
+}
+
 void assemble_to_elf(char *inpath, char *outpath) {
-  // reset state (the driver assembles one file per process, but be safe)
   memset(&text, 0, sizeof text);
   memset(&data, 0, sizeof data);
   memset(&rodata, 0, sizeof rodata);
@@ -853,6 +1056,9 @@ void assemble_to_elf(char *inpath, char *outpath) {
   nsym = nrel = nfix = 0;
   public_names = (StringArray){0};
   extern_names = (StringArray){0};
+  func_names = (StringArray){0};
+  nlrow = 0;
+  dbg_file = NULL;
 
   // pass 1: assemble the .s streaming, one line at a time, into a single
   // reusable buffer. Two self-hosted (CP/M-68K) constraints drive this:
@@ -911,6 +1117,41 @@ void assemble_to_elf(char *inpath, char *outpath) {
       s->bind = STB_LOCAL;
   }
 
+  // ---- section index layout (fixed order; debug sections are conditional) --
+  bool have_rt = false, have_rd = false;
+  for (int i = 0; i < nrel; i++) {
+    if (rels[i].sec == S_DATA)
+      have_rd = true;
+    else
+      have_rt = true;
+  }
+  bool have_dbg = nlrow > 0;
+
+  int next = S_RODATA + 1; // first free index after .rodata (= 5)
+  if (have_rt)
+    next++;
+  if (have_rd)
+    next++;
+  int idx_dabbrev = 0, idx_dinfo = 0, idx_dline = 0;
+  if (have_dbg) {
+    idx_dabbrev = next++;
+    idx_dinfo = next++;
+    idx_dline = next++;
+    next += 2; // .rela.debug_info, .rela.debug_line
+  }
+  int idx_symtab = next++;
+  int idx_strtab = next++;
+  int idx_shstr = next++;
+
+  // Section symbols (STT_SECTION) that the debug relocations target. Added
+  // before the symtab is ordered so they receive symtab indices.
+  int ssym_text = -1, ssym_dabbrev = -1, ssym_dline = -1;
+  if (have_dbg) {
+    ssym_text = add_section_sym(S_TEXT);
+    ssym_dabbrev = add_section_sym(idx_dabbrev);
+    ssym_dline = add_section_sym(idx_dline);
+  }
+
   // order symbols: NULL, then locals, then globals; assign indices.
   // Build .strtab as we go.
   Buf strtab = {0};
@@ -931,15 +1172,22 @@ void assemble_to_elf(char *inpath, char *outpath) {
       if (s->bind != want)
         continue;
       s->index = symidx++;
-      s->nameoff = strtab.len;
-      for (char *c = s->name; *c; c++)
-        b8(&strtab, *c);
-      b8(&strtab, 0);
+      if (s->is_section) {
+        s->nameoff = 0; // section symbols carry no name
+      } else {
+        s->nameoff = strtab.len;
+        for (char *c = s->name; *c; c++)
+          b8(&strtab, *c);
+        b8(&strtab, 0);
+      }
+      int typ = s->is_section              ? STT_SECTION
+                : in_list(&func_names, s->name) ? STT_FUNC
+                                                : STT_NOTYPE;
       // Elf32_Sym: name, value, size, info, other, shndx
       b32(&symtab, s->nameoff);
       b32(&symtab, s->value);
       b32(&symtab, s->size);
-      b8(&symtab, (s->bind << 4) | STT_NOTYPE);
+      b8(&symtab, (s->bind << 4) | typ);
       b8(&symtab, 0);
       b16(&symtab, s->shndx);
     }
@@ -960,12 +1208,33 @@ void assemble_to_elf(char *inpath, char *outpath) {
     b32(rb, (uint32_t)r->add);
   }
 
+  // DWARF debug sections + their relocations (targets are the section symbols).
+  Buf dabbrev = {0}, dinfo = {0}, dline = {0};
+  Buf rela_dinfo = {0}, rela_dline = {0};
+  if (have_dbg) {
+    int info_abbrev_off, info_lowpc_off, info_stmt_off, line_addr_off;
+    build_debug(&dabbrev, &dinfo, &dline, &info_abbrev_off, &info_lowpc_off,
+                &info_stmt_off, &line_addr_off);
+    b32(&rela_dinfo, info_abbrev_off);
+    b32(&rela_dinfo, (syms[ssym_dabbrev].index << 8) | R_68K_32);
+    b32(&rela_dinfo, 0);
+    b32(&rela_dinfo, info_lowpc_off);
+    b32(&rela_dinfo, (syms[ssym_text].index << 8) | R_68K_32);
+    b32(&rela_dinfo, 0);
+    b32(&rela_dinfo, info_stmt_off);
+    b32(&rela_dinfo, (syms[ssym_dline].index << 8) | R_68K_32);
+    b32(&rela_dinfo, 0);
+    b32(&rela_dline, line_addr_off);
+    b32(&rela_dline, (syms[ssym_text].index << 8) | R_68K_32);
+    b32(&rela_dline, 0);
+  }
+
   // Section header string table
   Buf shstr = {0};
   b8(&shstr, 0);
 
-  // Assemble the section list in a fixed order. Indices must match S_*.
-  Shdr sh[16];
+  // Assemble the section list. Order MUST match the idx_* computed above.
+  Shdr sh[20];
   int nsh = 0;
   memset(sh, 0, sizeof sh);
   // 0: NULL
@@ -982,30 +1251,29 @@ void assemble_to_elf(char *inpath, char *outpath) {
   // 4: .rodata
   sh[nsh++] = (Shdr){".rodata", SHT_PROGBITS, SHF_ALLOC, 0, 0, 0, 4, rodata.data,
                      rodata.len};
-  int idx_rela_text = 0, idx_rela_data = 0;
-  if (rela_text.len) {
-    idx_rela_text = nsh;
-    sh[nsh++] = (Shdr){".rela.text", SHT_RELA, 0, 0, S_TEXT, 12, 4,
+  if (have_rt)
+    sh[nsh++] = (Shdr){".rela.text", SHT_RELA, 0, idx_symtab, S_TEXT, 12, 4,
                        rela_text.data, rela_text.len};
-  }
-  if (rela_data.len) {
-    idx_rela_data = nsh;
-    sh[nsh++] = (Shdr){".rela.data", SHT_RELA, 0, 0, S_DATA, 12, 4,
+  if (have_rd)
+    sh[nsh++] = (Shdr){".rela.data", SHT_RELA, 0, idx_symtab, S_DATA, 12, 4,
                        rela_data.data, rela_data.len};
+  if (have_dbg) {
+    sh[nsh++] = (Shdr){".debug_abbrev", SHT_PROGBITS, 0, 0, 0, 0, 1,
+                       dabbrev.data, dabbrev.len};
+    sh[nsh++] = (Shdr){".debug_info", SHT_PROGBITS, 0, 0, 0, 0, 1, dinfo.data,
+                       dinfo.len};
+    sh[nsh++] = (Shdr){".debug_line", SHT_PROGBITS, 0, 0, 0, 0, 1, dline.data,
+                       dline.len};
+    sh[nsh++] = (Shdr){".rela.debug_info", SHT_RELA, 0, idx_symtab, idx_dinfo,
+                       12, 4, rela_dinfo.data, rela_dinfo.len};
+    sh[nsh++] = (Shdr){".rela.debug_line", SHT_RELA, 0, idx_symtab, idx_dline,
+                       12, 4, rela_dline.data, rela_dline.len};
   }
-  int idx_symtab = nsh;
-  sh[nsh++] = (Shdr){".symtab", SHT_SYMTAB, 0, 0, first_global, 16, 4,
+  // symtab / strtab / shstrtab
+  sh[nsh++] = (Shdr){".symtab", SHT_SYMTAB, 0, idx_strtab, first_global, 16, 4,
                      symtab.data, symtab.len};
-  int idx_strtab = nsh;
   sh[nsh++] =
       (Shdr){".strtab", SHT_STRTAB, 0, 0, 0, 0, 1, strtab.data, strtab.len};
-  // patch symtab link -> strtab, rela link -> symtab
-  sh[idx_symtab].link = idx_strtab;
-  if (idx_rela_text)
-    sh[idx_rela_text].link = idx_symtab;
-  if (idx_rela_data)
-    sh[idx_rela_data].link = idx_symtab;
-  int idx_shstr = nsh;
   sh[nsh++] =
       (Shdr){".shstrtab", SHT_STRTAB, 0, 0, 0, 0, 1, NULL, 0}; // filled below
 

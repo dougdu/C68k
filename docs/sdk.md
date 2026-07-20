@@ -94,6 +94,8 @@ It runs on both OSes on every commit through the dual-target lockstep gate
 | `-include <f>` | process `<f>` as an implicit leading `#include` |
 | `-target osiris` \| `-target cpm` | predefine the target OS macro (see §4) |
 | `-O0` / `-O1` (`-O`, `-O2`, `-O3`, `-Os`) | optimization level (see §3.1); `-O0` is the default |
+| `-g` | emit DWARF line/symbol debug info (see §7; integrated assembler) |
+| `-Werror` | turn warnings into errors (other `-W*` flags are accepted) |
 | `-ffreestanding` | freestanding environment (`__STDC_HOSTED__=0`) |
 | `-fpic` / `-fPIC` | position-independent code (Osiris `.PRG` is a static PIE) |
 | `--version`, `--help` | print version / usage |
@@ -162,7 +164,34 @@ per-header status are documented in [libc-and-toolchain.md](libc-and-toolchain.m
 programs (`-ffreestanding`) can skip the hosted library entirely and use only the builtin headers in
 [`include/`](../include).
 
-## 7. Notes & limitations
+## 7. Debugging with `-g`
+
+`c68k -g` emits **DWARF** debug info through the integrated assembler: `STT_FUNC` symbols with
+sizes, plus `.debug_info` / `.debug_line` / `.debug_abbrev` with relocations, so the info survives
+linking. The standard `m68k-elf-*` tools then work on the linked Osiris `.PRG` (which stays an ELF):
+
+```powershell
+# Build with debug info kept in the .PRG (C68K_G drops the link-time -s strip).
+$env:C68K_INTEGRATED_AS = '1'; $env:C68K_G = '1'
+pwsh tools/osiris/build-prg.ps1 -Src samples/hexdump.c
+
+m68k-elf-objdump  -dl HEXDUMP.PRG          # source-interleaved disassembly
+m68k-elf-addr2line -e HEXDUMP.PRG 0x2e5e   # address -> file:line
+m68k-elf-gdb --batch -ex "info line hexdump.c:88" -ex "list" HEXDUMP.PRG
+```
+
+[`tools/debug-demo.ps1`](../tools/debug-demo.ps1) runs this end to end (build + `readelf` + `objdump
+-dl` + `gdb`) and asserts that gdb resolves a source line to an address. Notes:
+
+- `-g` needs the **integrated assembler** (`C68K_INTEGRATED_AS=1`); the external `asm68K` path
+  treats the debug markers as comments and produces no DWARF.
+- The unstripped `.PRG` still runs — the loader ignores the non-alloc debug/symbol sections.
+- The CP/M-68K `.68K` (DRI format) carries no DWARF; debug the intermediate linked `.elf` instead.
+
+The whole standalone `samples/` gallery can be built for both OSes (a build-coverage gate) with
+[`tools/build-samples.ps1`](../tools/build-samples.ps1); each link also writes a `.map` file.
+
+## 8. Notes & limitations
 
 - Both targets are big-endian, flat-address, no-MMU, no-FPU 68000 systems; floating point is
   soft-float.
