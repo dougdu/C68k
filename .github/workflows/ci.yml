@@ -63,8 +63,14 @@ jobs:
           if (-not ($s -match 'main:')) { throw "-S did not emit 'main:'" }
           $e = 'int x=1+2;' | & $cc -E -xc -
           if (-not ($e -match 'int x')) { throw "-E preprocessing failed" }
+          $m = "#ifdef __c68k__`nint C;`n#endif" | & $cc -E -xc -
+          if (-not ($m -match 'int C')) { throw "__c68k__ predefined macro missing" }
+          $t = "#ifdef __osiris__`nint O;`n#endif" | & $cc -E -xc -target osiris -
+          if (-not ($t -match 'int O')) { throw "-target osiris macro missing" }
           $h = (& $cc --help 2>&1) -join "`n"
-          if (-not ($h -match 'chibicc')) { throw "--help failed" }
+          if (-not ($h -match 'c68k')) { throw "--help failed" }
+          $v = (& $cc --version 2>&1) -join "`n"
+          if (-not ($v -match 'c68k')) { throw "--version failed" }
           & $cc -Iinclude -S -o- tests/typemodel.c > $null
           if ($LASTEXITCODE -ne 0) { throw "type-model check failed" }
           Write-Host "front-end + type-model OK"

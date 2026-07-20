@@ -29,7 +29,7 @@ Legend: ☐ not started · ◐ in progress · ☑ done.
 | **P8** | [Integrated object emitter](#p8--integrated-object-emitter) | ☑ | 5 / 5 | compiler emits ELF `.o` with no assembler |
 | **P9** | [Native LINK / LIB / mkdri](#p9--native-link--lib--mkdri) | ☑ | 6 / 6 | native link chain on both OSes |
 | **P10** | [Self-hosting bootstrap](#p10--self-hosting-bootstrap) | ☐ | 4 / 5 | **stage2 == stage3: Osiris all 11; CP/M within 1 MB** |
-| **P11** | [Cross-compiler hardening](#p11--cross-compiler-hardening) | ☐ | 0 / 6 | cross is a CI'd, maintained product |
+| **P11** | [Cross-compiler hardening](#p11--cross-compiler-hardening) | ☐ | 4 / 6 | cross is a CI'd, maintained product |
 | **P12** | [Optimization](#p12--optimization) | ☐ | 0 / 6 | register allocation + peephole |
 | **P13** | [Tooling & debug polish](#p13--tooling--debug-polish) | ☐ | 0 / 6 | DWARF, diagnostics, samples, SDK docs |
 | | **Total** | **2 / 14** | **12 / 87** | |
@@ -399,15 +399,36 @@ dependency ([architecture.md §8](architecture.md#8-object-emission-text-asm-now
 **Objective:** treat the cross-compiler as a **maintained product** for building any Osiris/CP/M-68K
 tool.
 
-- [ ] Driver/option parity (`-c`/`-S`/`-o`/`-I`/`-D`/`-L`/`-l`/`-O`/`-g`/`-target`/`-ffreestanding`).
-- [ ] Robust diagnostics (carets, notes, sane messages) and exit codes.
-- [ ] Packaging/install for host OSes; documented invocation.
+- [x] Driver/option parity (`-c`/`-S`/`-o`/`-I`/`-D`/`-L`/`-l`/`-O`/`-g`/`-target`/`-ffreestanding`).
+- [x] Robust diagnostics (carets, notes, sane messages) and exit codes.
+- [x] Packaging/install for host OSes; documented invocation.
 - [ ] CI **matrix**: build cross + run the **full lockstep suite** on both OSes per commit.
 - [ ] Build a **real external tool** (e.g. an Osiris/CP/M utility) with c68k as a proof.
-- [ ] SDK usage docs for third-party programs.
+- [x] SDK usage docs for third-party programs.
 
 **Exit (M5):** cross-compiler is CI-gated, packaged, and building real programs for both OSes.
 **Depends on:** P10 (usable earlier; hardened here)
+
+> **Progress (driver, diagnostics, packaging, SDK docs).** The driver gained product parity: a
+> `-target osiris|cpm` that predefines the OS macro (`__osiris__` / `__CPM68K__`) so one source tree
+> can `#ifdef` — the emitted object stays OS-neutral, the split is still purely at link time — plus a
+> `--version`, an always-on `__c68k__` identity macro, and a branded, self-describing `--help`
+> ([`src/main.c`](../src/main.c)). Diagnostics are now GCC/Clang-style `file:line:col:` with a caret
+> and an explicit `error:` / `warning:` label ([`src/tokenize.c`](../src/tokenize.c)) — previously a
+> `warning` (e.g. the preprocessor's "extra token") was byte-for-byte indistinguishable from a fatal
+> error; the plain `error()` is prefixed `c68k: error:`. All of this is exercised by the front-end
+> smoke checks on every host ([`Makefile`](../Makefile) `smoke`, the Windows CI step) — `-target`
+> macro presence, `--version`, and `--help` branding — and the changes are **self-host-safe**:
+> `main.c` and `tokenize.c` re-verified **stage2 == stage3 byte-identical** on Osiris (50608 / 57932).
+> Packaging is [`tools/package.ps1`](../tools/package.ps1) — it stages the repo-owned SDK (the
+> compiler, the builtin headers, the libc/runtime sources, the docs, and the licenses) into
+> `dist/c68k-sdk-<ver>/` and an optional `.zip`; the external link-time toolchain (`m68k-elf-ld`,
+> `mkdri`, `asm68K`, `sim68k`) is documented as a prerequisite rather than vendored. The
+> **SDK quickstart** is [`docs/sdk.md`](sdk.md): the driver options, the predefined macros, the per-OS
+> link recipes (`.PRG` via `osiris-prg.ld`, `.68K` via `cpm68k.ld` + `mkdri`), and a worked
+> one-source/two-target `hello`. **Remaining:** the CI matrix that runs the full sim-based lockstep
+> suite (blocked on distributing the sim binary + boot images + native toolchain, which live in the
+> sibling repos, to CI), and a real external tool built with c68k as an end-to-end proof.
 
 ## P12 — Optimization
 

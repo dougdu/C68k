@@ -21,7 +21,7 @@ $chibicc -c -o $tmp/out $tmp/empty.c
 check -o
 
 # --help
-$chibicc --help 2>&1 | grep -q chibicc
+$chibicc --help 2>&1 | grep -q c68k
 check --help
 
 # -S

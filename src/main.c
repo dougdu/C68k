@@ -1,8 +1,15 @@
 #include "chibicc.h"
 
+#define C68K_VERSION "0.1.0"
+
 typedef enum {
   FILE_NONE, FILE_C, FILE_ASM, FILE_OBJ, FILE_AR, FILE_DSO,
 } FileType;
+
+// Target OS. The code generator and the emitted object are identical for both
+// OSes -- the platform split lives in the libc backend and the link step -- so
+// a -target only selects the predefined macros, letting one source tree #ifdef.
+typedef enum { TGT_NONE, TGT_OSIRIS, TGT_CPM } TargetOS;
 
 StringArray include_paths;
 bool opt_fcommon = true;
@@ -26,6 +33,7 @@ static bool opt_shared;
 static char *opt_MF;
 static char *opt_MT;
 static char *opt_o;
+static TargetOS opt_target;
 
 static StringArray ld_extra_args;
 static StringArray std_include_paths;
@@ -37,13 +45,49 @@ static StringArray input_paths;
 static StringArray tmpfiles;
 
 static void usage(int status) {
-  fprintf(stderr, "chibicc [ -o <path> ] <file>\n");
+  FILE *out = status ? stderr : stdout;
+  fprintf(out,
+      "c68k %s -- a C99 compiler for the Motorola 68000\n"
+      "usage: c68k [options] file...\n"
+      "\n"
+      "  -c              compile and assemble to an object (.o); do not link\n"
+      "  -S              compile to 68000 assembly (.s)\n"
+      "  -E              preprocess only\n"
+      "  -o <path>       write output to <path> ('-' = stdout)\n"
+      "  -I <dir>        add <dir> to the include search path\n"
+      "  -D <m>[=v]      define macro <m> (default value 1)\n"
+      "  -U <m>          undefine macro <m>\n"
+      "  -include <f>    process <f> as if '#include \"<f>\"' came first\n"
+      "  -target <os>    predefine target macros: 'osiris' or 'cpm'\n"
+      "  -ffreestanding  freestanding environment (__STDC_HOSTED__=0)\n"
+      "  -fpic, -fPIC    position-independent code\n"
+      "  --version       print version and exit\n"
+      "  --help          print this help and exit\n"
+      "\n"
+      "The emitted object is OS-neutral; choose the executable container at link\n"
+      "time (osiris-prg.ld for a .PRG, or cpm68k.ld + mkdri for a .68K).\n"
+      "Based on chibicc (MIT); see src/CHIBICC-LICENSE.\n",
+      C68K_VERSION);
   exit(status);
+}
+
+static void version(void) {
+  printf("c68k %s\n", C68K_VERSION);
+  exit(0);
+}
+
+static TargetOS parse_target(char *s) {
+  if (!strcmp(s, "osiris") || !strcmp(s, "os68k") || !strcmp(s, "os/68k"))
+    return TGT_OSIRIS;
+  if (!strcmp(s, "cpm") || !strcmp(s, "cpm68k") || !strcmp(s, "cpm-68k"))
+    return TGT_CPM;
+  error("<command line>: unknown -target: %s (want 'osiris' or 'cpm')", s);
 }
 
 static bool take_arg(char *arg) {
   char *x[] = {
     "-o", "-I", "-idirafter", "-include", "-x", "-MF", "-MT", "-Xlinker",
+    "-target", "--target",
   };
 
   for (int i = 0; i < sizeof(x) / sizeof(*x); i++)
@@ -136,6 +180,24 @@ static void parse_args(int argc, char **argv) {
 
     if (!strcmp(argv[i], "--help"))
       usage(0);
+
+    if (!strcmp(argv[i], "--version") || !strcmp(argv[i], "-v"))
+      version();
+
+    if (!strcmp(argv[i], "-target") || !strcmp(argv[i], "--target")) {
+      opt_target = parse_target(argv[++i]);
+      continue;
+    }
+
+    if (!strncmp(argv[i], "-target=", 8)) {
+      opt_target = parse_target(argv[i] + 8);
+      continue;
+    }
+
+    if (!strncmp(argv[i], "--target=", 9)) {
+      opt_target = parse_target(argv[i] + 9);
+      continue;
+    }
 
     if (!strcmp(argv[i], "-o")) {
       opt_o = argv[++i];
@@ -354,6 +416,14 @@ static void parse_args(int argc, char **argv) {
 
   for (int i = 0; i < idirafter.len; i++)
     strarray_push(&include_paths, idirafter.data[i]);
+
+  // Compiler-identity and target predefined macros. __c68k__ lets code detect
+  // this compiler; -target adds the OS macro so one source tree can #ifdef.
+  define_macro("__c68k__", "1");
+  if (opt_target == TGT_OSIRIS)
+    define_macro("__osiris__", "1");
+  else if (opt_target == TGT_CPM)
+    define_macro("__CPM68K__", "1");
 
   if (input_paths.len == 0)
     error("no input files");

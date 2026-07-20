@@ -16,6 +16,7 @@ static bool has_space;
 void error(char *fmt, ...) {
   va_list ap;
   va_start(ap, fmt);
+  fprintf(stderr, "c68k: error: ");
   vfprintf(stderr, fmt, ap);
   fprintf(stderr, "\n");
   exit(1);
@@ -23,10 +24,10 @@ void error(char *fmt, ...) {
 
 // Reports an error message in the following format.
 //
-// foo.c:10: x = y + 1;
-//               ^ <error message here>
+// foo.c:10:7: x = y + 1;
+//                 ^ error: <error message here>
 static void verror_at(char *filename, char *input, int line_no,
-                      char *loc, char *fmt, va_list ap) {
+                      char *loc, char *sev, char *fmt, va_list ap) {
   // Find a line containing `loc`.
   char *line = loc;
   while (input < line && line[-1] != '\n')
@@ -36,15 +37,15 @@ static void verror_at(char *filename, char *input, int line_no,
   while (*end && *end != '\n')
     end++;
 
-  // Print out the line.
-  int indent = fprintf(stderr, "%s:%d: ", filename, line_no);
+  // Print out the line, prefixed with file:line:col (col is 1-based display).
+  int col = display_width(line, loc - line);
+  int indent = fprintf(stderr, "%s:%d:%d: ", filename, line_no, col + 1);
   fprintf(stderr, "%.*s\n", (int)(end - line), line);
 
-  // Show the error message.
-  int pos = display_width(line, loc - line) + indent;
-
+  // Show the caret + severity-labelled message under `loc`.
+  int pos = col + indent;
   fprintf(stderr, "%*s", pos, ""); // print pos spaces.
-  fprintf(stderr, "^ ");
+  fprintf(stderr, "^ %s: ", sev);
   vfprintf(stderr, fmt, ap);
   fprintf(stderr, "\n");
 }
@@ -57,21 +58,24 @@ void error_at(char *loc, char *fmt, ...) {
 
   va_list ap;
   va_start(ap, fmt);
-  verror_at(current_file->name, current_file->contents, line_no, loc, fmt, ap);
+  verror_at(current_file->name, current_file->contents, line_no, loc, "error",
+            fmt, ap);
   exit(1);
 }
 
 void error_tok(Token *tok, char *fmt, ...) {
   va_list ap;
   va_start(ap, fmt);
-  verror_at(tok->file->name, tok->file->contents, tok->line_no, tok->loc, fmt, ap);
+  verror_at(tok->file->name, tok->file->contents, tok->line_no, tok->loc,
+            "error", fmt, ap);
   exit(1);
 }
 
 void warn_tok(Token *tok, char *fmt, ...) {
   va_list ap;
   va_start(ap, fmt);
-  verror_at(tok->file->name, tok->file->contents, tok->line_no, tok->loc, fmt, ap);
+  verror_at(tok->file->name, tok->file->contents, tok->line_no, tok->loc,
+            "warning", fmt, ap);
   va_end(ap);
 }
 

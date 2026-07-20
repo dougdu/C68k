@@ -45,3 +45,6 @@ build/*.img
 *~
 .DS_Store
 Thumbs.db
+
+# SDK packaging output
+dist/

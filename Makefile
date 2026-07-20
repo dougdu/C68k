@@ -93,7 +93,11 @@ selfhost: stage2/c68k stage3/c68k
 smoke: c68k
 	@printf 'int main(){return 41+1;}\n' | ./c68k -S -o- -xc - | grep -q 'main:'
 	@printf 'int x=1+2;\n' | ./c68k -E -xc - | grep -q 'int x'
-	@./c68k --help 2>&1 | grep -q chibicc
+	@printf '#ifdef __c68k__\nint C;\n#endif\n' | ./c68k -E -xc - | grep -q 'int C'
+	@printf '#ifdef __osiris__\nint O;\n#endif\n' | ./c68k -E -xc -target osiris - | grep -q 'int O'
+	@printf '#ifdef __CPM68K__\nint P;\n#endif\n' | ./c68k -E -xc --target=cpm - | grep -q 'int P'
+	@./c68k --help 2>&1 | grep -q c68k
+	@./c68k --version 2>&1 | grep -q c68k
 	@echo "front-end smoke OK"
 
 # P1 type-model check (big-endian ILP32). Pure front end (-S, no assembler), so
