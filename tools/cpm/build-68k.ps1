@@ -83,7 +83,7 @@ Invoke-Step 'asm runtime'   { & $Asm /Cx /elf /c /nologo "/Fo$rtO"  $rtA }
 Invoke-Step 'cc seam'       { & $Cc @asArgs @optArgs -c $seamC -o $seamO "-I$inc" }
 Invoke-Step 'cc libc'       { & $Cc @asArgs @optArgs -c $libcC -o $libcO "-I$inc" }
 Invoke-Step 'cc program'    { & $Cc @asArgs @optArgs -c $Src   -o $progO "-I$inc" }
-Invoke-Step 'link elf'      { & $Ld -T $LdScript -Ttext 0x500 $sysO $progO $seamO $libcO $rtO $FloatLib -o $elf }
+Invoke-Step 'link elf'      { & $Ld -T $LdScript -Ttext 0x500 "-Map=$([IO.Path]::ChangeExtension($elf,'.map'))" $sysO $progO $seamO $libcO $rtO $FloatLib -o $elf }
 Invoke-Step 'mkdri .68K'    { & $Mkdri -b500 -y -o $out68 $elf }
 
 Write-Host "build-68k: $out68" -ForegroundColor Green

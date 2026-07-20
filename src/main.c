@@ -17,6 +17,7 @@ bool opt_fpic;
 bool opt_ffreestanding;
 bool opt_integrated_as;
 int opt_level;
+bool opt_Werror;
 
 static FileType opt_x;
 static StringArray opt_include;
@@ -393,6 +394,13 @@ static void parse_args(int argc, char **argv) {
     if (!strcmp(argv[i], "-hashmap-test")) {
       hashmap_test();
       exit(0);
+    }
+
+    // -Werror turns warnings into hard errors (see warn_tok). Other -W* flags
+    // are accepted and ignored (chibicc's warning set is minimal).
+    if (!strcmp(argv[i], "-Werror")) {
+      opt_Werror = true;
+      continue;
     }
 
     // Optimization level. -O0 = naive stack-machine codegen (the default);

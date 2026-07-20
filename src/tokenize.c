@@ -75,8 +75,10 @@ void warn_tok(Token *tok, char *fmt, ...) {
   va_list ap;
   va_start(ap, fmt);
   verror_at(tok->file->name, tok->file->contents, tok->line_no, tok->loc,
-            "warning", fmt, ap);
+            opt_Werror ? "error" : "warning", fmt, ap);
   va_end(ap);
+  if (opt_Werror)
+    exit(1);
 }
 
 // Consumes the current token if it matches `op`.

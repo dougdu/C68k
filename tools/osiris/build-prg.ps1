@@ -77,7 +77,7 @@ Invoke-Step 'asm crt0/seam' { & $Asm /Cx /elf /c /nologo "/Fo$sysO" $sysA }
 Invoke-Step 'asm runtime'   { & $Asm /Cx /elf /c /nologo "/Fo$rtO"  $rtA }
 Invoke-Step 'cc libc'       { & $Cc @asArgs @optArgs -c $libcC -o $libcO "-I$inc" }
 Invoke-Step 'cc program'    { & $Cc @asArgs @optArgs -c $Src   -o $progO "-I$inc" }
-Invoke-Step 'link .PRG'     { & $Ld -pie --no-dynamic-linker -z max-page-size=0x20 -s -T $LdScript $sysO $progO $libcO $rtO $FloatLib -o $prg }
+Invoke-Step 'link .PRG'     { & $Ld -pie --no-dynamic-linker -z max-page-size=0x20 -s -T $LdScript "-Map=$([IO.Path]::ChangeExtension($prg,'.map'))" $sysO $progO $libcO $rtO $FloatLib -o $prg }
 
 Write-Host "build-prg: $prg" -ForegroundColor Green
 $prg
