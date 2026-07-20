@@ -775,6 +775,11 @@ static FileType get_file_type(char *filename) {
 }
 
 #ifdef C68K_SELFHOST
+// Bump-heap arena mark/release (libc/core/libc.c), used to reclaim the
+// front-end between cc1 and the integrated assembler on tiny heaps.
+void *__heap_mark(void);
+void __heap_release(void *mark);
+
 // Native driver (Osiris / CP/M-68K): compile C to ELF objects in-process with
 // the integrated emitter.  There is no subprocess, no external assembler, and
 // no linker -- linking is a separate step (LINK.PRG / LINK.68K).
@@ -822,7 +827,17 @@ int main(int argc, char **argv) {
     // Default: compile to a temp .s, then assemble to an ELF .o.
     char *tmp = create_tmpfile();
     output_file = tmp;
+    // The front-end (cc1) hands off to the integrated assembler entirely via
+    // the .s file on disk, so all of cc1's memory (tokens/AST/codegen buffer)
+    // is dead once it returns. On the tiny CP/M heap, mark the heap before
+    // cc1 and release it after, so the assembler runs from a near-empty heap
+    // instead of on top of the front-end's leaked allocations. Only safe for
+    // a single-file compile: releasing would also free global macro/intern
+    // state that a subsequent file would still need.
+    void *heap_mark = (input_paths.len == 1) ? __heap_mark() : NULL;
     cc1();
+    if (heap_mark)
+      __heap_release(heap_mark);
     assemble_to_elf(tmp, output);
   }
   return 0;

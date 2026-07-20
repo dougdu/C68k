@@ -154,6 +154,8 @@ static bool in_list(StringArray *a, char *name) {
   return false;
 }
 
+static char *xstrndup(char *p, int n);
+
 static void add_reloc(int sec, uint32_t off, char *sym, int type, int32_t add) {
   sym_intern(sym); // ensure the referenced symbol exists in the table
   if (nrel == caprel) {
@@ -168,7 +170,9 @@ static void add_fixup(uint32_t off, char *label) {
     capfix = capfix ? capfix * 2 : 64;
     fixes = realloc(fixes, capfix * sizeof(Fix));
   }
-  fixes[nfix++] = (Fix){off, label};
+  // Own the label: callers pass a pointer into the transient line buffer, but
+  // fixups are resolved after the whole file has been streamed.
+  fixes[nfix++] = (Fix){off, xstrndup(label, (int)strlen(label))};
 }
 
 static Buf *cur_buf(void) {
@@ -735,7 +739,8 @@ static void assemble_line(char *line) {
   if (!strcmp(first, "EXTERN")) {
     char *tok = strtok(rest, ",");
     while (tok) {
-      strarray_push(&extern_names, trim(tok));
+      char *t = trim(tok);
+      strarray_push(&extern_names, xstrndup(t, (int)strlen(t)));
       tok = strtok(NULL, ",");
     }
     return;
@@ -835,29 +840,49 @@ void assemble_to_elf(char *inpath, char *outpath) {
   public_names = (StringArray){0};
   extern_names = (StringArray){0};
 
-  // read the whole asm file
+  // pass 1: assemble the .s streaming, one line at a time, into a single
+  // reusable buffer. Two self-hosted (CP/M-68K) constraints drive this:
+  //  1. Files are sequential 128-byte records with no random seek on a read
+  //     handle (sys_seek is a stub), so fseek(SEEK_END)/ftell can't size the
+  //     input -- it comes back 0 and the assembler would see nothing.
+  //  2. libc malloc is a bump allocator (free is a no-op) and the front-end and
+  //     assembler share one heap in the integrated -c process. Slurping the
+  //     whole .s (parse.c's is ~640 KB) would not fit the ~600 KB TPA. Streaming
+  //     keeps the assembler's transient footprint to one line; only the output
+  //     sections and symbol/reloc tables accumulate. assemble_line copies every
+  //     name it retains (labels, PUBLIC/EXTERN, branch fixups), so reusing one
+  //     line buffer across lines is safe.
   FILE *in = fopen(inpath, "rb");
   if (!in)
     error("emit_elf: cannot open %s", inpath);
-  fseek(in, 0, SEEK_END);
-  long len = ftell(in);
-  fseek(in, 0, SEEK_SET);
-  char *buf = malloc(len + 2);
-  fread(buf, 1, len, in);
-  buf[len] = '\n';
-  buf[len + 1] = 0;
-  fclose(in);
-
-  // pass 1: assemble line by line
-  char *p = buf;
-  while (*p) {
-    char *nl = strchr(p, '\n');
-    if (!nl)
-      nl = p + strlen(p);
-    char *line = xstrndup(p, nl - p);
-    assemble_line(line);
-    p = *nl ? nl + 1 : nl;
+  size_t cap = 256, len = 0;
+  char *line = malloc(cap);
+  for (;;) {
+    int c = fgetc(in);
+    if (c == '\r')
+      continue; // tolerate CRLF line endings
+    // 0x1A (^Z) is CP/M's text-EOF pad in the last 128-byte record; treat it
+    // as end-of-stream (assembler text never contains it). A no-op on hosts.
+    if (c == '\n' || c == EOF || c == 0x1A) {
+      if (len > 0) {
+        line[len] = 0;
+        assemble_line(line);
+        len = 0;
+      }
+      if (c == '\n')
+        continue;
+      break;
+    }
+    if (len + 1 >= cap) {
+      size_t ncap = cap * 2;
+      char *nl = malloc(ncap);
+      memcpy(nl, line, len);
+      line = nl;
+      cap = ncap; // old buffer leaks on the bump allocator; growth is rare
+    }
+    line[len++] = (char)c;
   }
+  fclose(in);
 
   // pass 2: resolve local branch displacements
   resolve_fixups();
