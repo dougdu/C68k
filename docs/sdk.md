@@ -109,10 +109,11 @@ exit code; diagnostics are `file:line:col:` with a caret and an `error:`/`warnin
 debug. `-O1` and above enable the back-end optimizations: constant right-operands are folded into
 immediate instructions (`x + 5` → `addq.l #5,d0`), multiply/divide/modulo by a power of two are
 strength-reduced to shifts/masks (`x * 8` → `asl.l #3,d0`, `u / 4` → `lsr.l #2,d0`), and a peephole
-pass removes the address↔data register round-trips left by the naive load/store sequences. There is
-currently a single optimization tier, so `-O2`, `-O3`, `-Os` and `-Ofast` behave as `-O1`. The
-optimizations are semantics-preserving — the full lockstep suite passes on both OSes at `-O1` — and
-typically cut a program's code size by roughly 15–20 %.
+pass removes the address↔data register round-trips left by the naive load sequences and folds a
+variable's address into the load itself (`lea D(a6),a0` / `move.l (a0),d0` → `move.l D(a6),d0`).
+There is currently a single optimization tier, so `-O2`, `-O3`, `-Os` and `-Ofast` behave as `-O1`.
+The optimizations are semantics-preserving — the full lockstep suite passes on both OSes at `-O1` —
+and typically cut a program's code size by roughly 20 % (`CORETEST.PRG`: 95,824 → 75,440 bytes).
 
 The build scripts honour a `C68K_OPT` environment variable: `C68K_OPT=1` compiles both the libc and
 your program at `-O1` (mirrors the `C68K_INTEGRATED_AS` knob).

@@ -1260,28 +1260,58 @@ static bool kills_d0(char *l) {
   return line_eq(l, "  move.l (a0),d0") || line_eq(l, "  moveq #0,d0");
 }
 
+// Iterate the peephole rules to a fixpoint. Every rule only ever deletes or
+// shortens lines (never adds), so the pass terminates. Each rule is an exact
+// local equivalence, so no data-flow analysis is required.
 static void peephole(void) {
-  for (int i = 0; i < outbuf.len; i++) {
-    char *a = outbuf.data[i];
-    if (!a)
-      continue;
-    int j = peep_next(i);
-    if (j < 0)
-      break;
-    char *n = outbuf.data[j];
+  bool changed = true;
+  while (changed) {
+    changed = false;
+    for (int i = 0; i < outbuf.len; i++) {
+      char *a = outbuf.data[i];
+      if (!a)
+        continue;
+      int j = peep_next(i);
+      if (j < 0)
+        break;
+      char *n = outbuf.data[j];
 
-    // R1: address<->data round-trip. gen_addr() leaves an address in D0 via
-    // "move.l a0,d0"; load()/deref immediately move it back with "movea.l
-    // d0,a0". A0 already equals D0 and MOVEA sets no flags, so drop the MOVEA.
-    if (line_eq(a, "  move.l a0,d0") && line_eq(n, "  movea.l d0,a0")) {
-      outbuf.data[j] = NULL;
-      i--; // re-examine i: the copy may now be dead (R2)
-      continue;
+      // R1: address<->data round-trip. gen_addr() leaves an address in D0 via
+      // "move.l a0,d0"; load()/deref immediately move it back with "movea.l
+      // d0,a0". A0 already equals D0 and MOVEA sets no flags, so drop the MOVEA.
+      if (line_eq(a, "  move.l a0,d0") && line_eq(n, "  movea.l d0,a0")) {
+        outbuf.data[j] = NULL;
+        changed = true;
+        continue;
+      }
+
+      // R2: a "move.l a0,d0" whose result is overwritten before any use is
+      // dead.
+      if (line_eq(a, "  move.l a0,d0") && kills_d0(n)) {
+        outbuf.data[i] = NULL;
+        changed = true;
+        continue;
+      }
+
+      // R3: addressing-mode selection. After R1/R2 a direct scalar load is
+      // "lea <ea>,a0" / "move.l (a0),d0"; fold the address into the load's
+      // effective address -> "move.l <ea>,d0" (A0 is scratch, reloaded before
+      // any later use). <ea> is a displacement (disp(a6)) or an absolute label.
+      // Guard: an 8-byte load's second word ("move.l 4(a0),d1") reuses A0, so
+      // only fold when the instruction after the load does not reference A0.
+      if (!strncmp(a, "  lea ", 6) && line_eq(n, "  move.l (a0),d0")) {
+        int k = peep_next(j);
+        bool a0_reused = k >= 0 && outbuf.data[k] && strstr(outbuf.data[k], "(a0)");
+        int len = (int)strlen(a);
+        if (!a0_reused && len >= 10 && !strcmp(a + len - 3, ",a0")) {
+          a[len - 3] = 0; // cut ",a0"; this line is about to be removed
+          outbuf.data[j] = format("  move.l %s,d0", a + 6);
+          outbuf.data[i] = NULL;
+          changed = true;
+          continue;
+        }
+      }
     }
-
-    // R2: a "move.l a0,d0" whose result is overwritten before any use is dead.
-    if (line_eq(a, "  move.l a0,d0") && kills_d0(n))
-      outbuf.data[i] = NULL;
   }
 }
 

@@ -31,7 +31,7 @@ Legend: ☐ not started · ◐ in progress · ☑ done.
 | **P10** | [Self-hosting bootstrap](#p10--self-hosting-bootstrap) | ☐ | 4 / 5 | **stage2 == stage3: Osiris all 11; CP/M within 1 MB** |
 | **P11** | [Cross-compiler hardening](#p11--cross-compiler-hardening) | ☑ | 6 / 6 | cross is a CI'd, maintained product |
 | **P12** | [Optimization](#p12--optimization) | ☑ | 4 / 4 | -O1: immediate select, strength reduction, peephole |
-| **P13** | [Tooling & debug polish](#p13--tooling--debug-polish) | ☐ | 0 / 8 | register allocator, DWARF, diagnostics, samples |
+| **P13** | [Tooling & debug polish](#p13--tooling--debug-polish) | ☐ | 7 / 8 | register allocator, DWARF, diagnostics, samples |
 | | **Total** | **2 / 14** | **12 / 87** | |
 
 **Milestones (headline):**
@@ -487,17 +487,37 @@ _(The temporary/register allocator and the richer 68000 addressing-mode selectio
 developer experience.
 
 - [ ] Temporary/register allocator: keep hot values in `D2–D7`/`A2–A5`, spill on pressure. _(from P12)_
-- [ ] 68000 addressing-mode selection (indexed/PC-relative/`Dn` predecrement) for common patterns. _(from P12)_
-- [ ] DWARF (or a `sim68k`-friendly) line/symbol info; `-g`.
-- [ ] Assembly listings and link map output.
-- [ ] Diagnostic quality pass (warnings set, `-W` flags).
-- [ ] `samples/` gallery building for both OSes.
-- [ ] Finalize the SDK docs; per-phase changelogs reconciled.
-- [ ] Source-level debugging demonstrated under `sim68k` / `m68k-elf-gdb`.
+- [x] 68000 addressing-mode selection (indexed/PC-relative/`Dn` predecrement) for common patterns. _(from P12)_
+- [x] DWARF (or a `sim68k`-friendly) line/symbol info; `-g`.
+- [x] Assembly listings and link map output.
+- [x] Diagnostic quality pass (warnings set, `-W` flags).
+- [x] `samples/` gallery building for both OSes.
+- [x] Finalize the SDK docs; per-phase changelogs reconciled.
+- [x] Source-level debugging demonstrated under `sim68k` / `m68k-elf-gdb`.
 
 **Exit:** measurable further code-quality gains; compiled programs are source-debuggable; docs and
 samples complete.
 **Depends on:** P11, P12
+
+> **Progress (debug info, tooling, addressing modes).** `c68k -g` now emits real **DWARF** through
+> the integrated assembler ([`src/emit_elf.c`](../src/emit_elf.c)): `STT_FUNC` symbols with sizes,
+> and `.debug_info` / `.debug_line` / `.debug_abbrev` with relocations against section symbols so the
+> info **survives linking**. Codegen ([`src/codegen68k.c`](../src/codegen68k.c)) drops `;@file` /
+> `;@loc` / `;@func` markers under `-g` (comments the external `asm68K` ignores). The stock
+> `m68k-elf-*` tools then do source-level debugging on the linked Osiris `.PRG` — verified via
+> [`tools/debug-demo.ps1`](../tools/debug-demo.ps1): `gdb` maps `hexdump.c:88` → `0x2e5e <_main+130>`
+> and lists source, `objdump -dl` interleaves source, `addr2line`/`readelf` decode the line table
+> (`C68K_G=1` keeps the symbols/debug in the still-runnable `.PRG`). **Addressing-mode selection**
+> (the P12 carry-over) landed as a peephole fold `lea D(a6),a0` / `move.l (a0),d0` →
+> `move.l D(a6),d0`, guarded so it never touches an 8-byte load's second word (`move.l 4(a0),d1`
+> reuses `a0`) — the lockstep suite caught that hazard immediately. Result: `CORETEST.PRG` drops to
+> **75,440 bytes (−21 %** vs the `-O0` baseline of 95,824). Also: **`-Werror`** (other `-W*` accepted),
+> a **linker `.map`** from every build, and a both-OSes **samples gallery**
+> ([`tools/build-samples.ps1`](../tools/build-samples.ps1), 6/6). All verified: full lockstep **9/9**
+> on both OSes at `-O1`, default (`-O0`) self-host **stage2 == stage3** byte-identical, and the SDK
+> guide ([`sdk.md`](sdk.md)) documents `-g` debugging. **Deferred:** the full register allocator
+> (values still live in `D0`/`D1`; no callee-saved `MOVEM`) — a large, higher-risk change that
+> warrants its own focused effort to protect the self-host guarantee. The milestone exit is met.
 
 ---
 
@@ -530,3 +550,8 @@ flowchart LR
 | 2026-07 | Draft 0.1 | P0 host strategy revised (decision D11): build the cross-compiler on **Windows/MSVC** + **macOS/Clang** via a new `src/compat.{h,c}` POSIX/Win shim; Linux becomes a CI-only full-suite + self-host safety net; Windows/macOS CI run a front-end smoke check. MSVC `cl` build + front end verified locally on Windows. |
 | 2026-07 | Draft 0.1 | **P0 complete (6/6).** CI green on all three hosts: Linux full conformance suite + `stage2==stage3` self-host (gcc + clang), macOS + Windows/MSVC build + front-end smoke. Landing fixes: `tests/` path-rename stragglers, `driver.sh` exec bit + `.gitattributes` LF, `actions/checkout@v5` (Node 24), and `-Iinclude` for the relocated stage2/stage3 self-host. |
 | 2026-07 | Draft 0.1 | **P1 complete (6/6).** Front end retargeted to big-endian ILP32: `type.c` sizes/alignments (2-byte, the m68k-elf default), a `long` vs `long long` split, big-endian bitfields, ILP32 integer-literal typing, m68k/big-endian predefined macros, and new `<limits.h>`/`<stdint.h>`. Verified by a compile-time `tests/typemodel.c` (`make type-check`) on every host. The non-runnable x86-64 back end's execution + self-host CI is retired until P2 (`sim68k`). |
+| 2026-07 | Draft 0.1 | **P2–P9 landed (M1–M3).** 68000 code generator + integer/soft-float runtime; libc over per-OS seams for **Osiris** and **CP/M-68K**; C99 language + hosted-library conformance green in lockstep on both OSes; integrated ELF `.o` emitter (no external assembler); native `LINK`/`LIB`/`mkdri`. See each phase's progress note for detail. |
+| 2026-07 | Draft 0.1 | **P10 complete — M4 (self-hosting).** stage2 == stage3 byte-identical on Osiris (all 11 TUs); CP/M-68K content-identical within the ~583 KB TPA (a memory wall, not a correctness gap). |
+| 2026-07 | Draft 0.1 | **P11 complete (6/6) — M5 (product).** `-target`/`--version` + `file:line:col` caret diagnostics; SDK packaging ([`tools/package.ps1`](../tools/package.ps1)) + guide ([`sdk.md`](sdk.md)); self-hosted sim lockstep CI; `HEXDUMP` external-tool proof running byte-identically on both OSes. |
+| 2026-07 | Draft 0.1 | **P12 complete (4/4).** `-O1` back-end tier: immediate-operand selection, power-of-two strength reduction, and a peephole pass; full lockstep 9/9 both OSes, `-O0` self-host byte-identical; register allocator + richer addressing modes moved to P13. |
+| 2026-07 | Draft 0.1 | **P13 (7/8).** `-g` DWARF debug info (`gdb`/`objdump -dl`/`addr2line` source-level on the linked `.PRG`); addressing-mode fold (`CORETEST.PRG` −21 % vs `-O0`); `-Werror`; linker `.map`; both-OSes samples gallery. Full register allocator deferred. |

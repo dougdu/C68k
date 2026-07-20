@@ -75,6 +75,8 @@ jobs:
           if (-not ($o1 -match 'asl.l')) { throw "-O1 strength reduction (x*8 -> asl) missing" }
           $o0 = 'int f(int x){return x*8;}' | & $cc -S -o- -xc -
           if (-not ($o0 -match '__mulsi3')) { throw "-O0 default should still call __mulsi3" }
+          $r3 = 'int G;int f(){return G;}' | & $cc -O1 -S -o- -xc -
+          if (-not ($r3 -match 'move.l _G,d0')) { throw "-O1 addressing-mode fold (global load) missing" }
           & $cc -Iinclude -S -o- tests/typemodel.c > $null
           if ($LASTEXITCODE -ne 0) { throw "type-model check failed" }
           Write-Host "front-end + type-model OK"
