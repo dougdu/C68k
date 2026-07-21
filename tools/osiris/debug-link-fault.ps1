@@ -81,7 +81,8 @@ function Add-Fat12File($img,[string]$name11,[byte[]]$data){
 Write-Host "building objects..." -ForegroundColor Cyan
 & $Asm /Cx /elf /c /nologo "/Fo$work\SYS.O"   (Join-Path $repo 'libc\osiris\osiris_sys.a68') 2>&1 | Out-Null
 & $Asm /Cx /elf /c /nologo "/Fo$work\RT68K.O" (Join-Path $repo 'lib\runtime\rt68k.a68')      2>&1 | Out-Null
-& $Cc -fintegrated-as -c (Join-Path $repo 'libc\core\libc.c') -o "$work\LIBC.O"  "-I$inc"    2>&1 | Out-Null
+& (Join-Path $repo 'tools\build-libc.ps1') -OutDir $work | Out-Null
+& $Ld -r --whole-archive (Join-Path $work 'libc.a') -o "$work\LIBC.O" 2>&1 | Out-Null
 & $Cc -fintegrated-as -c (Join-Path $repo 'samples\hello.c')  -o "$work\HELLO.O" "-I$inc"    2>&1 | Out-Null
 
 # ---- stage disk: objects + FLOAT.A + AUTOEXEC.BAT that runs the failing LINK ----

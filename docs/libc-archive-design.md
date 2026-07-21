@@ -281,7 +281,7 @@ upstream spec docs as provenance. Record the source commit/version for future sy
 | 3 | Vendor heap → `libheap.a` | ✅ | heap sources in `lib/heap`; `libheap.a` builds in all contexts; heap smoke links |
 | 4a | libc split — infrastructure + clean carves | ✅ | multi-file `libc.a` build; carve errno/signal/time; lockstep green; measured drop |
 | 4b | libc split — decouple hotspots | ✅ | fp64 → own object; stdio core no longer references `realloc` (drain hook) |
-| 4c | libc split — one object per function (**goal**) | ⬜ | every public libc function separately linkable; shared engines/state in cohesive cores |
+| 4c | libc split — one object per function (**goal**) | ✅ | every public libc function separately linkable; shared engines/state in cohesive cores; `libc.c` deleted |
 | 5 | `malloc` on `libheap` | ⬜ | real `free` behind a switch; on-target lockstep + smoke pass |
 | 6 | Native self-host archives + docs + CP/M parity | ⬜ | `LIB.PRG`/`LINK.PRG` build+consume the archives; `sdk.md`/`reference-manual.md` updated; final size win recorded |
 
@@ -363,9 +363,9 @@ remainder, drained to empty and deleted at the end.
 - [x] **memstream drain-hook** (`FILE.drain`, [stdio.h](../libc/include/stdio.h)): `fflush`/`fclose`/`printf` drain memstreams through a per-`FILE` function pointer instead of naming `_memstream_append`, so **stdio core no longer references `realloc`** — the mechanism that lets 4c split stdio without pulling `stdlib`. `open_memstream` installs the hook; `fopen`/`fclose` clear it (**fixes a stale-hook-on-slot-reuse bug** that would corrupt file output). The **physical** `open_memstream`/`_memstream_append` → own object lands in 4c with the stdio split (needs shared `_streams`).
 - [x] Validated: **lockstep 9/9** (its `filerw` drives the file drain path) and the **self-host smoke PASSes byte-identical** (`CC.PRG` compiles on-target through its `open_memstream` assembly buffer). Total from Phase A: hello **88,240 → 72,068 (−18.3%)**.
 
-#### Phase 4c — One object per function (goal)  ⬜
-- [ ] Carve `string`/`ctype`/`stdlib`/`stdio` into per-function files; de-`static` shared helpers into `libc_internal.h` with a private prefix; keep `_vformat`/`_streams`/… as cohesive core objects. Drain and delete `libc.c`.
-- [ ] Re-measure: a `printf`-only program should link stdio-core + fmt only (not `malloc`/`qsort`/`strto*`).
+#### Phase 4c — One object per function (goal)  ✅
+- [x] Carved `string`/`ctype`/`stdlib`/`stdio`/`stdio`-fmt into per-function files; de-`static`d shared helpers into [libc_internal.h](../libc/core/libc_internal.h) with private externs; kept the genuinely-shared engines/state as cohesive cores — `vformat.c` (`_vformat` + fmt statics), `stdio_core.c` (`_streams`), `malloc.c` (bump-allocator core), `exit.c` (`_atexit_*`), plus `rand`/`qsort`/`strcasecmp`/`fgetc`/`open_memstream`. **`libc.c` drained and deleted.** `libc.a` = **86 objects, 175,534 bytes** (was 4 objects); new carved files are picked up by the glob (no build change).
+- [x] Re-measured (Osiris `.PRG`, `-O0`): a `puts`-only program links stdio-core + fputs only, **not** `printf`/`malloc`/`qsort`/`strto*` — **hello 72,068 → 10,784 (−85%)**. `printftest` 31,648 (pulls fmt + float core), `filerw` 15,432, `hexdump` 38,348, `fp64conv` 36,140, `bare` 2,820. CP/M `.68K` ~−35 KB across the gallery. Lockstep **9/9** both OSes; self-host `CC.PRG` 473,772 → **456,004** (dead-strip) and smoke **byte-identical**.
 
 ### Phase 5 — `malloc` on `libheap`  ⬜
 - [ ] `malloc`/`free`/`realloc`/`calloc` shims over the heap; `_MachineHeapInitialize` in the crt0
@@ -406,3 +406,4 @@ remainder, drained to empty and deleted at the end.
 | 2026-07-21 | Phase 3 | Vendored the 31 heap library `.a68` + `heap.inc` into `lib/heap`; `tools/build-libheap.ps1` → `libheap.a` (31 objs, 260 KB); link-smoke self-contained (`nm -u` empty). Added `tools/vendor-sync.ps1` (libm+libheap re-pull + drift manifests). Lockstep **9/9**. |
 | 2026-07-21 | Phase 4a | Split libc: infra (`libc_internal.h`, `tools/build-libc.ps1` → `libc.a`) + carved errno/signal/time; all program + self-host builds link `-lc`; stage3 harnesses extended. Lockstep **9/9**; Osiris `.PRG` −14 KB (~16%); `CC.PRG` links. Goal restated: **one object per stdlib function** (4b/4c). |
 | 2026-07-21 | Phase 4b | Decoupled hotspots: fp64 conv helpers → `fp64.c` (own object; −~2.2 KB for non-fp64 programs); memstream `FILE.drain` hook so stdio core no longer references `realloc` (+ stale-hook slot-reuse fix). Lockstep **9/9**; self-host smoke byte-identical. hello −18.3% vs baseline. |
+| 2026-07-21 | Phase 4c | **Goal reached — one object per function.** Split `string`/`ctype`/`stdlib`/`stdio`/fmt into per-function files (`libc.a` 4 → **86 objects**); shared engines kept as cohesive cores (`vformat`/`stdio_core`/`malloc`/`exit`/…); **`libc.c` deleted**; build scripts repointed off it. `puts`-only hello **72,068 → 10,784 (−85%)** — no longer drags `printf`/`malloc`/`qsort`/`strto*`; CP/M `.68K` ~−35 KB. Lockstep **9/9** both OSes; self-host `CC.PRG` 473,772 → 456,004; smoke byte-identical. |

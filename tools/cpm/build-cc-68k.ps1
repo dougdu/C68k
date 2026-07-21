@@ -39,9 +39,8 @@ $binc = Join-Path $repo 'include'
 $sysA = Join-Path $repo 'libc\cpm\cpm_sys.a68'
 $seamC = Join-Path $repo 'libc\cpm\cpm.c'
 $rtA  = Join-Path $repo 'lib\runtime\rt68k.a68'
-$libcC = Join-Path $repo 'libc\core\libc.c'
 foreach ($t in @($Cc,$Asm,$Ld,$Mkdri)) { if (-not (Test-Path $t)) { throw "missing tool: $t" } }
-foreach ($f in @($LdScript,$FloatLib,$sysA,$seamC,$rtA,$libcC)) { if (-not (Test-Path $f)) { throw "missing input: $f" } }
+foreach ($f in @($LdScript,$FloatLib,$sysA,$seamC,$rtA)) { if (-not (Test-Path $f)) { throw "missing input: $f" } }
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 
 # compat.c is host-only (spawn/open_memstream shims); the native build omits it.

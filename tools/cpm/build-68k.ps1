@@ -43,7 +43,6 @@ $inc   = Join-Path $repo 'libc\include'
 $sysA  = Join-Path $repo 'libc\cpm\cpm_sys.a68'
 $seamC = Join-Path $repo 'libc\cpm\cpm.c'
 $rtA   = Join-Path $repo 'lib\runtime\rt68k.a68'
-$libcC = Join-Path $repo 'libc\core\libc.c'
 
 if (-not (Test-Path $Src)) { throw "build-68k: source not found: $Src" }
 $Src = (Resolve-Path $Src).Path

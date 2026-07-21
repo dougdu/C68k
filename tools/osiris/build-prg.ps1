@@ -46,7 +46,6 @@ $repo = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
 $inc  = Join-Path $repo 'libc\include'
 $sysA = Join-Path $repo 'libc\osiris\osiris_sys.a68'
 $rtA  = Join-Path $repo 'lib\runtime\rt68k.a68'
-$libcC = Join-Path $repo 'libc\core\libc.c'
 
 if (-not (Test-Path $Src)) { throw "build-prg: source not found: $Src" }
 $Src = (Resolve-Path $Src).Path

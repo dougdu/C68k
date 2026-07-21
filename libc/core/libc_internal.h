@@ -8,6 +8,8 @@
  * be compiled as its own object and archived into libc.a for dead-stripping.
  */
 #include <stddef.h>
+#include <stdio.h>  /* FILE, for the shared stream table and _psink sink */
+#include <stdarg.h> /* va_list, for _vformat */
 
 /* syscall seam --- asm PUBLIC _sys_* == c68k mangling of C sys_* (one '_'). */
 extern int sys_write(int fd, const void *buf, int n);
@@ -24,5 +26,25 @@ extern void *sys_sbrk(int delta);
 extern long fpdtol(double);
 extern double floord(double);
 extern double atod(const char *s);
+
+/* ---- shared stdio state -------------------------------------------------
+ * The process stream table lives in one cohesive core object (stdio_core.c);
+ * fopen/open_memstream claim slots, fflush(NULL) walks it, and stdin/stdout/
+ * stderr alias its first three entries.  Declared here so each split stdio
+ * function is its own dead-strippable object yet shares the one table. */
+#define NSTREAM 11
+extern FILE _streams[NSTREAM];
+
+/* ---- printf/scanf formatting core (vformat.c) ---------------------------
+ * Every printf-family entry point builds a _psink (either a FILE sink or a
+ * bounded buffer) and calls _vformat; keeping the engine in one object lets
+ * the thin printf/sprintf/... wrappers strip independently. */
+typedef struct {
+  FILE *fp;
+  char *buf;
+  int cap;
+  int len;
+} _psink;
+int _vformat(_psink *s, const char *fmt, va_list ap);
 
 #endif /* LIBC_INTERNAL_H */

@@ -141,12 +141,18 @@ $work=Join-Path ([System.IO.Path]::GetTempPath()) 'c68k-native-link'
 New-Item -ItemType Directory -Force -Path $work | Out-Null
 $inc=Join-Path $repo 'libc\include'
 $sysO=Join-Path $work 'SYS.O'; $rtO=Join-Path $work 'RT68K.O'; $libcO=Join-Path $work 'LIBC.O'; $progO=Join-Path $work "$Run.O"
-$sysA=Join-Path $repo 'libc\osiris\osiris_sys.a68'; $rtA=Join-Path $repo 'lib\runtime\rt68k.a68'; $libcC=Join-Path $repo 'libc\core\libc.c'
+$sysA=Join-Path $repo 'libc\osiris\osiris_sys.a68'; $rtA=Join-Path $repo 'lib\runtime\rt68k.a68'
 $ccArgs=@(); if (-not $NoIntegrated) { $ccArgs += '-fintegrated-as' }
 function Chk($desc){ if($LASTEXITCODE -ne 0){ throw "$desc failed (rc=$LASTEXITCODE)" } }
 & $Asm /Cx /elf /c /nologo "/Fo$sysO" $sysA  2>&1 | Out-Null; Chk 'asm crt0'
 & $Asm /Cx /elf /c /nologo "/Fo$rtO"  $rtA   2>&1 | Out-Null; Chk 'asm runtime'
-if (-not $Bare) { & $Cc @ccArgs -c $libcC -o $libcO "-I$inc" 2>&1 | Out-Null; Chk 'cc libc' }
+# libc is now the split archive; build it and combine every member into one
+# relocatable LIBC.O so the on-target native LINK can stage a single object.
+# (Phase 6 will switch this to on-target archive member selection.)
+if (-not $Bare) {
+  & (Join-Path $repo 'tools\build-libc.ps1') -OutDir $work | Out-Null; Chk 'build libc.a'
+  & 'C:\git\osiris\toolchain\binutils\m68k-elf-ld.exe' -r --whole-archive (Join-Path $work 'libc.a') -o $libcO 2>&1 | Out-Null; Chk 'ld -r libc.a -> LIBC.O'
+}
 & $Cc @ccArgs -c $Src   -o $progO "-I$inc"    2>&1 | Out-Null; Chk 'cc program'
 
 # extra translation units (multi-object / archive demo)
