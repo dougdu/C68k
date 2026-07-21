@@ -486,10 +486,11 @@ static void gen_flonum_binop(Node *node) {
   case ND_MUL: println("  jsr _fpmult%s", suf); break;
   case ND_DIV: println("  jsr _fpdiv%s", suf); break;
   case ND_EQ: case ND_NE: case ND_LT: case ND_LE:
-    // Double comparisons go through __cmpdf2 (a correct -1/0/1 compare); the
-    // soft-float lib's _fpcmpd mis-flags an operand with a zero high word
-    // (e.g. `x > 0.0`). Single-precision _fpcmp is correct.
-    println("  jsr %s", dbl ? "__cmpdf2" : "_fpcmp");
+    // _fpcmp (single) and _fpcmpd (double) both set the CCR for (lhs - rhs):
+    // N = lhs<rhs, Z = lhs==rhs, V = 0 -- so the signed Scc below reads the
+    // flags directly (no tst). _fpcmpd was fixed to honour this contract for a
+    // zero-high-word operand (e.g. `0.0 < x`); see worm68k core/dpcmp.a68.
+    println("  jsr %s", dbl ? "_fpcmpd" : "_fpcmp");
     cmp = true;
     break;
   default: error_tok(node->tok, "unsupported float operator");
@@ -498,9 +499,7 @@ static void gen_flonum_binop(Node *node) {
   depth -= (sz * 2) / 4;
 
   if (cmp) {
-    if (dbl)
-      println("  tst.l d0");   // __cmpdf2 returns -1/0/1 -> set N/Z
-    // _fpcmp sets N/Z (V=0) for (lhs - rhs); reuse the signed conditions.
+    // _fpcmp / _fpcmpd set N/Z (V=0) for (lhs - rhs); reuse the signed conds.
     char *cc = node->kind == ND_EQ ? "seq" :
                node->kind == ND_NE ? "sne" :
                node->kind == ND_LT ? "slt" : "sle";
@@ -1337,7 +1336,6 @@ void codegen(Obj *prog, FILE *out) {
   println("  EXTERN __mulsi3,__divsi3,__udivsi3,__modsi3,__umodsi3");
   println("  EXTERN __muldi3,__divdi3,__udivdi3,__moddi3,__umoddi3");
   println("  EXTERN __ashldi3,__ashrdi3,__lshrdi3,__cmpdi2,__ucmpdi2");
-  println("  EXTERN __cmpdf2");
   println("  EXTERN _fpadd,_fpsub,_fpmult,_fpdiv,_fpcmp");
   println("  EXTERN _fpaddd,_fpsubd,_fpmultd,_fpdivd,_fpcmpd");
   println("  EXTERN _fpltof,_fpftol,_fpltod,_fpdtol,_fpftod,_fpdtof");

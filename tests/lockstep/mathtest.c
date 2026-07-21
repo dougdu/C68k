@@ -15,6 +15,14 @@ static void chk(const char *got, const char *want) {
     printf("FAIL: got '%s' want '%s'\n", got, want);
   }
 }
+static void chkb(int got, int want) {
+  if (got == want)
+    g_pass++;
+  else {
+    g_fail++;
+    printf("FAIL: cmp got %d want %d\n", got, want);
+  }
+}
 
 int main(void) {
   char b[64];
@@ -32,6 +40,26 @@ int main(void) {
   snprintf(b, sizeof b, "%f", 3.14159265);        chk(b, "3.141593");
   snprintf(b, sizeof b, "%e", 12345.678);         chk(b, "1.234568e+04");
   snprintf(b, sizeof b, "%.2f", -1.5);            chk(b, "-1.50");
+
+  /* Double comparisons via _fpcmpd. Regression: the compare routine used to
+     mis-flag a zero-high-word operand, so `0.0 < x` (and hence `x > 0.0`) was
+     wrong whenever 0.0 was the first operand. `volatile` forces the compare to
+     run through the library rather than being constant-folded. */
+  volatile double z = 0.0, p = 1.5, n = -1.5;
+  chkb(p > z, 1);   /* 1.5 > 0.0   (chibicc lowers to 0.0 < 1.5: 0.0 is dest) */
+  chkb(n > z, 0);   /* -1.5 > 0.0                                             */
+  chkb(z < p, 1);   /* 0.0 < 1.5   (0.0 is dest directly)                     */
+  chkb(z < n, 0);   /* 0.0 < -1.5                                             */
+  chkb(n < z, 1);   /* -1.5 < 0.0                                             */
+  chkb(p < z, 0);   /* 1.5 < 0.0                                              */
+  chkb(z > n, 1);   /* 0.0 > -1.5                                             */
+  chkb(p >= z, 1);  /* 1.5 >= 0.0  (lowered to 0.0 <= 1.5)                    */
+  chkb(z >= z, 1);  /* 0.0 >= 0.0  (equal)                                    */
+  chkb(z <= z, 1);  /* 0.0 <= 0.0                                             */
+  chkb(z == z, 1);  /* 0.0 == 0.0                                             */
+  chkb(p != z, 1);  /* 1.5 != 0.0                                             */
+  chkb(z != p, 1);  /* 0.0 != 1.5                                             */
+  chkb(p == z, 0);  /* 1.5 == 0.0                                             */
 
   if (g_fail == 0)
     printf("MATH PASS %d/%d\n", g_pass, g_pass);
