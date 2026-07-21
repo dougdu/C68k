@@ -218,20 +218,23 @@ Osiris assembly (and the binutils world) **intercall without thunks**.
 ### 7.3 Code generation & code model
 
 - **Position independence.** Osiris `.PRG` images are **static-PIE**: the loader applies only
-  `R_68K_RELATIVE` fixups (no GOT/PLT). c68k therefore emits **PC-relative** code and data
-  references wherever the 68000 allows (`(d16,PC)`, `(d8,PC,Xn)`, PC-relative `LEA`/`PEA`), and
-  routes any remaining absolute address into a **relocatable data word** the linker fixes up as
-  `R_68K_RELATIVE`. Function calls are PC-relative `BSR`/`JSR (d16,PC)` within a module; cross-module
-  calls resolve through normal `R_68K_PC16`/`PC32` (or absolute) relocations. CP/M-68K `.68K` images
-  are not PIE (they carry DRI relocation fixups applied at load), so for that target the same code
-  generator simply permits absolute `R_68K_32` references; `mkdri` turns them into DRI fixups.
+  `R_68K_RELATIVE` fixups (no GOT/PLT). As implemented, c68k emits **absolute 32-bit** references for
+  globals and function addresses (`LEA sym,An` / `JSR sym`) and records them as `R_68K_32`
+  relocations, which the Osiris linker rewrites to `R_68K_RELATIVE` for the `.PRG`. Absolute
+  addressing is chosen **deliberately over PC-relative**: `(d16,PC)` reaches only ±32 KB, which a
+  global far from the referencing code would overflow. **Local** control flow (branches within a
+  function) is PC-relative `Bcc.W`. CP/M-68K `.68K` images are not PIE (they carry DRI relocation
+  fixups applied at load), so the same absolute `R_68K_32` references are converted to DRI fixups by
+  `mkdri`. (A PC-relative/short-form code model remains a possible future optimization.)
 - **Big-endian, even-aligned.** All word/long memory access is even-aligned (the 68000 traps on an
   odd word access); the AST-to-frame layout guarantees even offsets for word+ scalars.
 - **Stack-machine first, registers later.** The initial generator mirrors chibicc's push/pop model
   (accumulator = `D0`, second operand popped into `D1`, spill via `-(SP)`), which is directly
-  correct on the 68000. Once self-hosting is green, a **temporary/register allocator** promotes hot
-  values into `D2–D7`/`A2–A5` and a **peephole pass** cleans the push/pop residue
-  ([P12](implementation-plan.md#p12--optimization)).
+  correct on the 68000. On top of it an **`-O1` optimization tier**
+  ([P12](implementation-plan.md#p12--optimization)/[P13](implementation-plan.md#p13--tooling--debug-polish))
+  adds immediate-operand selection, power-of-two strength reduction, a **peephole pass**, and an
+  addressing-mode fold that clean the push/pop residue (~20 % smaller code). A full
+  **register allocator** that promotes hot values into `D2–D7`/`A2–A5` remains reserved future work.
 - **No `TRAP`s in generated code.** All OS interaction is via ordinary `BSR`/`JSR` into libc; the
   compiler is OS-neutral.
 

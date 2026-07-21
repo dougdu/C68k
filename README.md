@@ -4,9 +4,12 @@
 Osiris DOS (OS/68K) and CP/M-68K — from one source tree, on the same toolchain that builds
 Osiris.**
 
-> **Status:** Draft 0.1 — **P0 complete**: the chibicc front end is imported and builds, tests, and
-> self-hosts (stage2 == stage3) green in CI on Linux, with the cross-compiler also building on
-> Windows/MSVC and macOS/Clang. The 68000 retarget begins in P1/P2. Progress is tracked in
+> **Status:** Draft 0.1 — **P0–P13 essentially complete.** The compiler is a big-endian ILP32 C99
+> cross-compiler with a 68000 code generator, a hosted C library, and an integrated ELF emitter; it
+> **self-hosts** (stage2 == stage3 byte-identical on Osiris), runs the **lockstep** conformance suite
+> green on both OSes, has an **`-O1` optimization tier** (~20 % smaller code) and **`-g` DWARF**
+> source-level debugging, and ships an SDK with a User's/Reference manual. Milestones **M1–M5** are
+> reached; the one remaining P13 item is a full register allocator. Progress is tracked in
 > [docs/implementation-plan.md](docs/implementation-plan.md#progress-dashboard).
 
 ---
@@ -20,7 +23,7 @@ readable C11 compiler) to the **MC68000**, with two operating-system targets:
   `.PRG` (ELF32-BE static-PIE) images.
 - **CP/M-68K** (Digital Research, 1983) — BDOS on `TRAP #2`, FCB files, `.68K` (DRI) images.
 
-We keep chibicc's proven **C99/C11 front end** (preprocessor, parser, type system) and write a
+We keep chibicc's proven **C99/C11 front end** (preprocessor, parser, type system) and add a
 **fresh 68000 code generator** and a **small C99 standard library**. The **standard C library is
 the platform seam**: an OS-independent core plus a thin per-OS backend (the C-runtime syscall
 stubs and `crt0`) selects the operating system at **link time** — the same "one core, one backend
@@ -38,10 +41,15 @@ is a first-class, permanent deliverable in its own right.
 
 ## Documentation
 
-Start with the [documentation index](docs/README.md), then read in order:
+Start with the [documentation index](docs/README.md). If you are **using** c68k, read the
+[User's Manual](docs/users-manual.md) and keep the [Programmer's Reference Manual](docs/reference-manual.md)
+handy; if you are **working on** the compiler, read the design docs.
 
 | Document | What it covers |
 | --- | --- |
+| [docs/users-manual.md](docs/users-manual.md) | **User's Manual** — install, quick start, the driver & every switch, optimization, `-g` debugging, per-OS build/run, the toolchain, testing, limitations, troubleshooting. |
+| [docs/reference-manual.md](docs/reference-manual.md) | **Programmer's Reference Manual** — language & ILP32 type model, ABI, object format, driver, optimizations, **every supported standard-library function**, the syscall seam, runtime helpers, toolchain, and the Osiris/CP/M-68K platform table. |
+| [docs/sdk.md](docs/sdk.md) | **SDK quickstart** — compile with `c68k`, predefined macros, per-OS link recipes, a worked one-source/two-target example. |
 | [docs/architecture.md](docs/architecture.md) | Goals, the chibicc basis, the dual-target strategy, the single self-hosting compiler, the 68000 code model, the platform split, the build/test pipeline, decisions & risks. |
 | [docs/libc-and-toolchain.md](docs/libc-and-toolchain.md) | The C library structure, the per-OS syscall seam & `crt0`, the runtime support lib, and the native toolchain (LINK / LIB / `mkdri`). |
 | [docs/implementation-plan.md](docs/implementation-plan.md) | The phased build plan (P0–P13) with a live progress dashboard. |

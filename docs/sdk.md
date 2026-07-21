@@ -8,6 +8,11 @@
 platform choice happens entirely at **link** time (the container format and the libc backend). This
 guide is the quickstart for building your own programs.
 
+> **Looking for more?** This is the condensed quickstart. The [User's Manual](users-manual.md) is the
+> full task guide (install, driver, optimization, `-g` debugging, per-OS build/run, troubleshooting),
+> and the [Programmer's Reference Manual](reference-manual.md) is the normative reference (ABI,
+> object format, and **every supported library function**).
+
 For the design rationale see [architecture.md](architecture.md); for the C library and the full
 toolchain reference see [libc-and-toolchain.md](libc-and-toolchain.md).
 

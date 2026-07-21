@@ -32,7 +32,7 @@ Legend: ☐ not started · ◐ in progress · ☑ done.
 | **P11** | [Cross-compiler hardening](#p11--cross-compiler-hardening) | ☑ | 6 / 6 | cross is a CI'd, maintained product |
 | **P12** | [Optimization](#p12--optimization) | ☑ | 4 / 4 | -O1: immediate select, strength reduction, peephole |
 | **P13** | [Tooling & debug polish](#p13--tooling--debug-polish) | ☐ | 7 / 8 | register allocator, DWARF, diagnostics, samples |
-| | **Total** | **2 / 14** | **12 / 87** | |
+| | **Total** | **12 / 14** | **85 / 87** | |
 
 **Milestones (headline):**
 
