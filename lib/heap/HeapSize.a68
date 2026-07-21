@@ -1,0 +1,113 @@
+************************************************************************
+*  _HeapSize
+************************************************************************
+*
+*  Retrieves the size of a memory block allocated from a heap by
+*  the HeapAlloc or HeapReAlloc function.
+*
+************************************************************************
+*  PARAMETERS
+************************************************************************
+*
+*  hHeap : A handle to the heap in which the memory block resides.
+*	   This handle is returned by either the HeapCreate or
+*	   GetMachineHeap function.
+*
+*  pMem : A pointer to the memory block whose size the function
+*         will obtain. This is a pointer returned by the HeapAlloc
+*         or HeapReAlloc function. The memory block must be from
+*         the heap specified by the hHeap parameter.
+*
+************************************************************************
+*  RETURN VALUE
+************************************************************************
+*
+*  If the function succeeds, the return value is the requested size
+*  of the allocated memory block, in bytes. If the function fails,
+*  the return value is -1.
+*
+************************************************************************
+
+	.model	flat
+
+	include	heap.inc
+
+	extern 	__HeapError
+
+	.code
+
+_HeapSize PROC USES d1/a0-a1, hHeap:DWORD, pMem:DWORD
+	movea.l hHeap,a0 			; A0 --> Heap header
+
+	; Run any configured heap validations
+	clr.l 	-(sp)				; Flag caller as not HeapFree
+	move.l 	a0,-(sp)			; Push heap handle
+	jsr 	__HeapAutoValidateFlagCheck
+	adda.l 	#8,sp
+	bne.s 	_hsError			; Validation failed
+
+	IF SOA_ROUTE
+	; ---- Small Object Allocator: a cell reports its class size ----
+	; A cell's usable size is its size-class value (design §7/§16 Q3, like
+	; malloc_usable_size).  Recognize pMem as a slab cell; if owned by this
+	; heap, return slCellSz.  Otherwise fall through to the block path with
+	; A0 (heap) intact (__HeapSlabFromPtr preserves A0/A1).
+	move.l 	pMem,-(sp)
+	jsr 	__HeapSlabFromPtr		; D0 = owning slab, or 0
+	adda.l 	#4,sp
+	tst.l 	d0
+	beq.s 	_hsNotCell			; not a cell -> block path
+	movea.l d0,a1				; A1 --> slab
+	move.l 	slFlags(a1),d0			; ownership: slId vs hhId
+	andi.l 	#HEAP_ID_MASK,d0
+	move.l 	hhFlags(a0),d1
+	andi.l 	#HEAP_ID_MASK,d1
+	cmp.l 	d1,d0
+	bne 	_hsInvalidHeap			; cell not owned by this heap
+	moveq 	#0,d0
+	move.w 	slCellSz(a1),d0			; D0 = class (usable) size
+	bra 	_hsExit
+_hsNotCell:
+	ENDIF
+
+	movea.l	pMem,a1 			; A1 --> memory block
+	suba.l 	#BLK_HDR_SIZE,a1 		; A1 --> block header
+
+	; Validate that the pointer is aligned as we expect
+	move.l	a1,d0 				; Verify block pointer bit pattern is ok
+	and.l 	#$FF000000+(BLK_HDR_SIZE-1),d0
+        bne   	_hsBlockInvalid         	; Abort, not a valid heap block
+
+	; Validate that the block header has the correct signature
+	cmpi.l 	#BLOCK_MAGIC,bhMagic(a1)	; Verify the magic number
+        bne   	_hsBlockInvalid         	; Abort, not a valid heap block
+
+	; Validate that the block is marked as allocated
+	btst.b 	#FLG_FREE_BIT,bhFlags+3(a1)	; Is the block free?
+	bne 	_hsBlockInvalid			; Abort, if it is free
+
+	; Validate that the block is part of the specified heap
+	move.l 	hhFlags(a0),d0 			; Get the Heap's Heap Id
+	andi.l 	#HEAP_ID_MASK,d0
+	move.l 	bhFlags(a1),d1 			; Get the Block's Heap Id
+	andi.l 	#HEAP_ID_MASK,d1
+	cmp.l 	d0,d1 				; Do they match?
+	bne	_hsInvalidHeap			; Nope, abort
+
+	move.l 	bhRequestSize(a1),d0 		; Get the request size of the block
+	bra.s 	_hsExit
+
+_hsInvalidHeap:
+	move.l 	#HEAP_ERROR_HANDLE_BLOCK_MISMATCH,__HeapError ; Heap Id's don't match
+	bra.s 	_hsError
+
+_hsBlockInvalid:
+  	move.l  #HEAP_ERROR_INVALID_BLOCK,__HeapError ; Block pointer not valid
+
+_hsError:
+	move.l	#-1,d0				; Flag that an error occurred.
+
+_hsExit:
+	ENDP
+
+        end

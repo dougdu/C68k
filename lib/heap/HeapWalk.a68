@@ -1,0 +1,105 @@
+************************************************************************
+*  _HeapWalk
+************************************************************************
+*
+*  Enumerates the memory blocks in the specified heap.
+*
+************************************************************************
+*  PARAMETERS
+************************************************************************
+*
+*  hHeap  : A handle to the heap. This handle is returned by either
+*           the HeapCreate or GetMachineHeap function.
+*
+*  pEntry : Pointer to a heap block header pointer. To initiate a
+*	    heap enumeration, set the pEntry parameter to NULL. To
+*           continue a particular heap enumeration, call the
+*           HeapWalk function repeatedly, with no changes to
+*           hHeap or pEntry.
+*
+*           NOTE: The pointer stored at *pEntry is a raw block
+*           header address — it points to the internal bhMagic
+*           field, not to the user data area. This value cannot
+*           be passed directly to HeapFree, HeapSize, or
+*           HeapReAlloc. To obtain the user data pointer from
+*           a HeapWalk result, add BLK_HDR_SIZE ($20) to the
+*           stored value.
+*
+************************************************************************
+*  RETURN VALUE
+************************************************************************
+*
+*  If the function succeeds, the return value is nonzero.
+*
+*  If the function fails, the return value is zero. To get extended
+*  error information, call HeapGetError.
+*
+*  If the heap enumeration terminates successfully by reaching the
+*  end of the heap, the function returns FALSE, and HeapGetError
+*  returns the error code HEAP_ERROR_NO_MORE_ITEMS.
+*
+************************************************************************
+
+	.model	flat
+
+	include heap.inc
+
+	extern  __HeapError
+
+	.code
+
+_HeapWalk PROC USES a0-a2, hHeap:DWORD, pEntry:DWORD
+	movea.l hHeap,a0 			; A0 --> Heap
+
+	; Run any configured heap validations
+	clr.l 	-(sp)				; Flag caller as not HeapFree
+	move.l 	a0,-(sp)			; Push heap handle
+	jsr 	__HeapAutoValidateFlagCheck
+	adda.l 	#8,sp
+	bne 	_hwErrorExit			; Validation failed
+
+
+	move.l 	pEntry,a1 			; A1 --> Heap Block Header buffer
+	cmpa.l 	#0,a1				; NULL pEntry pointer?
+	beq.s 	_hwNullParam			; Yes, abort
+	tst.l 	(a1)				; Is the block pointer NULL?
+	bne.s 	_hwFollowBlockLink		; Go if the block pointer is not NULL
+
+	movea.l hhHeapHead(a0),a2 		; Get the head of the block chain
+	bra.s 	_hwSuccess 			; and return it.
+
+_hwFollowBlockLink:
+	; Do some sanity checking on the block pointer
+	move.l  (a1),a2 			; A2 --> Heap Block Header
+	move.l 	a2,d0 				; Get the block pointer
+	and.l 	#$FF000000+(BLK_HDR_SIZE-1),d0	; Verify the block pointer bit pattern is ok
+	bne.s	_hwInvalidBlock			; Nope, abort
+	cmpi.l 	#BLOCK_MAGIC,bhMagic(a2)	; Block magic number present?
+	bne.s	_hwInvalidBlock			; Nope, abort
+	movea.l bhNext(a2),a2 			; Follow next link
+
+_hwSuccess:
+	cmpa.l 	#0,a2 				; End of the heap?
+	beq.s 	_hwEndOfHeap			; Yes, return status
+	move.l 	a2,(a1)				; Store updated pointer
+	move.l 	#-1,d0				; Flag success
+	bra.s 	_hwExit
+
+_hwInvalidBlock:
+	move.l	#HEAP_ERROR_INVALID_BLOCK,__HeapError
+	bra.s 	_hwErrorExit
+
+_hwNullParam:
+	move.l	#HEAP_ERROR_INVALID_PARAM,__HeapError
+	bra.s 	_hwErrorExit
+
+_hwEndOfHeap:
+	move.l	#HEAP_ERROR_NO_MORE_ITEMS,__HeapError ; End of heap
+
+_hwErrorExit:
+	clr.l 	d0				; Flag error
+
+_hwExit:
+	ENDP
+
+	end

@@ -1,0 +1,40 @@
+************************************************************************
+*  _GetMachineHeap
+************************************************************************
+*
+*  Returns the handle to default heap.
+*
+************************************************************************
+*  PARAMETERS
+************************************************************************
+*
+*  None.
+*
+************************************************************************
+*  RETURN VALUE
+************************************************************************
+*
+*  If the function succeeds, the return value is the handle of the
+*  machine heap.
+*
+*  If the function fails, the return value is zero. An application
+*  can call GetHeapError for extended error information.
+************************************************************************
+
+	.model	flat
+
+	include heap.inc
+
+	extern 	__MachineHeapHandle, __HeapError
+
+	.code
+
+_GetMachineHeap PROC
+	clr.l 	__HeapError
+	move.l 	__MachineHeapHandle,d0
+	bne.s 	_gmhExit
+	move.l 	#HEAP_ERROR_NOT_INITIALIZED,__HeapError
+_gmhExit:
+	ENDP
+
+	end

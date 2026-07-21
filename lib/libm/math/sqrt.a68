@@ -1,0 +1,100 @@
+	title	"IEEE 754 single-precision square root"
+; ============================================================
+;  _sqrt / _sqrtf — single-precision square root
+;
+;  float _sqrt(float x) — returns sqrt(x) in D0
+;  Uses Newton-Raphson iteration: y = (y + x/y) / 2
+;  Initial estimate from halving the exponent.
+;  5 iterations for full single-precision accuracy.
+; ============================================================
+
+	.model	flat
+	include	ieee754.inc
+
+	public	_sqrt, _sqrtf
+	extern	_fpadd, _fpdiv, _fpmult
+
+	.code
+
+_sqrt:
+_sqrtf:
+	link	a6,#0
+	movem.l	d2-d3,-(sp)
+
+	move.l	8(a6),d2		; d2 = x
+
+	; Handle zero
+	move.l	d2,d0
+	andi.l	#$7FFFFFFF,d0
+	beq	_sqrt_zero
+
+	; Handle negative → NaN
+	tst.l	d2
+	bmi	_sqrt_nan
+
+	; Handle infinity
+	cmpi.l	#SNG_INF,d2
+	beq	_sqrt_inf
+
+	; --- Initial estimate: halve the exponent ---
+	; y0 = reinterpret((ieee + (127 << 23)) >> 1)
+	; This is the "fast inverse sqrt" trick adapted for sqrt
+	move.l	d2,d0
+	lsr.l	#1,d0			; halve all bits
+	addi.l	#$1FC00000,d0		; adjust bias: (127/2) << 23
+	move.l	d0,d3			; d3 = y (current estimate)
+
+	; --- Newton-Raphson: y = (y + x/y) * 0.5 ---
+	; 5 iterations
+	moveq	#5,d0
+	move.l	d0,-(sp)		; save iteration count
+	addq.l	#4,sp			; ... actually just use a counter
+
+	moveq	#4,d0			; 5 iterations (0-4)
+_sqrt_iter:
+	move.l	d0,-(sp)		; save counter
+
+	; Compute x / y
+	move.l	d3,-(sp)		; push y (divisor)
+	move.l	d2,-(sp)		; push x (dividend)
+	jsr	_fpdiv
+	addq.l	#8,sp			; d0 = x/y
+
+	; Compute y + x/y
+	move.l	d0,-(sp)		; push x/y
+	move.l	d3,-(sp)		; push y
+	jsr	_fpadd
+	addq.l	#8,sp			; d0 = y + x/y
+
+	; Multiply by 0.5
+	move.l	#SNG_HALF,-(sp)		; push 0.5
+	move.l	d0,-(sp)		; push (y + x/y)
+	jsr	_fpmult
+	addq.l	#8,sp			; d0 = (y + x/y) * 0.5
+
+	move.l	d0,d3			; d3 = new y
+
+	move.l	(sp)+,d0		; restore counter
+	subq.l	#1,d0
+	bpl.s	_sqrt_iter
+
+	move.l	d3,d0			; result
+
+_sqrt_done:
+	movem.l	(sp)+,d2-d3
+	unlk	a6
+	rts
+
+_sqrt_zero:
+	move.l	d2,d0			; return original ±0
+	bra.s	_sqrt_done
+
+_sqrt_nan:
+	move.l	#SNG_QNAN,d0
+	bra.s	_sqrt_done
+
+_sqrt_inf:
+	move.l	#SNG_INF,d0		; sqrt(+inf) = +inf
+	bra.s	_sqrt_done
+
+	end

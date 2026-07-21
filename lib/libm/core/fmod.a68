@@ -1,0 +1,52 @@
+	title	"IEEE 754 single-precision modulo"
+; ============================================================
+;  _fmod / _fmodf — floating-point remainder
+;
+;  float _fmod(float x, float y) — returns x mod y in D0
+;  Result has same sign as x.
+;  Uses repeated subtraction (simple, correct for BASIC use).
+; ============================================================
+
+	.model	flat
+	include	ieee754.inc
+
+	public	_fmod, _fmodf
+	extern	_fpsub
+
+	.code
+
+_fmod:
+_fmodf:
+	link	a6,#0
+	movem.l	d5-d7,-(sp)
+
+	move.l	8(a6),d7		; d7 = x
+	move.l	d7,d6			; d6 = original x (save sign)
+	bclr.l	#IEEE754_SNG_SIGN_BIT,d6 ; d6 = |x|
+	move.l	12(a6),d5		; d5 = y
+	bclr.l	#IEEE754_SNG_SIGN_BIT,d5 ; d5 = |y|
+
+_fmod_loop:
+	; Subtract |y| from running |x|
+	move.l	d5,-(sp)		; push |y|
+	move.l	d6,-(sp)		; push |x|
+	jsr	_fpsub			; d0 = |x| - |y|
+	addq.l	#8,sp
+	btst.l	#IEEE754_SNG_SIGN_BIT,d0 ; result negative?
+	bne.s	_fmod_done		; yes → d6 is the remainder
+	move.l	d0,d6			; update running value
+	bra.s	_fmod_loop
+
+_fmod_done:
+	; Apply sign of original x
+	btst.l	#IEEE754_SNG_SIGN_BIT,d7
+	beq.s	_fmod_pos
+	bset.l	#IEEE754_SNG_SIGN_BIT,d6
+
+_fmod_pos:
+	move.l	d6,d0
+	movem.l	(sp)+,d5-d7
+	unlk	a6
+	rts
+
+	end

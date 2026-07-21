@@ -1,0 +1,326 @@
+	title	"IEEE 754 double-precision number formatter"
+; ============================================================
+;  _FormatDouble — format a double-precision float to ASCII
+;
+;  Input:  8(a6)=high word, 12(a6)=low word  (IEEE 754 double)
+;  Output: D0 = pointer to null-terminated string buffer
+;
+;  Algorithm:
+;    1. Handle sign and zero
+;    2. Normalize value to [1.0, 10.0) tracking decimal exponent
+;    3. Extract 16 digits (15 significant + 1 guard for rounding)
+;    4. Round using the guard digit
+;    5. Format as fixed or E notation
+;
+;  Uses: _fpcmpd, _fpdivd, _fpmultd, _fpsubd, _fpdtol, _fpltod
+; ============================================================
+
+	.model	flat
+	include	ieee754.inc
+	include	ieee754d.inc
+
+	public	_FormatDouble
+	extern	_fpcmpd, _fpdivd, _fpmultd, _fpsubd, _fpdtol, _fpltod
+
+	.code
+
+; Constants for 10.0 and 1.0 as IEEE 754 doubles (hi word only; lo word is 0)
+DBL_10_HI	equ	$40240000
+DBL_1_HI	equ	$3FF00000
+
+_FormatDouble:
+	link	a6,#0
+	movem.l	d2-d7/a2-a4,-(sp)
+
+	; Load argument
+	move.l	8(a6),d2		; val_hi
+	move.l	12(a6),d3		; val_lo
+
+	lea	_fd_OutBuf,a2		; A2 = output write pointer
+
+	; === Handle zero ===
+	move.l	d2,d0
+	andi.l	#$7FFFFFFF,d0		; strip sign
+	or.l	d3,d0
+	beq	_fd_Zero
+
+	; === Handle sign ===
+	move.b	#' ',(a2)+		; assume positive
+	tst.l	d2
+	bpl.s	_fd_Positive
+	move.b	#'-',-1(a2)		; overwrite with minus sign
+	bclr	#31,d2			; make positive
+
+_fd_Positive:
+	; === Normalize to [1.0, 10.0) ===
+	; D2:D3 = val (positive), D4 = decimal exponent
+	clr.l	d4			; dec_exp = 0
+
+	; --- While val >= 10.0, divide by 10 ---
+_fd_NormBig:
+	clr.l	-(sp)			; 10.0 lo (src)
+	move.l	#DBL_10_HI,-(sp)	; 10.0 hi
+	move.l	d3,-(sp)		; val lo  (dest)
+	move.l	d2,-(sp)		; val hi
+	jsr	_fpcmpd			; CCR = val - 10.0
+	lea	16(sp),sp
+	blt.s	_fd_CheckSmall		; val < 10.0
+
+	; val >= 10.0: divide by 10
+	clr.l	-(sp)			; 10.0 lo (ARG2)
+	move.l	#DBL_10_HI,-(sp)	; 10.0 hi
+	move.l	d3,-(sp)		; val lo  (ARG1)
+	move.l	d2,-(sp)		; val hi
+	jsr	_fpdivd
+	lea	16(sp),sp
+	move.l	d0,d2
+	move.l	d1,d3
+	addq.l	#1,d4
+	bra.s	_fd_NormBig
+
+	; --- While val < 1.0, multiply by 10 ---
+_fd_CheckSmall:
+	clr.l	-(sp)			; 1.0 lo (src)
+	move.l	#DBL_1_HI,-(sp)		; 1.0 hi
+	move.l	d3,-(sp)		; val lo  (dest)
+	move.l	d2,-(sp)		; val hi
+	jsr	_fpcmpd			; CCR = val - 1.0
+	lea	16(sp),sp
+	bge.s	_fd_Normalized		; val >= 1.0, done
+
+	; val < 1.0: multiply by 10
+	clr.l	-(sp)			; 10.0 lo (ARG2)
+	move.l	#DBL_10_HI,-(sp)	; 10.0 hi
+	move.l	d3,-(sp)		; val lo  (ARG1)
+	move.l	d2,-(sp)		; val hi
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	d0,d2
+	move.l	d1,d3
+	subq.l	#1,d4
+	bra.s	_fd_CheckSmall
+
+_fd_Normalized:
+	; D2:D3 = val in [1.0, 10.0), D4 = decimal exponent
+
+	; === Extract 16 digits (15 significant + 1 guard) ===
+	lea	_fd_DigBuf,a3		; A3 = digit buffer
+	moveq	#15,d5			; loop counter: 16 iterations (0..15)
+
+_fd_DigitLoop:
+	; digit = (int)val
+	move.l	d3,-(sp)
+	move.l	d2,-(sp)
+	jsr	_fpdtol			; D0 = integer part
+	addq.l	#8,sp
+
+	; Clamp to 0-9 (safety)
+	tst.l	d0
+	bge.s	_fd_DigNotNeg
+	clr.l	d0
+_fd_DigNotNeg:
+	cmpi.l	#9,d0
+	ble.s	_fd_DigOk
+	moveq	#9,d0
+_fd_DigOk:
+	move.l	d0,d6			; D6 = digit value (0-9)
+	addi.b	#'0',d0
+	move.b	d0,(a3)+		; store ASCII digit
+
+	; val = (val - digit) * 10.0
+	move.l	d6,-(sp)
+	jsr	_fpltod			; D0:D1 = (double)digit
+	addq.l	#4,sp
+	; _fpsubd: ARG1 - ARG2, push digit as ARG2, val as ARG1
+	move.l	d1,-(sp)		; digit_lo (ARG2)
+	move.l	d0,-(sp)		; digit_hi
+	move.l	d3,-(sp)		; val_lo   (ARG1)
+	move.l	d2,-(sp)		; val_hi
+	jsr	_fpsubd			; D0:D1 = val - digit
+	lea	16(sp),sp
+
+	; Multiply (val - digit) * 10.0
+	clr.l	-(sp)			; 10.0 lo (ARG2)
+	move.l	#DBL_10_HI,-(sp)	; 10.0 hi
+	move.l	d1,-(sp)		; (val-digit) lo (ARG1)
+	move.l	d0,-(sp)		; (val-digit) hi
+	jsr	_fpmultd		; D0:D1 = (val - digit) * 10
+	lea	16(sp),sp
+	move.l	d0,d2			; update val
+	move.l	d1,d3
+
+	dbf	d5,_fd_DigitLoop
+
+	; === Rounding ===
+	; _fd_DigBuf has 16 ASCII digits; digit[15] is the guard digit
+	; If guard digit >= '5', round up digit[14] and propagate carry
+	lea	_fd_DigBuf,a3
+	cmpi.b	#'5',15(a3)
+	blt.s	_fd_Format		; no rounding needed
+
+	; Round: increment digit[14], propagate carry backward
+	lea	14(a3),a4		; A4 -> last significant digit
+	moveq	#14,d5			; max propagation depth
+
+_fd_RoundLoop:
+	addi.b	#1,(a4)
+	cmpi.b	#'9',(a4)
+	ble.s	_fd_Format		; no further carry
+	move.b	#'0',(a4)		; reset to '0', carry up
+	suba.l	#1,a4
+	dbf	d5,_fd_RoundLoop
+
+	; All 15 digits rolled over (e.g. 9.999...9 -> 10.000...0)
+	; Set first digit to '1', rest are already '0', bump exponent
+	lea	_fd_DigBuf,a3
+	move.b	#'1',(a3)
+	addq.l	#1,d4
+
+	; === Format output ===
+_fd_Format:
+	; D4 = decimal exponent
+	; _fd_DigBuf = 15 significant ASCII digits
+	; A2 = output buffer (after sign character)
+	lea	_fd_DigBuf,a3
+
+	; Decide: fixed notation if -3 <= dec_exp < 15, else E notation
+	cmpi.l	#15,d4
+	bge	_fd_EFormat
+	cmpi.l	#-3,d4
+	blt	_fd_EFormat
+
+	; --- Fixed format ---
+	tst.l	d4
+	blt	_fd_FixedLeadZero
+
+	; dec_exp >= 0: emit (dec_exp+1) integer digits, '.', then rest
+	move.l	d4,d5			; D5 = dec_exp (= integer digits - 1)
+
+_fd_FixedIntLoop:
+	move.b	(a3)+,(a2)+		; emit integer digit
+	dbf	d5,_fd_FixedIntLoop
+
+	; Decimal point
+	movea.l	a2,a4			; A4 = trim point (before dot, in case all fraction is zero)
+	move.b	#'.',(a2)+
+
+	; Remaining fraction digits: 15 - (dec_exp+1) = 14 - dec_exp
+	moveq	#14,d6
+	sub.l	d4,d6			; D6 = count of fraction digits
+	subq.l	#1,d6			; adjust for dbf
+
+_fd_FixedFracLoop:
+	move.b	(a3)+,d0
+	move.b	d0,(a2)+
+	cmpi.b	#'0',d0
+	beq.s	_fd_FixedFracNext
+	movea.l	a2,a4			; update trim point past last non-zero
+_fd_FixedFracNext:
+	dbf	d6,_fd_FixedFracLoop
+
+	movea.l	a4,a2			; strip trailing zeros (and '.' if all zero)
+	bra	_fd_Done
+
+_fd_FixedLeadZero:
+	; dec_exp < 0: emit "0.", then (-dec_exp-1) leading zeros, then digits
+	move.b	#'0',(a2)+
+	move.b	#'.',(a2)+
+	movea.l	a2,a4			; trim point before leading zeros
+
+	; Emit leading zeros: count = -dec_exp - 1
+	move.l	d4,d5
+	neg.l	d5			; d5 = -dec_exp
+	subq.l	#1,d5			; d5 = number of leading zeros
+	subq.l	#1,d5			; adjust for dbf
+	bmi.s	_fd_FixedLeadDigits	; no leading zeros if dec_exp = -1
+
+_fd_LeadZeroLoop:
+	move.b	#'0',(a2)+
+	dbf	d5,_fd_LeadZeroLoop
+
+_fd_FixedLeadDigits:
+	; Emit 15 significant digits
+	moveq	#14,d6			; 15 digits for dbf
+_fd_FixedLeadDigLoop:
+	move.b	(a3)+,d0
+	move.b	d0,(a2)+
+	cmpi.b	#'0',d0
+	beq.s	_fd_FixedLeadNext
+	movea.l	a2,a4			; trim past last non-zero
+_fd_FixedLeadNext:
+	dbf	d6,_fd_FixedLeadDigLoop
+
+	movea.l	a4,a2			; strip trailing zeros
+	bra.s	_fd_Done
+
+	; --- E format ---
+_fd_EFormat:
+	; Emit first digit, '.', remaining significant digits
+	move.b	(a3)+,(a2)+		; first digit
+	move.b	#'.',(a2)+
+	movea.l	a2,a4			; trim point
+
+	moveq	#13,d6			; 14 remaining digits
+_fd_EFracLoop:
+	move.b	(a3)+,d0
+	move.b	d0,(a2)+
+	cmpi.b	#'0',d0
+	beq.s	_fd_EFracNext
+	movea.l	a2,a4			; update trim past non-zero
+_fd_EFracNext:
+	dbf	d6,_fd_EFracLoop
+
+	movea.l	a4,a2			; strip trailing zeros
+
+	; Emit exponent: 'E', sign, digits
+	move.b	#'E',(a2)+
+	tst.l	d4
+	bpl.s	_fd_EPosExp
+	move.b	#'-',(a2)+
+	neg.l	d4
+	bra.s	_fd_EEmitExp
+_fd_EPosExp:
+	move.b	#'+',(a2)+
+
+_fd_EEmitExp:
+	; D4 = absolute exponent (0..308)
+	cmpi.l	#100,d4
+	blt.s	_fd_EExp2
+
+	; 3-digit exponent: hundreds digit
+	divu	#100,d4
+	addi.b	#'0',d4
+	move.b	d4,(a2)+
+	clr.w	d4			; clear quotient, keep remainder
+	swap	d4			; D4 = remainder
+
+_fd_EExp2:
+	divu	#10,d4
+	addi.b	#'0',d4
+	move.b	d4,(a2)+		; tens digit
+	swap	d4
+	addi.b	#'0',d4
+	move.b	d4,(a2)+		; ones digit
+
+_fd_Done:
+	clr.b	(a2)			; null-terminate
+	move.l	#_fd_OutBuf,d0		; return buffer pointer
+	movem.l	(sp)+,d2-d7/a2-a4
+	unlk	a6
+	rts
+
+_fd_Zero:
+	lea	_fd_OutBuf,a2
+	move.b	#' ',(a2)+
+	move.b	#'0',(a2)+
+	clr.b	(a2)
+	move.l	#_fd_OutBuf,d0
+	movem.l	(sp)+,d2-d7/a2-a4
+	unlk	a6
+	rts
+
+	.bss
+_fd_DigBuf	ds.b	20		; digit extraction buffer (16 + padding)
+_fd_OutBuf	ds.b	32		; formatted output buffer
+
+	end

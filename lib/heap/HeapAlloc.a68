@@ -1,0 +1,303 @@
+************************************************************************
+*  _HeapAlloc
+************************************************************************
+*
+*  Allocates a block of memory from a heap.
+*
+************************************************************************
+*  PARAMETERS
+************************************************************************
+*
+*  hHeap : A handle to the heap from which the memory will be
+*	   allocated. This handle is returned by the HeapCreate
+*	   or GetMachineHeap function.
+*
+*  lFlags : The heap allocation options. Specifying any of these
+*           values will override the corresponding value specified
+*	    when the heap was created with HeapCreate. This parameter
+*           can be one or more of the following values.
+*
+*	HEAP_ZERO_MEMORY - The allocated memory will be initialized
+*		to zero. Otherwise, the memory is not initialized to
+*		zero.
+*
+*  lBytes : The number of bytes to be allocated.
+*
+************************************************************************
+*  RETURN VALUE
+************************************************************************
+*
+*  If the function succeeds, the return value is a pointer to the
+*  allocated memory block.
+*
+*  If the function fails the return value is NULL
+*
+************************************************************************
+
+	.model	flat
+
+	include heap.inc
+
+	extern	__HeapGetBucketOffset
+	extern	__HeapError
+
+	.code
+
+_HeapAlloc PROC USES d1-d3/a0-a4, hHeap:DWORD, lFlags:DWORD, lBytes:DWORD
+	movea.l hHeap,a0 			; Get heap handle
+
+	; Run any configured heap validations
+	clr.l 	-(sp)				; Flag caller as not HeapFree
+	move.l 	a0,-(sp)			; Push heap handle
+	jsr 	__HeapAutoValidateFlagCheck
+	adda.l 	#8,sp
+	bne 	_haErrorExit1			; Validation failed
+
+	IF SOA_ROUTE
+	; ---- Small Object Allocator fast path (design §7/§9.3) ----
+	; Route requests of 1..SOA_MAX bytes to the SOA unless the heap has
+	; the small pool disabled or tail-checking enabled (tail checking
+	; needs the block path's per-allocation guard band).  On any SOA
+	; failure we fall through to the block allocator, unchanged.
+	move.l 	lBytes,d1			; N
+	beq.s 	_haSoaSkip			; 0 bytes -> block path
+	cmpi.l 	#SOA_MAX,d1
+	bhi.s 	_haSoaSkip			; > SOA_MAX -> block path
+	btst.b 	#FLG_HEAP_DISABLE_SMALL_POOL-8,hhFlags+2(a0) ; per-heap opt-out (bit 10)
+	bne.s 	_haSoaSkip
+	move.l 	lFlags,d1			; per-CALL opt-out: the SOA's own SCB
+	btst.l 	#FLG_HEAP_DISABLE_SMALL_POOL,d1	; allocation passes this to force a block
+	bne.s 	_haSoaSkip			; (also breaks the SCB-alloc recursion)
+	btst.b 	#FLG_HEAP_ENABLE_TAIL_CHECK,hhFlags+3(a0)
+	bne.s 	_haSoaSkip
+	move.l 	lBytes,-(sp)			; lBytes
+	move.l 	lFlags,-(sp)			; lFlags
+	move.l 	a0,-(sp)			; hHeap
+	jsr 	__HeapSoaAlloc
+	adda.l 	#12,sp
+	tst.l 	d0
+	beq.s 	_haSoaSkip			; SOA exhausted -> block path
+	movea.l d0,a0				; A0 --> allocated cell
+	bra 	_haExit
+_haSoaSkip:
+	ENDIF
+
+	; Begin allocation
+	move.l 	lBytes,d1 			; Get count of bytes to allocate
+
+	; Compute actual size of the block we need
+	move.l 	d1,d2 				; D2 = working copy of request size
+
+	; Is HEAP_TAIL_CHECKING_ENABLED set for the heap?
+	btst.b 	#FLG_HEAP_ENABLE_TAIL_CHECK,hhFlags+3(a0)
+	beq.s 	_haTailCheckingNotEnabled
+	addi.l 	#HEAP_TAIL_SIZE,d2		; Reserve space for the tail marker
+
+_haTailCheckingNotEnabled:
+        add.l  	#BLK_HDR_SIZE-1,d2		; Force the requested block size to
+        andi.b  #NOT(BLK_HDR_SIZE-1),d2		; be aligned on a block header boundary
+        add.l   #BLK_HDR_SIZE,d2        	; Add the size of a block header
+        ble     _haNoMem                	; Error if negative
+
+	; Find the starting bucket: minimum data area size = D2 - BLK_HDR_SIZE
+	move.l 	d2,d0
+	subi.l 	#BLK_HDR_SIZE,d0		; D0 = minimum data area size needed
+	jsr 	__HeapGetBucketOffset		; D0 = starting bucket offset
+
+	; Walk buckets from the starting offset upward until a non-empty one is found
+_haFindBucket:
+	tst.l 	HEAP_FREE_BUCKET_BASE(a0,d0.l)	; Is this bucket empty?
+	bne.s 	_haFoundBucket			; No, go search it
+	addq.l 	#4,d0				; Advance to next bucket
+	cmpi.l 	#HEAP_NUM_FREE_BUCKETS*4,d0	; Past the last bucket?
+	bge 	_haNoMem			; Yes, out of memory
+	bra.s 	_haFindBucket
+
+_haFoundBucket:
+	movea.l HEAP_FREE_BUCKET_BASE(a0,d0.l),a1 ; A1 = head of current bucket
+
+	; Search the free block chain looking for a large enough block
+
+_haSearchFreeBlockChain:
+	btst.b 	#FLG_FREE_BIT,bhFlags+3(a1) 	; Is the block marked as allocated?
+	beq 	_haFreeBlockChainCorrupt 	; Allocated block found, bad news!
+
+	move.l  bhSize(a1),d3                 	; Is the block big enough?
+	sub.l 	d2,d3 				; D3 = bytes left over
+	blt.s 	_haBlockTooSmall		; Not big enough, keep searching
+	beq.s 	_haExactFit			; Exact size needed, reuse block
+	cmp.l 	#BLK_HDR_SIZE,d3 		; If the remaining bytes only have
+	ble.s 	_haExactFit			; room for a header, then reuse block
+	bra.s   _haSplitBlock           	; Go split into 2 blocks
+
+_haBlockTooSmall:
+	; Block too small; advance to the next block in this bucket
+	tst.l 	bhFreeNext(a1)			; Is there another block in this bucket?
+	beq.s 	_haTryNextBucket		; No, try the next larger bucket
+	movea.l bhFreeNext(a1),a1		; Yes, advance to next block
+	bra.s 	_haSearchFreeBlockChain		; and keep searching
+
+_haTryNextBucket:
+	; Exhausted current bucket; advance to the next larger bucket
+	addq.l 	#4,d0				; Advance to next bucket
+	cmpi.l 	#HEAP_NUM_FREE_BUCKETS*4,d0	; Past the last bucket?
+	bge 	_haNoMem			; Yes, out of memory
+	bra.s 	_haFindBucket			; Look for next non-empty bucket
+
+_haExactFit:
+	; Here if the found free block is the exact size needed. We can
+	; just unlink the block from the free block chain and mark it as allocated.
+	move.l 	a1,-(sp)
+	move.l 	a0,-(sp)
+	jsr 	__HeapUnlinkFromFreeBlockChain	; Unlink the block from the free block chain
+	adda.l 	#8,sp
+	bclr.b 	#FLG_FREE_BIT,bhFlags+3(a1)	; Clear the free block flag
+	move.l 	d1,bhRequestSize(a1)		; Set requested size
+	bra 	_haProcessFlags			; Go zero block and/or add debug marker
+
+_haSplitBlock:
+	; Split the existing free block into two blocks.  One
+	; allocated and one free.
+
+	; Step 1: Update the block chain (physical) linkage
+	movea.l a1,a4 				; A4 = start of new free block
+	adda.l 	d2,a4
+
+	move.l 	bhNext(a1),bhNext(a4)		; A4's forward link = A1's old forward link
+	move.l 	a1,bhPrev(a4)			; A4's back link = A1
+	move.l 	a4,bhNext(a1)			; A1's forward link = A4
+
+	tst.l 	bhNext(a4)			; Does A4 have a forward block?
+	beq.s 	_haNoFwdBlock			; Nope
+	movea.l bhNext(a4),a3
+	move.l 	a4,bhPrev(a3)			; Update following block's back link
+
+_haNoFwdBlock:
+	; Step 2: Remove A1 from its bucket's free chain
+	move.l 	a1,-(sp)			; Push block to unlink
+	move.l 	a0,-(sp)			; Push heap handle
+	jsr 	__HeapUnlinkFromFreeBlockChain
+	adda.l 	#8,sp
+
+	; Step 3: Initialize A1's block header (allocated)
+	bclr.b 	#FLG_FREE_BIT,bhFlags+3(a1)	; Clear the free block flag
+	move.l 	d1,bhRequestSize(a1)		; Set requested size
+	move.l 	d2,bhSize(a1)			; Set actual block size
+	clr.l 	bhFreePrev(a1)			; Clear free block chain links
+	clr.l 	bhFreeNext(a1)			; Clear free block chain links
+
+	; Step 4: Initialize A4's block header (free remainder)
+	move.l 	#BLOCK_MAGIC,bhMagic(a4)	; Init the magic word
+	move.l 	#FLG_FREE,bhFlags(a4)		; Set the free block flag
+	move.l 	hhFlags(a0),d0 			; Get the heap id
+	andi.l 	#HEAP_ID_MASK,d0 		; Mask off non-id bits
+	or.l 	d0,bhFlags(a4)			; Set heap id on block
+	move.l 	d3,bhSize(a4)			; Set actual block size
+	subi.l 	#BLK_HDR_SIZE,d3 		; Free block data area size
+	move.l 	d3,bhRequestSize(a4)		; Set data area size
+
+	; Step 5: Insert A4 into the correct bucket (LIFO at head)
+	move.l 	d3,d0				; D0 = data area size of A4
+	jsr 	__HeapGetBucketOffset		; D0 = byte offset of correct bucket
+	movea.l HEAP_FREE_BUCKET_BASE(a0,d0.l),a3 ; A3 = current bucket head
+	move.l 	a4,HEAP_FREE_BUCKET_BASE(a0,d0.l)  ; A4 is new bucket head
+	clr.l 	bhFreePrev(a4)			; No predecessor
+	move.l 	a3,bhFreeNext(a4)		; Forward link to old head
+	cmpa.l 	#0,a3				; Was bucket non-empty?
+	beq.s 	_haFreeChainDone
+	move.l 	a4,bhFreePrev(a3)		; Update old head's back link
+
+_haFreeChainDone:
+
+_haProcessFlags:
+	move.l 	lFlags,d2 			; Caller requested flags
+	bsr 	__FillBlock
+	lea.l 	bhData(a1),a0			; Put memory pointer in a0
+        bra.s   _haExit
+
+_haFreeBlockChainCorrupt:
+	move.l	#HEAP_ERROR_BLOCK_NOT_FREE,d0 	; Flag that the free block chain is corrupt
+	bra.s 	_haErrorExit
+
+_haNoMem:
+	move.l	#HEAP_ERROR_OUT_OF_MEMORY,d0 	; Not enough free space for request
+
+_haErrorExit:
+	move.l 	d0,__HeapError			; Store the error code
+
+_haErrorExit1:
+	suba.l  a0,a0                   	; Return NULL pointer on error
+
+_haExit:
+	move.l	a0,d0 				; Return pointer in D0
+	ENDP
+
+
+;hHeap 	equ 	A0
+;pBlock 	equ	A1
+;pMem	equ	A2
+;lData 	equ	D1
+;lFlag  equ 	D2
+
+__FillBlock:
+	btst.b 	#FLG_HEAP_ENABLE_TAIL_CHECK,hhFlags+3(a0)
+	beq.s 	_fbNoTailChecking
+
+	move.l 	bhRequestSize(a1),d0 		; Requested block size
+	addi.l 	#3,d0				; Round UP to nearest long word
+	andi.l 	#NOT(3),d0 			; D0 = first tail fill offset (>= bhRequestSize)
+	lea 	bhData(a1,d0.l),a2		; A2 --> First tail fill long word (after user data)
+
+	move.l 	bhSize(a1),d1			; D1 = block size
+	subi.l 	#BLK_HDR_SIZE,d1		; D1 = data area size
+	sub.l 	d0,d1				; D1 = bytes to fill
+	lsr.l 	#2,d1				; Convert to long word count
+	subi.l 	#1,d1				; Adjust for dbra
+	move.l 	d1,d0				; D0 for dbra
+
+_fbTailCheckLoop:
+	move.l 	#HEAP_TAIL,(a2)+		; Fill the block debug data to help
+	dbra 	d0,_fbTailCheckLoop		; detect buffer overruns.
+
+_fbNoTailChecking:
+	; HEAP_ENABLE_DEBUG_FILL flag takes precedence over HEAP_ZERO_MEMORY
+	move.l 	#CDCDCDCD,d1 			; Initialize fill pattern
+	btst.b 	#FLG_HEAP_ENABLE_DEBUG_FILL,hhFlags+3(a0)
+	bne.s 	_fbFillBlock
+
+	; If the HEAP_ZERO_MEMORY flag passed in then zero out the block
+	clr.l 	d1 				; Initialize fill pattern
+	btst.l 	#FLG_HEAP_ZERO_MEMORY,d2 	; Caller requested block to be zeroed?
+	bne.s 	_fbFillBlock			; Yes, go zero the block
+
+	; Is the heap configured to zero every allocation?
+	btst.b 	#FLG_HEAP_ZERO_MEMORY,hhFlags+3(a0)
+	beq.s 	_fbExit				; Nope skip
+
+_fbFillBlock:
+	lea.l 	bhData(a1),a2			; A2 --> Allocated memory
+	move.l 	bhRequestSize(a1),d0 		; D0 = count of bytes to fill
+	lsr.l 	#2,d0				; Convert to longwords
+	beq.s 	_fbFillBytes			; Skip if count < 4
+	subi.l 	#1,d0				; Adjust for dbra
+
+_fbFillLongWordLoop:
+	move.l 	d1,(a2)+ 			; Fill a long word
+	dbra 	d0,_fbFillLongWordLoop
+	sub.l 	#$10000,d0			; Decrement high word of count
+	bcc.s 	_fbFillLongWordLoop		; Branch if more to fill (32-bit count)
+
+_fbFillBytes:
+	move.l 	bhRequestSize(a1),d0		; D0 = count of bytes to fill
+	andi.l 	#3,d0 				; Any remaining bytes?
+	beq.s 	_fbExit				; Nope
+	subi.l 	#1,d0 				; Adjust for dbra
+
+_fbByteLoop:
+	move.b 	d1,(a2)+ 			; Fill a byte
+	dbra 	d0,_fbByteLoop			; Loop until remaing bytes filled
+
+_fbExit:
+	rts
+
+	end

@@ -1,0 +1,253 @@
+************************************************************************
+*  _HeapValidate
+************************************************************************
+*
+*  Validates the specified heap. The function scans all the memory
+*  blocks in the heap and verifies that the heap control structures
+*  maintained by the heap manager are in a consistent state. You can
+*  also use the HeapValidate function to validate a single memory
+*  block within a specified heap without checking the validity of
+*  the entire heap.
+*
+************************************************************************
+*  PARAMETERS
+************************************************************************
+*
+*  hHeap  : The heap handle to validate.
+*  pBlock : Pointer to the memory block to validate, as returned by
+*           HeapAlloc or HeapReAlloc (i.e. pointer to the data area,
+*           not the block header). If NULL, the entire heap is validated.
+*
+************************************************************************
+*  RETURN VALUE
+************************************************************************
+*
+*  If the specified heap or memory block is valid, the return
+*  value is zero with Z flag set or an error code on failure.
+*
+************************************************************************
+
+	.model	flat
+
+	include heap.inc
+
+	extern 	__HeapError
+
+	.code
+
+_HeapValidate PROC USES a0-a3/d0-d1, hHeap:DWORD, pBlock:DWORD
+	movea.l hHeap,a0 			; Get the heap handle
+	move.l 	a0,-(sp)			; Push the heap handle
+	jsr 	_HeapValidateHandle		; Validate the heap handle
+	adda.l 	#4,sp
+	bne  	hvInvalidHeapHandle		; If it's not valid then abort
+
+	move.l 	pBlock,d0 			; Get block to validate address
+	beq 	hvValidateEntireHeap		; Validate entire heap if NULL
+
+	; Here the caller wants to validate a single block
+	movea.l d0,a1 				; A1 --> data area (user pointer)
+	suba.l 	#BLK_HDR_SIZE,a1		; A1 --> block header
+
+	; Validate alignment and magic (D0 still holds the original data pointer)
+	and.l 	#$FF000000+(BLK_HDR_SIZE-1),d0	; Verify the data pointer bit pattern is ok
+	bne	hvInvalidBlockInChain		; Nope, abort
+	cmpi.l 	#BLOCK_MAGIC,bhMagic(a1)	; Block magic number present?
+	bne	hvInvalidBlockInChain		; Nope, abort
+
+	; Validate that the block is owned by the specified heap
+	move.l 	hhFlags(a0),d0			; Get heap ID
+	andi.l 	#HEAP_ID_MASK,d0
+	move.l 	bhFlags(a1),d1			; Get block ID
+	andi.l 	#HEAP_ID_MASK,d1
+	cmp.l 	d0,d1				; IDs match?
+	bne	hvBlockHeapMismatch		; Nope, abort
+
+	; Confirm the block is a member of this heap's physical block chain
+	movea.l hhHeapHead(a0),a2		; A2 --> head of block chain
+hvSingleBlkChainWalk:
+	cmpa.l 	#0,a2				; End of chain without finding block?
+	beq	hvInvalidBlockInChain		; Yes, block not in this heap
+	cmpa.l 	a2,a1				; Found our block?
+	beq.s	hvSingleBlkChainFound		; Yes, confirmed
+	movea.l bhNext(a2),a2			; Follow next link
+	bra.s	hvSingleBlkChainWalk
+hvSingleBlkChainFound:
+
+	; Validate block-chain back-link consistency
+	tst.l 	bhPrev(a1)			; Is there a previous block?
+	beq.s 	hvSingleBlkChkFwdLink		; No, skip
+	movea.l bhPrev(a1),a2			; A2 --> previous block
+	cmpa.l 	bhNext(a2),a1			; Does prev->next point back to us?
+	bne	hvInvalidPrevLink		; Nope, chain corrupt
+
+hvSingleBlkChkFwdLink:
+	tst.l 	bhNext(a1)			; Is there a next block?
+	beq.s 	hvSingleBlkChkFreeChain		; No, skip
+	movea.l bhNext(a1),a2			; A2 --> next block
+	cmpa.l 	bhPrev(a2),a1			; Does next->prev point back to us?
+	bne	hvInvalidNextLink		; Nope, chain corrupt
+
+hvSingleBlkChkFreeChain:
+	; If the block is free, validate its free-chain link consistency
+	btst.b 	#FLG_FREE_BIT,bhFlags+3(a1)	; Is the block free?
+	beq	hvEndofFreeChain		; No, all checks passed
+	tst.l 	bhFreePrev(a1)			; Is there a previous free block?
+	beq.s 	hvSingleBlkChkFwdFreeLink	; No, skip
+	movea.l bhFreePrev(a1),a2		; A2 --> previous free block
+	cmpa.l 	bhFreeNext(a2),a1		; Does freeprev->freenext point back to us?
+	bne	hvInvalidPrevFreeLink		; Nope, free chain corrupt
+
+hvSingleBlkChkFwdFreeLink:
+	tst.l 	bhFreeNext(a1)			; Is there a next free block?
+	beq	hvEndofFreeChain		; No, all checks passed
+	movea.l bhFreeNext(a1),a2		; A2 --> next free block
+	cmpa.l 	bhFreePrev(a2),a1		; Does freenext->freeprev point back to us?
+	bne	hvInvalidFwdFreeLink		; Nope, free chain corrupt
+	bra	hvEndofFreeChain
+
+hvValidateEntireHeap:
+	; First validate the heap block chain
+	movea.l	hhHeapHead(a0),a2 		; A2 --> Start of block chain
+	suba.l 	a3,a3 				; A3 --> Previous block in block chain
+
+hvBlockChainVerifyLoop:
+	; Validate that the block is valid
+	move.l 	a2,d0 				; Get block pointer in D0
+	and.l 	#$FF000000+(BLK_HDR_SIZE-1),d0	; Verify the block pointer bit pattern is ok
+	bne	hvInvalidBlockInChain		; Nope, abort
+	cmpi.l 	#BLOCK_MAGIC,bhMagic(a2)	; Block magic number present?
+	bne	hvInvalidBlockInChain		; Nope, abort
+
+	; Validate the block size and linkage
+	cmpa.l 	bhPrev(a2),a3			; Does the back link point to the previous block?
+	bne 	hvInvalidPrevLink
+
+	move.l 	a2,d0 				; Compute expected forward link from block size
+	add.l 	bhSize(a2),d0
+	move.l 	bhNext(a2),d1
+	beq 	hvEndofBlockChain
+	cmp.l 	d0,d1 				; Does forward link match computed forward link?
+	bne 	hvInvalidNextLink
+
+	; This block looks ok, move to next
+	movea.l a2,a3 				; Update previous block
+	movea.l d1,a2				; Follow next link
+	bra.s	hvBlockChainVerifyLoop		; Loop until we reach the end of the chain
+
+hvEndofBlockChain:
+	; Here when we find a NULL bhNext pointer (A2 = block address)
+	move.l 	a0,d1 				; Compute the end of heap address
+	add.l 	hhSize(a0),d1
+	subi.l 	#BLK_HDR_SIZE,d1 		; D1 = first byte of the end of heap marker
+	movea.l d1,a3 				; a3 --> End of heap marker
+	cmpi.l 	#HEAP_END,(a3)			; Heap end magic number?
+	bne	hvInvalidHeapEndMagic		; Nope, abort
+	cmp.l 	d0,d1				; Computed end match actual?
+	bne	hvInvalidHeapEnd		; Nope, error
+
+	; Verify the free block chains across all segregated buckets
+	clr.l 	d0				; D0 = bucket offset
+	moveq 	#0,d1				; D1 = "found any free blocks" flag
+
+hvVerifyNextBucket:
+	movea.l HEAP_FREE_BUCKET_BASE(a0,d0.l),a2 ; A2 = head of this bucket
+	cmpa.l 	#0,a2				; Empty bucket?
+	beq.s 	hvBucketEmpty			; Yes, skip
+	moveq 	#1,d1				; Mark: found free blocks
+	suba.l 	a3,a3				; A3 = NULL (no predecessor for head)
+
+hvFreeChainVerifyLoop:
+	cmpa.l 	bhFreePrev(a2),a3 		; Does the back link match?
+	bne 	hvInvalidPrevFreeLink
+	btst.b 	#FLG_FREE_BIT,bhFlags+3(a2)	; Is the block marked as free?
+	beq 	hvBlockNotFree
+	movea.l a2,a3				; A3 = current (becomes previous)
+	movea.l bhFreeNext(a2),a2		; A2 = next block in this bucket
+	cmpa.l 	#0,a2				; End of bucket chain?
+	bne.s 	hvFreeChainVerifyLoop		; No, keep walking
+
+hvBucketEmpty:
+	addq.l 	#4,d0				; Advance to next bucket
+	cmpi.l 	#HEAP_NUM_FREE_BUCKETS*4,d0	; All buckets checked?
+	bne.s 	hvVerifyNextBucket		; No, keep checking
+
+	tst.l 	d1				; Were any free blocks found?
+	bne 	hvEndofFreeChain		; Yes, free chains verified; skip exhausted check
+
+hvExhaustedHeapCheck:
+	; Heap is fully allocated — walk the block chain and verify that
+	; no block is marked free and no stale free-chain pointers exist
+	movea.l hhHeapHead(a0),a2		; A2 --> start of block chain
+
+hvExhaustedHeapCheckLoop:
+	cmpa.l 	#0,a2				; End of block chain?
+	beq.s 	hvEndofFreeChain		; Yes, all good
+	btst.b 	#FLG_FREE_BIT,bhFlags+3(a2)	; Block marked as free?
+	bne	hvBlockNotFree			; Yes, heap is corrupt
+	tst.l 	bhFreePrev(a2)			; Stale bhFreePrev pointer?
+	bne	hvInvalidBlockInChain		; Yes, heap is corrupt
+	tst.l 	bhFreeNext(a2)			; Stale bhFreeNext pointer?
+	bne	hvInvalidBlockInChain		; Yes, heap is corrupt
+	movea.l bhNext(a2),a2			; Follow next link
+	bra.s 	hvExhaustedHeapCheckLoop
+
+hvEndofFreeChain:
+	IF SOA_ROUTE
+	; Deep-validate the small-object pool on a whole-heap check (§10).
+	move.l	pBlock,d0
+	bne.s	hvSoaDone			; single-block request -> skip SOA
+	move.l	hHeap,-(sp)
+	jsr	__HeapSoaValidate
+	adda.l	#4,sp
+	tst.l	d0				; D0 = SOA error (also in __HeapError)
+	bne.s	hvExit				; propagate the SOA error code
+hvSoaDone:
+	ENDIF
+	clr.l 	d0				; Flag no errors
+	bra.s 	hvExit
+
+hvBlockHeapMismatch:
+	moveq 	#HEAP_ERROR_HANDLE_BLOCK_MISMATCH,d0
+	bra 	hvExit
+
+hvInvalidHeapHandle:
+	move.l 	__HeapError,d0			; Preserve specific error from _HeapValidateHandle
+	bra 	hvExit
+
+hvInvalidBlockInChain:
+	moveq 	#HEAP_ERROR_INVALID_BLOCK,d0
+	bra 	hvExit
+
+hvInvalidPrevLink:
+	moveq 	#HEAP_ERROR_INVALID_PREV_LINK,d0
+	bra 	hvExit
+
+hvInvalidNextLink:
+	moveq 	#HEAP_ERROR_INVALID_NEXT_LINK,d0
+	bra 	hvExit
+
+hvInvalidHeapEndMagic:
+	moveq 	#HEAP_ERROR_HEAPEND_BAD_MAGIC,d0
+	bra 	hvExit
+
+hvInvalidHeapEnd:
+	moveq 	#HEAP_ERROR_INVALID_HEAPEND,d0
+	bra 	hvExit
+
+hvInvalidPrevFreeLink:
+	moveq 	#HEAP_ERROR_INVALID_FPREV_LINK,d0
+	bra 	hvExit
+
+hvInvalidFwdFreeLink:
+	moveq 	#HEAP_ERROR_INVALID_FNXT_LINK,d0
+	bra 	hvExit
+
+hvBlockNotFree:
+	move.l 	#HEAP_ERROR_BLOCK_NOT_FREE,d0
+
+hvExit:
+	move.l	d0,__HeapError 			; Save error code
+	ENDP
+
+	end

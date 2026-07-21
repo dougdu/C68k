@@ -1,0 +1,131 @@
+	title	"IEEE 754 single-precision floor, ceil, modf"
+; ============================================================
+;  _floor / _floorf — floor(x): largest integer <= x
+;  _ceil  / _ceilf  — ceil(x): smallest integer >= x
+;  _modf  / _modff  — split into integer and fraction parts
+; ============================================================
+
+	.model	flat
+	include	ieee754.inc
+
+	public	_floor, _floorf, _ceil, _ceilf, _modf, _modff
+	extern	_fpadd, _fpsub, _fpftol, _fpltof
+
+	.code
+
+_floor_one	dc.l	SNG_ONE
+
+; ============================================================
+;  _floor — largest integer <= x
+; ============================================================
+_floor:
+_floorf:
+	link	a6,#0
+	move.l	8(a6),d0		; d0 = x
+
+	; Handle special cases
+	move.l	d0,d1
+	andi.l	#IEEE754_SNG_EXP_MASK,d1
+	EXTRACT_EXP d1
+	cmpi.l	#150,d1			; exponent >= 150 (23+127) → already integer
+	bge.s	_floor_already_int
+	cmpi.l	#127,d1			; exponent < 127 → |x| < 1
+	blt.s	_floor_small
+
+	; Truncate to integer then convert back
+	move.l	d0,-(sp)
+	jsr	_fpftol			; d0 = truncated integer
+	addq.l	#4,sp
+	move.l	d0,-(sp)
+	jsr	_fpltof			; d0 = float(trunc(x))
+	addq.l	#4,sp
+
+	; If x was negative and not exact, subtract 1
+	move.l	8(a6),d1		; original x
+	tst.l	d1
+	bpl.s	_floor_done
+	; Check if truncation changed the value
+	cmp.l	d1,d0			; float(trunc(x)) == x?
+	beq.s	_floor_done		; exact → no adjustment
+	; x is negative and fractional → floor = trunc - 1
+	move.l	_floor_one(pc),-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpsub			; d0 = trunc(x) - 1
+	addq.l	#8,sp
+
+_floor_done:
+	unlk	a6
+	rts
+
+_floor_already_int:
+	move.l	8(a6),d0
+	unlk	a6
+	rts
+
+_floor_small:
+	; |x| < 1
+	move.l	8(a6),d0
+	tst.l	d0
+	bpl.s	_floor_small_pos
+	; Negative: floor = -1
+	move.l	#$BF800000,d0		; -1.0
+	unlk	a6
+	rts
+_floor_small_pos:
+	; Positive: floor = 0
+	moveq	#0,d0
+	unlk	a6
+	rts
+
+; ============================================================
+;  _ceil — smallest integer >= x
+;  ceil(x) = -floor(-x)
+; ============================================================
+_ceil:
+_ceilf:
+	link	a6,#0
+	move.l	8(a6),d0
+	eori.l	#IEEE754_SNG_SIGN_MASK,d0 ; negate
+	move.l	d0,-(sp)
+	jsr	_floor
+	addq.l	#4,sp
+	eori.l	#IEEE754_SNG_SIGN_MASK,d0 ; negate result
+	unlk	a6
+	rts
+
+; ============================================================
+;  _modf — split x into integer and fractional parts
+;  float _modf(float x, float *ipart)
+;  Returns fractional part in D0, stores integer part via pointer.
+;  Note: caller pushes x first, then &ipart, so after LINK:
+;    8(a6) = &ipart (pushed last), 12(a6) = x (pushed first)
+; ============================================================
+_modf:
+_modff:
+	link	a6,#0
+	movem.l	d2/a0,-(sp)
+
+	movea.l	8(a6),a0		; a0 = pointer to ipart (pushed last)
+	move.l	12(a6),d2		; d2 = x (pushed first)
+
+	; Get integer part via truncation
+	move.l	d2,-(sp)
+	jsr	_fpftol			; d0 = int(x)
+	addq.l	#4,sp
+	move.l	d0,-(sp)
+	jsr	_fpltof			; d0 = float(int(x))
+	addq.l	#4,sp
+
+	move.l	d0,(a0)			; store integer part
+
+	; Fractional part = x - ipart
+	move.l	d0,-(sp)		; push ipart
+	move.l	d2,-(sp)		; push x
+	jsr	_fpsub			; d0 = x - ipart
+	addq.l	#8,sp
+
+	movem.l	(sp)+,d2/a0
+	unlk	a6
+	rts
+
+	end

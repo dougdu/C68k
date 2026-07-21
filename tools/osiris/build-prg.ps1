@@ -9,7 +9,7 @@
   into a directly-loadable .PRG (the same recipe pascal68k uses):
 
       m68k-elf-ld -pie --no-dynamic-linker -z max-page-size=0x20 -s \
-          -T osiris-prg.ld  osiris_sys.o prog.o libc.o rt68k.o libieee754d.a
+          -T osiris-prg.ld  osiris_sys.o prog.o libc.o rt68k.o libm.a
 
   Link order puts the crt0/seam first; ENTRY(_start) fixes the entry regardless.
 #>
@@ -19,8 +19,9 @@ param(
   [string]$Cc = 'c68k.exe',
   [string]$Asm = 'C:\git\worm68k\68kTools\builds\win64\bin\Release\asm68K.exe',
   [string]$Ld = 'C:\git\osiris\toolchain\binutils\m68k-elf-ld.exe',
+  [string]$Ar = 'C:\git\osiris\toolchain\binutils\m68k-elf-ar.exe',
   [string]$LdScript = 'C:\git\osiris\ld\osiris-prg.ld',
-  [string]$FloatLib = 'C:\git\worm68k\68kTools\libraries\float\ieee754\libieee754d.a',
+  [string]$FloatLib = (Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'lib\libm\libm.a'),
   [string]$OutDir = ''
 )
 $ErrorActionPreference = 'Stop'
@@ -59,7 +60,7 @@ if (-not (Get-Command $Cc -ErrorAction SilentlyContinue)) {
     if (Test-Path $cand) { $Cc = $cand; break }
   }
 }
-foreach ($t in @($Cc, $Asm, $Ld)) {
+foreach ($t in @($Cc, $Asm, $Ld, $Ar)) {
   if (-not (Get-Command $t -ErrorAction SilentlyContinue)) { throw "build-prg: tool not found: $t" }
 }
 foreach ($f in @($LdScript, $FloatLib)) {
@@ -77,14 +78,18 @@ function Invoke-Step($desc, $sb) {
 $sysO  = Join-Path $OutDir 'osiris_sys.o'
 $rtO   = Join-Path $OutDir 'rt68k.o'
 $libcO = Join-Path $OutDir 'libc.o'
+$libcA = Join-Path $OutDir 'libc.a'
 $progO = Join-Path $OutDir "$Name.o"
 $prg   = Join-Path $OutDir "$Name.PRG"
 
 Invoke-Step 'asm crt0/seam' { & $Asm /Cx /elf /c /nologo "/Fo$sysO" $sysA }
 Invoke-Step 'asm runtime'   { & $Asm /Cx /elf /c /nologo "/Fo$rtO"  $rtA }
-Invoke-Step 'cc libc'       { & $Cc @asArgs @optArgs -c $libcC -o $libcO "-I$inc" }
+# Phase 4 (libc-archive-design.md): compile the split libc TUs (libc/core/*.c)
+# into libc.a via tools/build-libc.ps1; the linker dead-strips unused objects.
+$buildLibc = Join-Path (Split-Path $PSScriptRoot -Parent) 'build-libc.ps1'
+& $buildLibc -Cc $Cc -OutDir $OutDir -CcArgs ($asArgs + $optArgs) | Out-Null
 Invoke-Step 'cc program'    { & $Cc @asArgs @optArgs @gArgs -c $Src   -o $progO "-I$inc" }
-Invoke-Step 'link .PRG'     { & $Ld -pie --no-dynamic-linker -z max-page-size=0x20 @stripArgs -T $LdScript "-Map=$([IO.Path]::ChangeExtension($prg,'.map'))" $sysO $progO $libcO $rtO $FloatLib -o $prg }
+Invoke-Step 'link .PRG'     { & $Ld -pie --no-dynamic-linker -z max-page-size=0x20 @stripArgs -T $LdScript "-Map=$([IO.Path]::ChangeExtension($prg,'.map'))" $sysO $progO "-L$OutDir" -lc $rtO $FloatLib -o $prg }
 
 Write-Host "build-prg: $prg" -ForegroundColor Green
 $prg

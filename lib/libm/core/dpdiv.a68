@@ -1,0 +1,174 @@
+	title	"IEEE 754 double-precision division"
+; ============================================================
+;  _fpdivd — double divide: a / b
+;
+;  Uses restoring division on 53-bit mantissas.
+;  53 iterations of shift-and-subtract on register pairs.
+; ============================================================
+
+	.model	flat
+	include	ieee754d.inc
+
+	public	_fpdivd
+
+	.code
+
+_fpdivd:
+	link	a6,#0
+	movem.l	d2-d7/a0-a2,-(sp)
+
+	move.l	DBL_ARG1_HI(a6),d2
+	move.l	DBL_ARG1_LO(a6),d3
+	move.l	DBL_ARG2_HI(a6),d4
+	move.l	DBL_ARG2_LO(a6),d5
+
+	; Result sign
+	move.l	d2,d0
+	eor.l	d4,d0
+	andi.l	#IEEE754_DBL_SIGN_MASK_HI,d0
+	move.l	d0,a0
+
+	; Handle zero dividend
+	move.l	d2,d0
+	andi.l	#$7FFFFFFF,d0
+	or.l	d3,d0
+	beq	_dpdiv_zero
+
+	; Handle zero divisor
+	move.l	d4,d0
+	andi.l	#$7FFFFFFF,d0
+	or.l	d5,d0
+	beq	_dpdiv_inf
+
+	; Extract exponents
+	move.l	d2,d6
+	andi.l	#IEEE754_DBL_EXP_MASK_HI,d6
+	EXTRACT_DBL_EXP d6
+
+	move.l	d4,d7
+	andi.l	#IEEE754_DBL_EXP_MASK_HI,d7
+	EXTRACT_DBL_EXP d7
+
+	; Handle inf/NaN
+	cmpi.l	#2047,d6
+	beq	_dpdiv_special
+	cmpi.l	#2047,d7
+	beq	_dpdiv_special
+
+	; Result exponent = ea - eb + bias
+	sub.l	d7,d6
+	addi.l	#IEEE754_DBL_EXP_BIAS,d6
+	move.l	d6,a2
+
+	; Extract mantissas with implied bit
+	andi.l	#IEEE754_DBL_MANT_MASK_HI,d2
+	ori.l	#IEEE754_DBL_IMPLIED_BIT_HI,d2
+
+	andi.l	#IEEE754_DBL_MANT_MASK_HI,d4
+	ori.l	#IEEE754_DBL_IMPLIED_BIT_HI,d4
+
+	; --- Restoring division: 53 iterations ---
+	; Dividend = d2:d3, Divisor = d4:d5
+	; Quotient built in d0:d1
+	moveq	#0,d0
+	moveq	#0,d1
+
+	moveq	#53,d7			; iteration count (using d7 as counter)
+
+_dpdiv_loop:
+	; Shift quotient left 1
+	lsl.l	#1,d1
+	roxl.l	#1,d0
+
+	; Compare dividend >= divisor
+	cmp.l	d4,d2
+	bhi.s	_dpdiv_sub		; high word greater → subtract
+	bcs.s	_dpdiv_nosub		; high word less → no subtract
+	cmp.l	d5,d3			; high equal, compare low
+	bcs.s	_dpdiv_nosub
+
+_dpdiv_sub:
+	sub.l	d5,d3
+	subx.l	d4,d2
+	ori.l	#1,d1			; set quotient bit
+
+_dpdiv_nosub:
+	; Shift dividend left 1
+	lsl.l	#1,d3
+	roxl.l	#1,d2
+
+	subq.l	#1,d7
+	bne.s	_dpdiv_loop
+
+	; d0:d1 = 53-bit quotient
+	; The implied bit should be at bit 20 of d0 (position 52 of the 64-bit pair)
+	; After 53 iterations starting with aligned mantissas, the quotient's
+	; MSB is at bit 52 (position 20 of d0). It may need normalization.
+
+	btst.l	#21,d0			; quotient >= 2?
+	beq.s	_dpdiv_norm_check
+	; Shift right 1
+	lsr.l	#1,d0
+	roxr.l	#1,d1
+	move.l	a2,d6
+	addq.l	#1,d6
+	move.l	d6,a2
+
+_dpdiv_norm_check:
+	; Normalize if needed
+	btst.l	#20,d0
+	bne.s	_dpdiv_pack
+	lsl.l	#1,d1
+	roxl.l	#1,d0
+	move.l	a2,d6
+	subq.l	#1,d6
+	move.l	d6,a2
+
+_dpdiv_pack:
+	move.l	a2,d6
+	tst.l	d6
+	ble	_dpdiv_underflow
+	cmpi.l	#2047,d6
+	bge	_dpdiv_overflow
+
+	andi.l	#IEEE754_DBL_MANT_MASK_HI,d0
+	INSERT_DBL_EXP d6
+	or.l	d6,d0
+	move.l	a0,d6
+	or.l	d6,d0
+
+_dpdiv_done:
+	movem.l	(sp)+,d2-d7/a0-a2
+	unlk	a6
+	rts
+
+_dpdiv_zero:
+	moveq	#0,d0
+	moveq	#0,d1
+	bra.s	_dpdiv_done
+
+_dpdiv_inf:
+	move.l	#DBL_INF_HI,d0
+	moveq	#0,d1
+	move.l	a0,d6
+	or.l	d6,d0
+	bra.s	_dpdiv_done
+
+_dpdiv_underflow:
+	moveq	#0,d0
+	moveq	#0,d1
+	bra.s	_dpdiv_done
+
+_dpdiv_overflow:
+	move.l	#DBL_INF_HI,d0
+	moveq	#0,d1
+	move.l	a0,d6
+	or.l	d6,d0
+	bra.s	_dpdiv_done
+
+_dpdiv_special:
+	move.l	#DBL_QNAN_HI,d0
+	move.l	#DBL_QNAN_LO,d1
+	bra	_dpdiv_done
+
+	end

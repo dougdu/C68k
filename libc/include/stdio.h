@@ -31,6 +31,10 @@ typedef struct _FILE {
   size_t memlen;
   char **memuptr;
   size_t *memusize;
+  /* memstream drain hook: append n bytes to the stream's malloc'd buffer.
+   * Non-NULL only for open_memstream() streams, so fflush/fclose (stdio core)
+   * never name _memstream_append/realloc unless the program uses memstreams. */
+  int (*drain)(struct _FILE *fp, const void *data, int n);
 } FILE;
 
 extern FILE *stdin;

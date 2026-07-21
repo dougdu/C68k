@@ -1,0 +1,168 @@
+	title	"IEEE 754 double-precision multiplication"
+; ============================================================
+;  _fpmultd — double multiply
+;
+;  Returns D0:D1.  Args at 8(a6) and 16(a6), each 8 bytes.
+;
+;  Full 53-bit precision using shift-and-add:
+;    96-bit accumulator, 53 iterations scanning the multiplier
+;    from MSB to LSB.  Each iteration right-shifts the accumulator,
+;    then conditionally adds the full 53-bit multiplicand.
+;    Result mantissa lands at bit 20 of D0 (correct double position).
+; ============================================================
+
+	.model	flat
+	include	ieee754d.inc
+
+	public	_fpmultd
+
+	.code
+
+_fpmultd:
+	link	a6,#0
+	movem.l	d2-d7/a0-a2,-(sp)
+
+	move.l	DBL_ARG1_HI(a6),d2	; a high
+	move.l	DBL_ARG1_LO(a6),d3	; a low
+	move.l	DBL_ARG2_HI(a6),d4	; b high
+	move.l	DBL_ARG2_LO(a6),d5	; b low
+
+	; --- Result sign ---
+	move.l	d2,d0
+	eor.l	d4,d0
+	andi.l	#IEEE754_DBL_SIGN_MASK_HI,d0
+	move.l	d0,a0			; a0 = result sign
+
+	; --- Handle zeros ---
+	move.l	d2,d0
+	andi.l	#$7FFFFFFF,d0
+	or.l	d3,d0
+	beq	_dpmul_zero
+	move.l	d4,d0
+	andi.l	#$7FFFFFFF,d0
+	or.l	d5,d0
+	beq	_dpmul_zero
+
+	; --- Extract exponents ---
+	move.l	d2,d6
+	andi.l	#IEEE754_DBL_EXP_MASK_HI,d6
+	EXTRACT_DBL_EXP d6
+
+	move.l	d4,d7
+	andi.l	#IEEE754_DBL_EXP_MASK_HI,d7
+	EXTRACT_DBL_EXP d7
+
+	; Handle inf/NaN
+	cmpi.l	#2047,d6
+	beq	_dpmul_special
+	cmpi.l	#2047,d7
+	beq	_dpmul_special
+
+	; Result exponent = ea + eb - bias
+	add.l	d7,d6
+	subi.l	#IEEE754_DBL_EXP_BIAS,d6
+	move.l	d6,a2			; a2 = result exponent
+
+	; --- Extract mantissas with implied bit ---
+	andi.l	#IEEE754_DBL_MANT_MASK_HI,d2
+	ori.l	#IEEE754_DBL_IMPLIED_BIT_HI,d2 ; d2:d3 = multiplicand (53 bits)
+
+	andi.l	#IEEE754_DBL_MANT_MASK_HI,d4
+	ori.l	#IEEE754_DBL_IMPLIED_BIT_HI,d4 ; d4:d5 = multiplier (53 bits)
+
+	; --- Shift-and-add multiplication: LSB-first, right-shift accumulator ---
+	; Multiplier d4:d5 (53 bits): d4 has upper 21 bits (20..0), d5 has lower 32
+	; Process d5 first (bits 0..31), then d4 (bits 32..52 = d4 bits 0..20)
+
+	; --- Initialize 96-bit accumulator: d0:d1:d6 = 0 ---
+	moveq	#0,d0
+	moveq	#0,d1
+	moveq	#0,d6
+
+	; --- First loop: process 32 bits from d5 (LSB first) ---
+	moveq	#32,d7
+_dpmul_loop1:
+	; Shift accumulator right 1 FIRST (96 bits)
+	lsr.l	#1,d0
+	roxr.l	#1,d1
+	roxr.l	#1,d6
+	; Shift multiplier right, LSB into carry
+	lsr.l	#1,d5
+	bcc.s	_dpmul_noadd1
+	; Add multiplicand (d2:d3) to upper 64 bits of accumulator
+	add.l	d3,d1
+	addx.l	d2,d0
+_dpmul_noadd1:
+	subq.l	#1,d7
+	bne.s	_dpmul_loop1
+
+	; --- Second loop: process 21 bits from d4 (bits 0..20, LSB first) ---
+	moveq	#21,d7
+_dpmul_loop2:
+	lsr.l	#1,d0
+	roxr.l	#1,d1
+	roxr.l	#1,d6
+	lsr.l	#1,d4
+	bcc.s	_dpmul_noadd2
+	add.l	d3,d1
+	addx.l	d2,d0
+_dpmul_noadd2:
+	subq.l	#1,d7
+	bne.s	_dpmul_loop2
+
+	; --- d0:d1 = result mantissa, implied bit at bit 20 (or 21 if >= 2) ---
+
+	btst.l	#21,d0			; product >= 2?
+	beq.s	_dpmul_no_extra
+	; Shift right 1, increment exponent
+	lsr.l	#1,d0
+	roxr.l	#1,d1
+	move.l	a2,d6
+	addq.l	#1,d6
+	move.l	d6,a2
+_dpmul_no_extra:
+
+	; --- Check exponent bounds ---
+	move.l	a2,d6
+	tst.l	d6
+	ble	_dpmul_underflow
+	cmpi.l	#2047,d6
+	bge	_dpmul_overflow
+
+	; --- Pack result ---
+	andi.l	#IEEE754_DBL_MANT_MASK_HI,d0
+	INSERT_DBL_EXP d6
+	or.l	d6,d0
+	move.l	a0,d6
+	or.l	d6,d0
+
+_dpmul_done:
+	movem.l	(sp)+,d2-d7/a0-a2
+	unlk	a6
+	rts
+
+_dpmul_zero:
+	moveq	#0,d0
+	moveq	#0,d1
+	move.l	a0,d6
+	or.l	d6,d0			; signed zero
+	bra.s	_dpmul_done
+
+_dpmul_underflow:
+	moveq	#0,d0
+	moveq	#0,d1
+	bra.s	_dpmul_done
+
+_dpmul_overflow:
+	move.l	#DBL_INF_HI,d0
+	moveq	#0,d1
+	move.l	a0,d6
+	or.l	d6,d0
+	bra.s	_dpmul_done
+
+_dpmul_special:
+	move.l	#DBL_QNAN_HI,d0
+	move.l	#DBL_QNAN_LO,d1
+	bra	_dpmul_done
+
+	end

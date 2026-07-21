@@ -10,7 +10,7 @@
   with mkdri (the same recipe pascal68k uses):
 
       m68k-elf-ld -T cpm68k.ld -Ttext 0x500 cpm_sys.o prog.o cpm.o libc.o \
-          rt68k.o libieee754d.a -o prog.elf
+          rt68k.o libm.a -o prog.elf
       mkdri -b500 -y -o PROG.68K prog.elf
 
   cpm_sys.o MUST be first so _start lands at the TPA base (CP/M has no ENTRY).
@@ -21,9 +21,10 @@ param(
   [string]$Cc = 'c68k.exe',
   [string]$Asm = 'C:\git\worm68k\68kTools\builds\win64\bin\Release\asm68K.exe',
   [string]$Ld = 'C:\git\osiris\toolchain\binutils\m68k-elf-ld.exe',
+  [string]$Ar = 'C:\git\osiris\toolchain\binutils\m68k-elf-ar.exe',
   [string]$Mkdri = 'C:\git\worm68k\68kTools\builds\win64\bin\Release\mkdri.exe',
   [string]$LdScript = (Join-Path $PSScriptRoot 'cpm68k.ld'),
-  [string]$FloatLib = 'C:\git\worm68k\68kTools\libraries\float\ieee754\libieee754d.a',
+  [string]$FloatLib = (Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'lib\libm\libm.a'),
   [string]$OutDir = ''
 )
 $ErrorActionPreference = 'Stop'
@@ -55,7 +56,7 @@ if (-not (Get-Command $Cc -ErrorAction SilentlyContinue)) {
     if (Test-Path $cand) { $Cc = $cand; break }
   }
 }
-foreach ($t in @($Cc, $Asm, $Ld, $Mkdri)) {
+foreach ($t in @($Cc, $Asm, $Ld, $Mkdri, $Ar)) {
   if (-not (Get-Command $t -ErrorAction SilentlyContinue)) { throw "build-68k: tool not found: $t" }
 }
 foreach ($f in @($LdScript, $FloatLib)) {
@@ -74,6 +75,7 @@ $sysO  = Join-Path $OutDir 'cpm_sys.o'
 $rtO   = Join-Path $OutDir 'rt68k.o'
 $seamO = Join-Path $OutDir 'cpm.o'
 $libcO = Join-Path $OutDir 'libc.o'
+$libcA = Join-Path $OutDir 'libc.a'
 $progO = Join-Path $OutDir "$Name.o"
 $elf   = Join-Path $OutDir "$Name.elf"
 $out68 = Join-Path $OutDir "$Name.68K"
@@ -81,9 +83,12 @@ $out68 = Join-Path $OutDir "$Name.68K"
 Invoke-Step 'asm crt0/bdos' { & $Asm /Cx /elf /c /nologo "/Fo$sysO" $sysA }
 Invoke-Step 'asm runtime'   { & $Asm /Cx /elf /c /nologo "/Fo$rtO"  $rtA }
 Invoke-Step 'cc seam'       { & $Cc @asArgs @optArgs -c $seamC -o $seamO "-I$inc" }
-Invoke-Step 'cc libc'       { & $Cc @asArgs @optArgs -c $libcC -o $libcO "-I$inc" }
+# Phase 4 (libc-archive-design.md): compile the split libc TUs (libc/core/*.c)
+# into libc.a via tools/build-libc.ps1; the linker dead-strips unused objects.
+$buildLibc = Join-Path (Split-Path $PSScriptRoot -Parent) 'build-libc.ps1'
+& $buildLibc -Cc $Cc -OutDir $OutDir -CcArgs ($asArgs + $optArgs) | Out-Null
 Invoke-Step 'cc program'    { & $Cc @asArgs @optArgs -c $Src   -o $progO "-I$inc" }
-Invoke-Step 'link elf'      { & $Ld -T $LdScript -Ttext 0x500 "-Map=$([IO.Path]::ChangeExtension($elf,'.map'))" $sysO $progO $seamO $libcO $rtO $FloatLib -o $elf }
+Invoke-Step 'link elf'      { & $Ld -T $LdScript -Ttext 0x500 "-Map=$([IO.Path]::ChangeExtension($elf,'.map'))" $sysO $progO $seamO "-L$OutDir" -lc $rtO $FloatLib -o $elf }
 Invoke-Step 'mkdri .68K'    { & $Mkdri -b500 -y -o $out68 $elf }
 
 Write-Host "build-68k: $out68" -ForegroundColor Green

@@ -1,0 +1,172 @@
+	title	"IEEE 754 single-precision division"
+; ============================================================
+;  _fpdiv / _fpdivf — single-precision division
+;
+;  float _fpdiv(float a, float b) — returns a / b in D0
+;  Arguments: 8(A6)=a (dividend), 12(A6)=b (divisor)
+;
+;  Algorithm:
+;    1. XOR signs
+;    2. Subtract exponents (add bias)
+;    3. Divide mantissas: 24-bit / 24-bit → 24-bit quotient
+;       Using restoring division (shift and subtract, 24 iterations)
+;    4. Normalize, round, pack
+; ============================================================
+
+	.model	flat
+	include	ieee754.inc
+
+	public	_fpdiv, _fpdivf
+
+	.code
+
+_fpdiv:
+_fpdivf:
+	link	a6,#0
+	movem.l	d2-d7/a0,-(sp)
+
+	move.l	8(a6),d6		; d6 = a (dividend)
+	move.l	12(a6),d7		; d7 = b (divisor)
+
+	; --- Result sign ---
+	move.l	d6,d0
+	eor.l	d7,d0
+	andi.l	#IEEE754_SNG_SIGN_MASK,d0
+	move.l	d0,a0			; a0 = result sign
+
+	; --- Handle zero dividend ---
+	move.l	d6,d0
+	andi.l	#$7FFFFFFF,d0
+	beq	_div_return_zero	; 0 / x = 0 (0/0 checked by runtime)
+
+	; --- Handle zero divisor ---
+	move.l	d7,d0
+	andi.l	#$7FFFFFFF,d0
+	beq	_div_return_inf		; x / 0 = inf
+
+	; --- Extract exponents ---
+	move.l	d6,d2
+	andi.l	#IEEE754_SNG_EXP_MASK,d2
+	EXTRACT_EXP d2
+
+	move.l	d7,d3
+	andi.l	#IEEE754_SNG_EXP_MASK,d3
+	EXTRACT_EXP d3
+	cmpi.l	#255,d2
+	beq	_div_a_special
+	cmpi.l	#255,d3
+	beq	_div_b_special
+
+	; --- Result exponent = ea - eb + bias ---
+	sub.l	d3,d2
+	addi.l	#IEEE754_SNG_EXP_BIAS,d2
+
+	; --- Extract mantissas with implied bit ---
+	move.l	d6,d4
+	andi.l	#IEEE754_SNG_MANT_MASK,d4
+	ori.l	#IEEE754_SNG_IMPLIED_BIT,d4 ; d4 = dividend mantissa
+
+	move.l	d7,d5
+	andi.l	#IEEE754_SNG_MANT_MASK,d5
+	ori.l	#IEEE754_SNG_IMPLIED_BIT,d5 ; d5 = divisor mantissa
+
+	; --- Check if dividend < divisor (need to adjust) ---
+	cmp.l	d5,d4
+	bge.s	_div_no_adjust
+	; dividend < divisor: shift dividend left, decrement exponent
+	lsl.l	#1,d4
+	subq.l	#1,d2
+_div_no_adjust:
+
+	; --- Restoring division: 24 iterations ---
+	; d4 = dividend (numerator), d5 = divisor (denominator)
+	; d0 = quotient being built
+	moveq	#0,d0			; quotient
+	moveq	#24,d3			; iteration counter
+
+_div_loop:
+	lsl.l	#1,d0			; make room for next quotient bit
+	cmp.l	d5,d4			; can we subtract?
+	blt.s	_div_no_sub
+	sub.l	d5,d4			; subtract divisor
+	ori.l	#1,d0			; set quotient bit
+_div_no_sub:
+	lsl.l	#1,d4			; shift dividend left
+	subq.l	#1,d3
+	bne.s	_div_loop
+
+	; d0 = 24-bit quotient with implied bit at bit 23
+	; d4 = remainder, d5 = divisor
+
+	; --- Round to nearest: if remainder >= divisor/2, round up ---
+	cmp.l	d5,d4			; compare remainder with divisor
+	blt.s	_div_no_round		; remainder < divisor → next bit is 0
+	addq.l	#1,d0			; round up
+	; Check if rounding caused carry past implied bit
+	btst.l	#24,d0
+	beq.s	_div_no_round
+	lsr.l	#1,d0			; shift back
+	addq.l	#1,d2			; increment exponent
+_div_no_round:
+
+	; --- Check exponent bounds ---
+	tst.l	d2
+	ble	_div_underflow
+	cmpi.l	#255,d2
+	bge	_div_overflow
+
+	; --- Pack result ---
+	andi.l	#IEEE754_SNG_MANT_MASK,d0
+	INSERT_EXP d2
+	or.l	d2,d0			; combine exponent
+	move.l	a0,d1
+	or.l	d1,d0			; apply sign
+
+_div_done:
+	movem.l	(sp)+,d2-d7/a0
+	unlk	a6
+	rts
+
+; --- Special cases ---
+
+_div_return_zero:
+	move.l	a0,d0			; signed zero
+	bra.s	_div_done
+
+_div_return_inf:
+	move.l	#SNG_INF,d0
+	move.l	a0,d1
+	or.l	d1,d0
+	bra.s	_div_done
+
+_div_underflow:
+	move.l	a0,d0
+	bra.s	_div_done
+
+_div_overflow:
+	move.l	#SNG_INF,d0
+	move.l	a0,d1
+	or.l	d1,d0
+	bra.s	_div_done
+
+_div_a_special:
+	move.l	d6,d0
+	andi.l	#IEEE754_SNG_MANT_MASK,d0
+	bne.s	_div_nan		; a is NaN
+	; a is inf
+	cmpi.l	#255,d3
+	beq.s	_div_nan		; inf / inf = NaN
+	bra.s	_div_return_inf		; inf / finite = inf
+
+_div_b_special:
+	move.l	d7,d0
+	andi.l	#IEEE754_SNG_MANT_MASK,d0
+	bne.s	_div_nan		; b is NaN
+	; b is inf: finite / inf = 0
+	bra.s	_div_return_zero
+
+_div_nan:
+	move.l	#SNG_QNAN,d0
+	bra	_div_done
+
+	end

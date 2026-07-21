@@ -1,0 +1,22 @@
+	title	"IEEE 754 single-precision negation"
+; ============================================================
+;  _fpneg / _fpnegf — negate a single-precision float
+;
+;  float _fpneg(float x) — returns -x in D0
+;  Toggles the sign bit.
+; ============================================================
+
+	.model	flat
+	include	ieee754.inc
+
+	public	_fpneg, _fpnegf
+
+	.code
+
+_fpneg:
+_fpnegf:
+	move.l	4(sp),d0		; get argument
+	eori.l	#IEEE754_SNG_SIGN_MASK,d0 ; flip sign bit
+	rts
+
+	end

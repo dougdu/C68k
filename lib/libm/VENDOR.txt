@@ -1,0 +1,36 @@
+vendored library : libm
+upstream source  : C:\git\worm68k\68kTools\libraries\float\ieee754
+synced (UTC)     : 2026-07-21 20:26:50Z
+file count       : 30
+
+files (sha256, path):
+  857FF3558B7CC058  conv\atod.a68
+  D1B4D6D8E32FFC19  conv\atof.a68
+  F764E4CDB855B9E6  conv\dpconv.a68
+  B7C0C5A8E93D0CEF  conv\ftol.a68
+  8E6F4DE2BB455C83  conv\ltof.a68
+  D12042E41FF199D0  core\dpadd.a68
+  5361D95A452EDE12  core\dpcmp.a68
+  C3E68AC32F027E7B  core\dpdiv.a68
+  A7864F66E3E1E4E6  core\dpmul.a68
+  1286AAE9003D87E2  core\dpneg.a68
+  D54801E665E9C0B7  core\fabs.a68
+  E3EBAA37B2251A59  core\fmod.a68
+  3BAE46DFCBC7C28C  core\fpadd.a68
+  BEC57F62CC008020  core\fpcmp.a68
+  E7F0595F09BEEAF1  core\fpdiv.a68
+  D58064379FF27698  core\fpmul.a68
+  56D40E02204D9448  core\fpneg.a68
+  83689C229047D0C5  core\fppwr.a68
+  79040EAD685B2037  fmt\fcvt.a68
+  ED25EF7596F25119  fmt\FormatDouble.a68
+  59FD06471AB7A660  fmt\FormatFloat.a68
+  BF852538210D31F2  ieee754.inc
+  6344763CA3F4D121  ieee754d.inc
+  F3204A9DDE58637B  math\atan.a68
+  B0F5EA784792357F  math\dpmath.a68
+  CEABB8C21FFFAA3F  math\exp.a68
+  C0CFF4A1B791259E  math\floor.a68
+  3EF062939284B6A4  math\log.a68
+  958B3A7980F3D43F  math\sincos.a68
+  61ABD42F5B56BB65  math\sqrt.a68

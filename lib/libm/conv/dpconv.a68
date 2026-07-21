@@ -1,0 +1,266 @@
+	title	"IEEE 754 single/double/integer conversions"
+; ============================================================
+;  _fpftod — single → double (widen)
+;  _fpdtof — double → single (narrow)
+;  _fpltod — int32 → double
+;  _fpdtol — double → int32 (truncate)
+; ============================================================
+
+	.model	flat
+	include	ieee754.inc
+	include	ieee754d.inc
+
+	public	_fpftod, _fpdtof, _fpltod, _fpdtol
+
+	.code
+
+; ============================================================
+;  _fpftod — single to double (lossless widening)
+;
+;  Input:  4(sp) = IEEE 754 single
+;  Output: D0:D1 = IEEE 754 double (D0=high, D1=low)
+; ============================================================
+_fpftod:
+	move.l	4(sp),d0		; original single
+	beq.s	_ftod_zero
+
+	movem.l	d2,-(sp)
+
+	move.l	d0,d1
+	andi.l	#IEEE754_SNG_SIGN_MASK,d1 ; d1 = sign bit
+
+	move.l	d0,d2
+	andi.l	#IEEE754_SNG_EXP_MASK,d2
+	EXTRACT_EXP d2			; d2 = sng exponent
+	addi.l	#896,d2			; dbl exponent = sng_exp + 896
+	INSERT_DBL_EXP d2		; d2 = positioned double exponent
+	or.l	d1,d2			; d2 = sign | exp (high word so far)
+
+	andi.l	#IEEE754_SNG_MANT_MASK,d0 ; d0 = 23-bit mantissa
+
+	; Split mantissa: upper 20 bits → high word, lower 3 → low word
+	move.l	d0,d1			; save for low word
+	lsr.l	#3,d0			; upper 20 bits
+	or.l	d2,d0			; d0 = sign | exp | mant_hi (high word)
+
+	andi.l	#7,d1			; lower 3 bits
+	; shift left 29: 8+8+8+5
+	lsl.l	#8,d1
+	lsl.l	#8,d1
+	lsl.l	#8,d1
+	lsl.l	#5,d1			; d1 = low word
+
+	movem.l	(sp)+,d2
+	rts
+
+_ftod_zero:
+	moveq	#0,d0
+	moveq	#0,d1
+	rts
+
+; ============================================================
+;  _fpdtof — double to single (narrow)
+;
+;  Input:  4(sp)=high, 8(sp)=low
+;  Output: D0 = IEEE 754 single
+; ============================================================
+_fpdtof:
+	move.l	4(sp),d0		; double high
+	move.l	8(sp),d1		; double low
+	movem.l	d2-d3,-(sp)
+
+	move.l	d0,d2			; d2 = high (save)
+	move.l	d1,d3			; d3 = low (save)
+
+	; Handle zero
+	move.l	d0,d1
+	andi.l	#$7FFFFFFF,d1
+	or.l	d3,d1
+	bne.s	_dtof_nonzero
+	andi.l	#IEEE754_SNG_SIGN_MASK,d0 ; preserve sign of zero
+	movem.l	(sp)+,d2-d3
+	rts
+
+_dtof_nonzero:
+	; Sign
+	move.l	d2,d0
+	andi.l	#IEEE754_DBL_SIGN_MASK_HI,d0 ; d0 = sign
+
+	; Exponent
+	move.l	d2,d1
+	andi.l	#IEEE754_DBL_EXP_MASK_HI,d1
+	EXTRACT_DBL_EXP d1
+	subi.l	#896,d1
+	ble.s	_dtof_underflow
+	cmpi.l	#255,d1
+	bge.s	_dtof_overflow
+
+	; Pack exponent
+	INSERT_EXP d1
+	or.l	d1,d0
+
+	; Mantissa: 20 bits from high + 3 bits from low
+	move.l	d2,d1
+	andi.l	#IEEE754_DBL_MANT_MASK_HI,d1 ; 20 bits
+	lsl.l	#3,d1			; shift left 3
+	move.l	d3,d2			; low word
+	rol.l	#3,d2			; rotate top 3 bits to bottom
+	andi.l	#7,d2
+	or.l	d2,d1			; d1 = 23-bit mantissa
+	or.l	d1,d0			; combine
+
+	movem.l	(sp)+,d2-d3
+	rts
+
+_dtof_underflow:
+	moveq	#0,d0
+	movem.l	(sp)+,d2-d3
+	rts
+
+_dtof_overflow:
+	move.l	#SNG_INF,d0
+	move.l	d2,d1
+	andi.l	#IEEE754_SNG_SIGN_MASK,d1
+	or.l	d1,d0
+	movem.l	(sp)+,d2-d3
+	rts
+
+; ============================================================
+;  _fpltod — int32 to double
+;
+;  Input:  4(sp) = int32
+;  Output: D0:D1 = IEEE 754 double
+; ============================================================
+_fpltod:
+	move.l	4(sp),d0		; integer
+	beq.s	_ltod_zero
+
+	movem.l	d2-d4,-(sp)
+	moveq	#0,d2			; sign
+	tst.l	d0
+	bpl.s	_ltod_pos
+	neg.l	d0
+	move.l	#IEEE754_DBL_SIGN_MASK_HI,d2
+_ltod_pos:
+	move.l	#1023+31,d3		; exponent (assuming MSB at bit 31)
+_ltod_norm:
+	btst.l	#31,d0
+	bne.s	_ltod_pack
+	lsl.l	#1,d0
+	subq.l	#1,d3
+	bra.s	_ltod_norm
+
+_ltod_pack:
+	; d0 = normalized value (bit 31 = implied 1)
+	; d3 = biased exponent
+	; d2 = sign
+	; Need: high word = sign | exp | mantissa[30:11]
+	;        low word = mantissa[10:0] << 21
+
+	move.l	d0,d4			; save for low word
+	lsr.l	#8,d0
+	lsr.l	#3,d0			; d0 >>= 11: bits 30..11 → bits 19..0
+	andi.l	#IEEE754_DBL_MANT_MASK_HI,d0
+
+	move.l	d3,d1			; exponent
+	INSERT_DBL_EXP d1
+	or.l	d1,d0			; add exponent
+	or.l	d2,d0			; add sign
+
+	; Low word: bits 10..0 of normalized value → bits 31..21
+	move.l	d4,d1
+	andi.l	#$7FF,d1		; lower 11 bits
+	lsl.l	#8,d1
+	lsl.l	#8,d1
+	lsl.l	#5,d1			; << 21
+
+	movem.l	(sp)+,d2-d4
+	rts
+
+_ltod_zero:
+	moveq	#0,d0
+	moveq	#0,d1
+	rts
+
+; ============================================================
+;  _fpdtol — double to int32 (truncate toward zero)
+;
+;  Input:  4(sp)=high, 8(sp)=low
+;  Output: D0 = int32
+; ============================================================
+_fpdtol:
+	move.l	4(sp),d0		; high
+	move.l	8(sp),d1		; low
+	movem.l	d2-d4,-(sp)
+
+	; Sign
+	move.l	d0,d2
+	andi.l	#IEEE754_DBL_SIGN_MASK_HI,d2
+
+	; Exponent
+	move.l	d0,d3
+	andi.l	#IEEE754_DBL_EXP_MASK_HI,d3
+	EXTRACT_DBL_EXP d3
+
+	; Zero or tiny
+	cmpi.l	#IEEE754_DBL_EXP_BIAS,d3
+	blt.s	_dtol_zero
+
+	; Too large
+	cmpi.l	#1023+31,d3
+	bgt.s	_dtol_overflow
+
+	; Mantissa with implied bit
+	andi.l	#IEEE754_DBL_MANT_MASK_HI,d0
+	ori.l	#IEEE754_DBL_IMPLIED_BIT_HI,d0
+
+	; Unbiased exponent (0..31)
+	subi.l	#IEEE754_DBL_EXP_BIAS,d3
+
+	cmpi.l	#20,d3
+	bgt.s	_dtol_large_exp
+
+	; exp <= 20: result is entirely in d0
+	move.l	#20,d4
+	sub.l	d3,d4			; d4 = 20 - exp
+	lsr.l	d4,d0
+	bra.s	_dtol_apply_sign
+
+_dtol_large_exp:
+	; exp > 20: combine bits from d0 and d1
+	move.l	d3,d4
+	subi.l	#20,d4			; d4 = exp - 20 (1..11)
+	lsl.l	d4,d0			; shift mantissa high left
+
+	; Right-shift d1 to extract upper (exp-20) bits
+	move.l	#32,d3
+	sub.l	d4,d3			; d3 = 32 - (exp - 20)
+	lsr.l	d3,d1
+	or.l	d1,d0			; combine
+
+_dtol_apply_sign:
+	tst.l	d2
+	beq.s	_dtol_done
+	neg.l	d0
+
+_dtol_done:
+	movem.l	(sp)+,d2-d4
+	rts
+
+_dtol_zero:
+	moveq	#0,d0
+	movem.l	(sp)+,d2-d4
+	rts
+
+_dtol_overflow:
+	tst.l	d2
+	bne.s	_dtol_neg_ovf
+	move.l	#$7FFFFFFF,d0
+	movem.l	(sp)+,d2-d4
+	rts
+_dtol_neg_ovf:
+	move.l	#$80000000,d0
+	movem.l	(sp)+,d2-d4
+	rts
+
+	end

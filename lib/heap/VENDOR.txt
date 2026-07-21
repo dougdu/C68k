@@ -1,0 +1,38 @@
+vendored library : libheap
+upstream source  : C:\git\worm68k\68kTools\libraries\heap
+synced (UTC)     : 2026-07-21 20:26:51Z
+file count       : 32
+
+files (sha256, path):
+  5970241C2AFE0E2C  GetMachineHeap.a68
+  3DF3374F93B3A799  GetMachineHeaps.a68
+  F5C7F9497F68535C  heap.inc
+  56FE77E5142ED540  HeapAlloc.a68
+  4686CC70F581F082  HeapArena.a68
+  72076240FEC8AA89  HeapAutoValidateFlagCheck.a68
+  EE3EA772A5B68D7F  HeapCoalesce.a68
+  8E6D994E64AF7376  HeapCompact.a68
+  E9AF84A517621D7B  HeapCreate.a68
+  D03B57343285AC71  HeapData.a68
+  F856C55887E430F9  HeapDebugFillOnFree.a68
+  F9D279B99DFADBE7  HeapDestroy.a68
+  CCE7CCC03B5C1455  HeapFree.a68
+  A57789C3997BCCC0  HeapGetError.a68
+  14D9665B76E2A35A  HeapInitialize.a68
+  A1CFD44975B4DDA8  HeapInvalidateBlockHeader.a68
+  4C83054CAD726116  HeapReAlloc.a68
+  508CF5ED225E733B  HeapSize.a68
+  A21A5793692CF0AA  HeapSlab.a68
+  374CCED1D6CDB073  HeapSmallAlloc.a68
+  67589B230D95AFAC  HeapSmallCompact.a68
+  F41083BB3FA93CD7  HeapSmallCtl.a68
+  39E31337060B0EF1  HeapSmallFree.a68
+  80C4A456FF637F9B  HeapSmallReAlloc.a68
+  1D8E0623FCB0C3F3  HeapSmallValidate.a68
+  EFBF993D939389A0  HeapSmallWalk.a68
+  3A3A9A760900470D  HeapStats.a68
+  A171CD3F013E6A9A  HeapUnlinkFromBlockChain.a68
+  5017A7A46B53AC8D  HeapUnlinkFromFreeBlockChain.a68
+  1620BCA07D8E8603  HeapValidate.a68
+  6C8228618BAA3AA4  HeapValidateHandle.a68
+  F7D96B9679D27BE0  HeapWalk.a68

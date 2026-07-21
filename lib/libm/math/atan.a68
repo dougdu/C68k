@@ -1,0 +1,198 @@
+	title	"IEEE 754 single-precision arctangent"
+; ============================================================
+;  _atan / _atanf — arctangent
+;
+;  float _atan(float x) — returns atan(x) in D0
+;
+;  Three-segment range reduction ensures the polynomial
+;  argument never exceeds tan(pi/8) ≈ 0.4142:
+;
+;    Segment 2: |x| > 1       → atan(x) = pi/2 - atan(1/x)
+;    Segment 1: |x| > tan(pi/8) → atan(x) = pi/4 + atan((x-1)/(x+1))
+;    Segment 0: |x| ≤ tan(pi/8) → polynomial directly
+;
+;  Polynomial (Taylor, 5 terms — excellent on [-0.4142, 0.4142]):
+;    atan(x) ≈ x * (1 + x²*(-1/3 + x²*(1/5 + x²*(-1/7 + x²/9))))
+; ============================================================
+
+	.model	flat
+	include	ieee754.inc
+
+	public	_atan, _atanf
+	extern	_fpadd, _fpsub, _fpmult, _fpdiv
+
+	.code
+
+; Constants
+_at_one		dc.l	SNG_ONE		; 1.0
+_at_pi_2	dc.l	$3FC90FDB	; pi/2 = 1.57079633
+_at_pi_4	dc.l	$3F490FDB	; pi/4 = 0.78539816
+_at_tan_pi8	dc.l	$3ED413CD	; tan(pi/8) = sqrt(2)-1 = 0.41421356
+
+; Taylor coefficients
+_at_c3		dc.l	$BEAAAAAB	; -1/3  = -0.333333
+_at_c5		dc.l	$3E4CCCCD	;  1/5  =  0.2
+_at_c7		dc.l	$BE124925	; -1/7  = -0.142857
+_at_c9		dc.l	$3DC71C72	;  1/9  =  0.111111
+
+_atan:
+_atanf:
+	link	a6,#-8
+	; -4(a6) = flags:  bit 0 = reciprocal (segment 2)
+	;                  bit 1 = mid-range  (segment 1)
+	; -8(a6) = reduced x for final multiply
+	movem.l	d2-d4,-(sp)
+
+	move.l	8(a6),d2		; d2 = x
+
+	; Save and remove sign
+	move.l	d2,d4
+	andi.l	#IEEE754_SNG_SIGN_MASK,d4 ; d4 = original sign
+	bclr.l	#IEEE754_SNG_SIGN_BIT,d2 ; d2 = |x|
+
+	; Handle zero
+	tst.l	d2
+	beq	_atan_return_x
+
+	moveq	#0,d3			; d3 = flags
+
+	; --- Segment 2: if |x| > 1, map to 1/x ---
+	cmpi.l	#SNG_ONE,d2
+	ble.s	_atan_check_mid
+	ori.l	#1,d3			; flag: reciprocal
+	move.l	d2,-(sp)		; divisor = |x|
+	move.l	_at_one(pc),-(sp)	; dividend = 1.0
+	jsr	_fpdiv
+	addq.l	#8,sp
+	move.l	d0,d2			; d2 = 1/|x|, now <= 1
+
+_atan_check_mid:
+	; --- Segment 1: if |x| > tan(pi/8), map (x-1)/(x+1) ---
+	cmp.l	_at_tan_pi8(pc),d2
+	ble.s	_atan_poly
+	ori.l	#2,d3			; flag: mid-range
+
+	; u = (x - 1) / (x + 1)
+	; Compute denominator first
+	move.l	_at_one(pc),-(sp)
+	move.l	d2,-(sp)
+	jsr	_fpadd			; d0 = x + 1
+	addq.l	#8,sp
+	move.l	d0,d4			; d4 = x + 1 (borrow d4 temporarily)
+
+	; Compute numerator
+	move.l	_at_one(pc),-(sp)
+	move.l	d2,-(sp)
+	jsr	_fpsub			; d0 = x - 1
+	addq.l	#8,sp
+
+	; Divide
+	move.l	d4,-(sp)		; divisor = x + 1
+	move.l	d0,-(sp)		; dividend = x - 1
+	jsr	_fpdiv			; d0 = (x-1)/(x+1)
+	addq.l	#8,sp
+	move.l	d0,d2			; d2 = u (now |u| <= tan(pi/8))
+
+	; Restore d4 = original sign (was borrowed)
+	move.l	8(a6),d4
+	andi.l	#IEEE754_SNG_SIGN_MASK,d4
+
+_atan_poly:
+	; Save flags and reduced x
+	move.l	d3,-4(a6)		; save flags
+	move.l	d2,-8(a6)		; save reduced x for final multiply
+
+	; --- Compute x² ---
+	move.l	d2,-(sp)
+	move.l	d2,-(sp)
+	jsr	_fpmult
+	addq.l	#8,sp
+	move.l	d0,d3			; d3 = x²
+
+	; --- Horner: 1 + x²*(-1/3 + x²*(1/5 + x²*(-1/7 + x²*1/9))) ---
+	; t = 1/9
+	move.l	_at_c9(pc),d2
+
+	; t = -1/7 + x²*t
+	move.l	d3,-(sp)
+	move.l	d2,-(sp)
+	jsr	_fpmult
+	addq.l	#8,sp
+	move.l	_at_c7(pc),-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpadd
+	addq.l	#8,sp
+	move.l	d0,d2
+
+	; t = 1/5 + x²*t
+	move.l	d3,-(sp)
+	move.l	d2,-(sp)
+	jsr	_fpmult
+	addq.l	#8,sp
+	move.l	_at_c5(pc),-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpadd
+	addq.l	#8,sp
+	move.l	d0,d2
+
+	; t = -1/3 + x²*t
+	move.l	d3,-(sp)
+	move.l	d2,-(sp)
+	jsr	_fpmult
+	addq.l	#8,sp
+	move.l	_at_c3(pc),-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpadd
+	addq.l	#8,sp
+	move.l	d0,d2
+
+	; t = 1 + x²*t
+	move.l	d3,-(sp)
+	move.l	d2,-(sp)
+	jsr	_fpmult
+	addq.l	#8,sp
+	move.l	_at_one(pc),-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpadd
+	addq.l	#8,sp
+
+	; result = reduced_x * t
+	move.l	d0,-(sp)
+	move.l	-8(a6),-(sp)		; push reduced x
+	jsr	_fpmult
+	addq.l	#8,sp			; d0 = atan(reduced_x)
+
+	; --- Un-reduce ---
+	move.l	-4(a6),d3		; reload flags
+
+	; Segment 1: add pi/4
+	btst.l	#1,d3
+	beq.s	_atan_check_recip
+	move.l	d0,-(sp)
+	move.l	_at_pi_4(pc),-(sp)
+	jsr	_fpadd			; d0 = pi/4 + atan(u)
+	addq.l	#8,sp
+
+_atan_check_recip:
+	; Segment 2: pi/2 - result
+	btst.l	#0,d3
+	beq.s	_atan_apply_sign
+	move.l	d0,-(sp)		; push atan(1/x)
+	move.l	_at_pi_2(pc),-(sp)	; push pi/2
+	jsr	_fpsub			; d0 = pi/2 - atan(1/x)
+	addq.l	#8,sp
+
+_atan_apply_sign:
+	or.l	d4,d0			; apply original sign
+
+	movem.l	(sp)+,d2-d4
+	unlk	a6
+	rts
+
+_atan_return_x:
+	move.l	8(a6),d0		; atan(0) = 0
+	movem.l	(sp)+,d2-d4
+	unlk	a6
+	rts
+
+	end

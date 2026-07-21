@@ -1,0 +1,29 @@
+	title	"IEEE 754 double-precision negation and absolute value"
+; ============================================================
+;  _fpnegd — negate double
+;  _fabsd  — absolute value of double
+;
+;  double returned in D0:D1 (D0=high, D1=low)
+;  Argument: 4(SP)=high, 8(SP)=low  (no LINK for leaf functions)
+; ============================================================
+
+	.model	flat
+	include	ieee754d.inc
+
+	public	_fpnegd, _fabsd
+
+	.code
+
+_fpnegd:
+	move.l	4(sp),d0		; high word
+	move.l	8(sp),d1		; low word
+	eori.l	#IEEE754_DBL_SIGN_MASK_HI,d0
+	rts
+
+_fabsd:
+	move.l	4(sp),d0
+	move.l	8(sp),d1
+	andi.l	#$7FFFFFFF,d0		; clear sign bit
+	rts
+
+	end

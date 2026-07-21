@@ -1,0 +1,449 @@
+*
+*	Floating Point to String Conversion :
+*		Converts a floating-point number to a string.
+*
+*       The _fcvt function converts a floating-point number to a null-terminated
+*       character string. The value parameter is the floating-point number to be
+*       converted. _fcvt stores the digits of value as a string and appends a null
+*       character ('\0'). The count parameter specifies the number of digits to be
+*       stored after the decimal point. Excess digits are rounded off to count places.
+*       If there are fewer than count digits of precision, the string is padded with
+*       zeros.
+*
+*       The total number of digits returned by _fcvt will not exceed _CVTBUFSIZE.
+*
+*       Only digits are stored in the string. The position of the decimal point and
+*       the sign of value can be obtained from dec and sign after the call. The dec
+*       parameter points to an integer value; this integer value gives the position
+*       of the decimal point with respect to the beginning of the string. A zero or
+*       negative integer value indicates that the decimal point lies to the left of
+*       the first digit. The parameter sign points to an integer indicating the sign
+*       of value. The integer is set to 0 if value is positive and is set to a nonzero
+*       number if value is negative.
+*
+*       The difference between _ecvt and _fcvt is in the interpretation of the count
+*       parameter. _ecvt interprets count as the total number of digits in the output
+*       string, whereas _fcvt interprets count as the number of digits after the
+*       decimal point.
+*
+*       _ecvt and _fcvt use a single statically allocated buffer for the conversion.
+*       Each call to one of these routines destroys the results of the previous call.
+*
+*       This function validates its parameters. If dec or sign is NULL, or count is 0
+*       NULL is returned.
+*
+*               char *_fcvt(double value, int count, int *dec, int *sign);
+*               char *fcvtbuf(double value, int count, int *dec, int *sign, char *buf)
+*               char *_ecvt(double value, int count, int *dec, int *sign);
+*               char *ecvtbuf(double value, int count, int *dec, int *sign, char *buf)
+*
+*	Returns : returns a pointer to the string of digits, NULL on error.
+*
+
+	.model	flat
+
+	include	ieee754.inc
+
+	public	__ecvt, _ecvtbuf, __fcvt, _fcvtbuf
+	extern	_fpdiv, _fpadd, _fpmult, _fpcmp, _fpftol, _modf
+
+	.code
+
+CVTBUFSIZE      equ     (309 + 40)
+
+* Floating point constants used (IEEE-754 format)
+FP_1		equ	$3f800000	; 1.0
+FP_10 		equ	$41200000	; 10.0
+FP_dot03	equ	$3cf5c28f	; 0.03
+
+* Parameter offsets
+arg     equ     28			; Register D3
+ndigits equ     24			; Register D7
+decpt   equ     20
+sign    equ     16
+buf     equ     12			; Register A0
+eflag   equ     8
+
+* Local variable offsets
+r2 	equ 	-4			; Register D4
+fi 	equ 	-8			; Register D6
+fj 	equ 	-12			; Register D5
+p 	equ 	-16			; Register A1
+p1 	equ 	-20			; Register A2
+
+_cvtFrameSize equ -20
+
+_cvt:
+	link	a6,#_cvtFrameSize		; Create frame pointer
+	movem.l	d3-d7,-(sp)			; Save registers
+
+	; Pre-load register variables
+	movea.l buf(a6),a0 			; A0 --> buf
+	move.l 	arg(a6),d3 			; D3 = arg
+	move.l 	ndigits(a6),d7 			; D7 = ndigits
+
+	; if (ndigits <0) {
+	tst.l	d7 				; Validate ndigits
+	bpl.s 	_ndigitsPos 			; Go if positive
+
+	; ndigits = 0;
+	clr.l 	d7 				; ndigits = 0
+
+	; }
+
+_ndigitsPos:
+	; if (ndigits >= CVTBUFSIZE - 1) {
+	cmpi.l 	#CVTBUFSIZE-1,d7 		; ndigits >= CVTBUFSIZE-1 ?
+	bmi.s 	_ndigitsOk 			; No, skip
+	move.l 	#CVTBUFSIZE-2,d7 		; ndigits = CVTBUFSIZE-2
+
+	; }
+
+_ndigitsOk:
+	; r2 = 0;
+	clr.l 	d4 				; r2 = 0
+
+	; *sign = 0;
+	movea.l	sign(a6),a5  			; sign = 0
+	clr.l 	(a5)
+
+	; p = &buf[0]
+	movea.l a0,a1 				; p = &buf[0]
+
+	; if (arg < 0) {
+	btst.l 	#IEEE754_SNG_SIGN_BIT,d3	; arg < 0 ?
+	beq.s 	_argPosOrZero			; Nope, skip
+
+	; *sign = 1
+	move.l 	#1,(a5)				; sign = 1
+
+	; arg = -arg;
+	bclr.l	#IEEE754_SNG_SIGN_BIT,d3	; arg = -arg
+
+	; }
+
+_argPosOrZero:
+	; arg = modf(arg, &fi)
+	move.l	d3,-(sp)			; Push 'arg'
+	lea	fi(a6),a5 			; A5 --> fi
+	move.l 	a5,-(sp)			; Push &fi
+	jsr 	_modf
+	adda.l 	#8,sp
+	move.l 	fi(a6),d6 			; Reload register variable
+	move.l 	d0,d3				; arg = modf(arg,fi)
+
+	; p1 = &buf[CVTBUFSIZE]
+	lea 	CVTBUFSIZE(a0),a2 		; p1 = &buf[CVTBUFSIZE]
+
+	; if (fi != 0) {
+	tst.l 	d6 				; Is fi != 0 ?
+	beq.s 	_cvtElse1			; Nope it's 0, skip
+
+	; while (fi != 0) {
+_cvtLoop1:
+	tst.l 	d6 				; Is fi 0?
+	beq.s 	_cvtExitLoop1			; Yes, exit loop
+
+	; fj = modf(fi / 10.0, &fi);
+	move.l 	#FP_10,-(sp)			; Push 10.0
+	move.l 	d6,-(sp)			; Push fi
+	jsr 	_fpdiv				; D0 = fi/10.0
+	adda.l 	#8,sp
+	move.l 	d0,-(sp)			; Push fi/10
+	move.l 	a5,-(sp)			; Push &fi
+	jsr 	_modf 				; D0 = fraction, fi=integer
+	adda.l 	#8,sp
+	move.l 	fi(a6),d6			; Reload register variable fi
+	move.l 	d0,d5 				; D5 = fraction part (fj)
+
+	; *--p1 = (int)((fj + .03) * 10.0) + '0';
+	move.l 	d5,-(sp)			; Push fj
+	move.l 	#FP_dot03,-(sp)			; Push 0.03
+	jsr 	_fpadd 				; D0 = fj + 0.03
+	adda.l 	#8,sp
+	move.l 	d0,-(sp)			; Push (fj + 0.03)
+	move.l 	#FP_10,-(sp)			; Push 10.0
+	jsr 	_fpmult 			; D0 = (fj + 0.03) * 10.0
+	adda.l 	#8,sp
+	move.l 	d0,-(sp)			; Push ((fj + 0.03) * 10.0)
+	jsr 	_fpftol 			; D0 = (int)((fj + 0.03) * 10.0)
+	adda.l 	#4,sp
+	addi.l 	#'0',d0				; D0 = (int)((fj + 0.03) * 10.0) + '0'
+	move.b 	d0,-(a2)			; *--p1 = (int)((fj + 0.03) * 10.0) + '0'
+
+	; r2++;
+	addi.l 	#1,d4				; Bump r2
+
+	bra.s 	_cvtLoop1 			; Loop until fi = 0
+	; }
+
+_cvtExitLoop1:
+	; while (p1 < &buf[CVTBUFSIZE]) {
+	lea 	CVTBUFSIZE(a0),a3		; A3 --> buf[CVTBUFSIZE]
+
+_cvtLoop2:
+	cmpa.l	a2,a3				; Reached end of buffer?
+	ble.s	_cvtEndIf1			; Yes, exit loop
+
+	; *p++ = *p1++
+	move.b 	(a2)+,(a1)+			; Copy character
+	bra.s 	_cvtLoop2			; Loop until all characters copied
+
+_cvtElse1:
+	; else if (arg > 0)
+	tst.l 	d3				; Is arg > 0? (must be 0 or positive)
+	beq.s 	_cvtEndIf1			; Nope, skip
+
+	; while ((fj = arg * 10) < 1) {
+_cvtLoop3:
+	move.l 	d3,-(sp)			; Push arg on the stack
+	move.l 	#FP_10,-(sp)			; Push 10.0 on the stack
+	jsr 	_fpmult 			; D0 = arg * 10.0
+	adda.l 	#8,sp
+	move.l 	d0,d5 				; fj = arg * 10.0
+	move.l 	#FP_1,-(sp)			; Push 1.0
+	move.l 	d0,-(sp)			; Push arg * 10.0
+	jsr 	_fpcmp 				; arg * 10.0 < 1.0
+	adda.l 	#8,sp
+	bge.s 	_cvtEndIf1			; Nope, all done
+
+	; arg = fj
+	move.l 	d5,d3 				; arg = fj
+
+	; r2--;
+	subi.l 	#1,d4				; r2--
+	bra.s	_cvtLoop3			; Loop until done
+
+_cvtEndIf1:
+
+	; p1 = &buf[ndigits]
+	lea	0(a0,d7.l),a2 			; A2 = &buf[ndigits]
+
+	; if (eflag == 0)
+	tst.l 	eflag(a6)
+	bne.s 	_cvtEndIf2
+
+	; p1 += r2;
+	adda.l 	d4,a2 				; Add in r2
+
+_cvtEndIf2:
+	; *decpt = r2
+	movea.l	decpt(a6),a3 			; A3 --> &decpt
+	move.l 	d4,(a3)				; *decpt = r2
+
+	; if (p1 < &buf[0]) {
+	cmpa.l 	a2,a0 				; p1 < buf ?
+	ble.s	_cvtEndIf3			; Nope, skip
+
+	; buf[0] = '\0';
+	move.b 	#0,(a0)				; Null terminater
+	bra 	_cvtExit
+
+_cvtEndIf3:
+	; while (p <= p1 && p < &buf[CVTBUFSIZE]) {
+	lea 	CVTBUFSIZE(a0),a3 		; A3 --> buf[CVTBUFSIZE]
+	lea 	fj(a6),a4 			; A4 --> fj
+
+_cvtLoop4:
+	cmpa.l 	a2,a1 				; p <= p1 ?
+	bgt.s 	_exitLoop4			; Nope, exit loop
+	cmpa.l	a3,a1 				; p < &buf[CVTBUFSIZE] ?
+	bge.s 	_exitLoop4 			; Nope, exit loop
+
+	; arg *= 10.0;
+	move.l 	d3,-(sp)			; Push arg
+	move.l 	#FP_10,-(sp)			; Push 10.0
+	jsr 	_fpmult				; D0 = arg * 10.0
+	adda.l 	#8,sp
+	move.l 	d0,d3 				; arg = arg * 10.0
+
+	; arg = modf(arg, &fj)
+	move.l 	d3,-(sp)			; Push arg
+	move.l 	a4,-(sp)			; Push &fj
+	jsr 	_modf				; D0 = fraction part, fj = integer part
+	adda.l 	#8,sp
+	move.l 	fj(a6),d5 			; Reload register variable
+	move.l 	d0,d3 				; arg = modf(arg, &fj)
+
+	; *p++ = (int)fj + '0'
+	move.l 	d5,-(sp)			; Push fj
+	jsr 	_fpftol 			; D0 = (int)fj
+	adda.l 	#4,sp
+	add.l 	#'0',d0 			; D0 = (int)fj + '0'
+	move.b 	d0,(a1)+ 			; *p++ = (int)fj + '0'
+
+	; }
+	bra.s	_cvtLoop4			; Loop until done
+
+_exitLoop4:
+	; if (p1 >= &buf[CVTBUFSIZE]) {
+	cmpa.l 	a3,a2				; p1 >= &buf[CVTBUFSIZE] ?
+	blt.s	_cvtEndIf4 			; Nope, skip
+	move.b 	#0,CVTBUFSIZE-1(a0)		; Insert null terminator
+	bra.s 	_cvtExit			; Return buf
+
+_cvtEndIf4:
+	; p = p1;
+	movea.l a2,a1 				; p = p1
+	addi.b 	#5,(a2)				; *p1 += 5;
+
+	; while (*p1 > '9') {
+
+_cvtLoop5:
+	cmpi.b 	#'9',d0 			; *p1 >'9'
+	ble.s 	_cvtExitLoop5			; Nope, exit loop
+
+	; *p1 = '0';
+	move.b 	#'0',(a2)			; Store a '0'
+
+	; if (p1 > buf)
+	cmpa.l 	a2,a0 				; p1 > buf ?
+	ble.s 	_cvtElse5			; Nope, skip
+
+	; ++* --p1;
+	suba.l 	#1,a2 				; --p1
+	addi.b 	#1,(a2)				; ++* --p1
+
+	; }
+	bra.s 	_cvtLoop5 			; Loop until done
+
+_cvtElse5:
+	; else {
+	; *p1 = '1';
+	move.b 	#'1',(a2)			; Store '1' in buffer
+
+	; (*decpt)++;
+	movea.l decpt(a6),a3 			; A3 --> *decpt
+	addi.l 	#1,(a3)				; (*decpt)++
+
+	; if (eflag == 0) {
+	tst.l	eflag(a6)			; eflag set?
+	bne.s 	_cvtLoop5 			; Nope, loop
+
+	; if (p > buf) *p = '0';
+	cmpa.l 	a1,a0 				; p > buf?
+	ble.s 	_cvtEndIf5
+	move.b 	#'0',(a1)			; *p = '0'
+
+_cvtEndIf5:
+	; ++p;
+	adda.l 	#1,a1 				; ++p
+
+	; }
+	bra.s	_cvtLoop5			; Loop until done
+
+_cvtExitLoop5:
+	; *p = '\0'
+	move.b 	#0,(a1)				; Insert nul terminator
+
+_cvtExit:
+	; return buf
+	move.l	a0,d0 				; D0 = buf
+
+	movem.l	(sp)+,d3-d7			; Restore registers
+	unlk	a6				; Clean up frame
+	rts					; Return to caller
+
+
+
+*
+* _ecvt
+*
+
+ecvt_arg	equ	20
+ecvt_ndigits	equ	16
+ecvt_decpt	equ	12
+ecvt_sign	equ	8
+
+__ecvt:
+	link	a6,#0				; Create frame pointer
+	move.l  ecvt_arg(a6),-(sp)		; Push 'arg'
+	move.l  ecvt_ndigits(a6),-(sp)		; Push 'ndigits'
+	move.l  ecvt_decpt(a6),-(sp)		; Push 'decpt'
+	move.l  ecvt_sign(a6),-(sp)		; Push 'sign'
+	move.l  #cvtbuf,-(sp)           	; Push internal static buffer
+	move.l  #1,-(sp)                	; eflag = true
+	jsr     _cvt                    	; Call common routine
+	adda.l  #24,sp                  	; Clean up stack
+	unlk	a6				; Clean up frame
+	rts					; Return to caller
+
+
+
+*
+* ecvtbuf
+*
+
+ecvtbuf_arg	equ	24
+ecvtbuf_ndigits	equ	20
+ecvtbuf_decpt	equ	16
+ecvtbuf_sign	equ	12
+ecvtbuf_buf 	equ 	8
+
+_ecvtbuf:
+	link	a6,#0				; Create frame pointer
+	move.l  ecvtbuf_arg(a6),-(sp)           ; Push 'arg'
+	move.l  ecvtbuf_ndigits(a6),-(sp)       ; Push 'ndigits'
+	move.l  ecvtbuf_decpt(a6),-(sp)         ; Push 'decpt'
+	move.l  ecvtbuf_sign(a6),-(sp)          ; Push 'sign'
+	move.l  ecvtbuf_buf(a6),-(sp)           ; Push 'buf'
+	move.l  #1,-(sp)                	; eflag = true
+	jsr     _cvt                    	; Call common routine
+	adda.l  #24,sp                  	; Clean up stack
+	unlk	a6				; Clean up frame
+	rts					; Return to caller
+
+
+
+*
+* _fcvt
+*
+
+fcvt_arg	equ	20
+fcvt_ndigits	equ	16
+fcvt_decpt	equ	12
+fcvt_sign	equ	8
+
+__fcvt:
+	link	a6,#0				; Create frame pointer
+	move.l  fcvt_arg(a6),-(sp)		; Push 'arg'
+	move.l  fcvt_ndigits(a6),-(sp)		; Push 'ndigits'
+	move.l  fcvt_decpt(a6),-(sp)		; Push 'decpt'
+	move.l  fcvt_sign(a6),-(sp)		; Push 'sign'
+	move.l  #cvtbuf,-(sp)           	; Push internal static buffer
+	move.l  #0,-(sp)                	; eflag = false
+	jsr     _cvt                    	; Call common routine
+	adda.l  #24,sp                  	; Clean up stack
+	unlk	a6				; Clean up frame
+	rts					; Return to caller
+
+
+
+*
+* fcvtbuf
+*
+
+fcvtbuf_arg	equ	24
+fcvtbuf_ndigits	equ	20
+fcvtbuf_decpt	equ	16
+fcvtbuf_sign	equ	12
+fcvtbuf_buf 	equ 	8
+
+_fcvtbuf:
+	link	a6,#0				; Create frame pointer
+	move.l  fcvtbuf_arg(a6),-(sp)           ; Push 'arg'
+	move.l  fcvtbuf_ndigits(a6),-(sp)	; Push 'ndigits'
+	move.l  fcvtbuf_decpt(a6),-(sp)         ; Push 'decpt'
+	move.l  fcvtbuf_sign(a6),-(sp)          ; Push 'sign'
+	move.l  fcvtbuf_buf(a6),-(sp)           ; Push 'buf'
+	move.l  #0,-(sp)                	; eflag = false
+	jsr     _cvt                    	; Call common routine
+	adda.l  #24,sp                  	; Clean up stack
+	unlk	a6				; Clean up frame
+	rts					; Return to caller
+
+	.bss
+
+cvtbuf 	ds.b    CVTBUFSIZE
+
+	end

@@ -12,7 +12,7 @@
   contiguous transient with mkdri:
 
       m68k-elf-ld -T cpm68k.ld -Ttext 0x500 cpm_sys.o <compiler>.o... \
-          cpm.o libc.o rt68k.o libieee754d.a -o CC.elf
+          cpm.o libc.o rt68k.o libm.a -o CC.elf
       mkdri -b500 -y -o CC.68K CC.elf
 
   cpm_sys.o MUST be first so _start lands at the TPA base (CP/M has no ENTRY).
@@ -28,7 +28,7 @@ param(
   [string]$Ld = 'C:\git\osiris\toolchain\binutils\m68k-elf-ld.exe',
   [string]$Mkdri = 'C:\git\worm68k\68kTools\builds\win64\bin\Release\mkdri.exe',
   [string]$LdScript = (Join-Path $PSScriptRoot 'cpm68k.ld'),
-  [string]$FloatLib = 'C:\git\worm68k\68kTools\libraries\float\ieee754\libieee754d.a',
+  [string]$FloatLib = (Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'lib\libm\libm.a'),
   [string]$OutDir = (Join-Path ([System.IO.Path]::GetTempPath()) 'c68k-cc68k')
 )
 $ErrorActionPreference = 'Stop'
@@ -56,15 +56,15 @@ foreach ($n in $tus) {
 }
 
 $seamO = Join-Path $OutDir 'cpm.o'
-$libcO = Join-Path $OutDir 'libc.o'
 $sysO  = Join-Path $OutDir 'cpm_sys.o'
 $rtO   = Join-Path $OutDir 'rt68k.o'
 Write-Host 'cc   cpm.c (CP/M seam)' -ForegroundColor Cyan
 & $Cc -fintegrated-as -c "-I$inc" -o $seamO $seamC
 if ($LASTEXITCODE -ne 0) { throw 'cc cpm seam failed' }
-Write-Host 'cc   libc.c' -ForegroundColor Cyan
-& $Cc -fintegrated-as -c "-I$inc" -o $libcO $libcC
-if ($LASTEXITCODE -ne 0) { throw 'cc libc failed' }
+# Phase 4: compile the split libc TUs (libc/core/*.c) into libc.a; link via -lc.
+Write-Host 'build libc.a (split TUs)' -ForegroundColor Cyan
+$buildLibc = Join-Path (Split-Path $PSScriptRoot -Parent) 'build-libc.ps1'
+& $buildLibc -Cc $Cc -OutDir $OutDir -CcArgs @('-fintegrated-as') | Out-Null
 Write-Host 'asm  cpm_sys.a68 ; rt68k.a68' -ForegroundColor Cyan
 & $Asm /Cx /elf /c /nologo "/Fo$sysO" $sysA | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'asm crt0 failed' }
@@ -74,7 +74,7 @@ if ($LASTEXITCODE -ne 0) { throw 'asm rt68k failed' }
 $elf = Join-Path $OutDir 'CC.elf'
 $out68 = Join-Path $OutDir 'CC.68K'
 Write-Host 'ld   -> CC.elf' -ForegroundColor Cyan
-& $Ld -T $LdScript -Ttext 0x500 -o $elf $sysO @objs $seamO $libcO $rtO $FloatLib
+& $Ld -T $LdScript -Ttext 0x500 -o $elf $sysO @objs $seamO "-L$OutDir" -lc $rtO $FloatLib
 if ($LASTEXITCODE -ne 0) { throw "link CC.elf failed (rc=$LASTEXITCODE)" }
 Write-Host 'mkdri -> CC.68K' -ForegroundColor Cyan
 & $Mkdri -b500 -y -o $out68 $elf | Out-Null

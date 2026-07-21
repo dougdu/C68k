@@ -26,7 +26,7 @@
 #>
 [CmdletBinding()]
 param(
-  [string[]]$Tu = @('strings','hashmap','unicode','type','main','tokenize','preprocess','codegen68k','emit_elf','parse','libc'),
+  [string[]]$Tu = @('strings','hashmap','unicode','type','main','tokenize','preprocess','codegen68k','emit_elf','parse','libc','errno','signal','time'),
   [string]$Cc68k = (Join-Path ([System.IO.Path]::GetTempPath()) 'c68k-cc68k\CC.68K'),
   [string]$Cc = (Join-Path ([System.IO.Path]::GetTempPath()) 'c68k-p2\c68k.exe'),
   [int]$BootWait = 9,
@@ -52,6 +52,9 @@ $TUMAP = [ordered]@{
   'codegen68k' = @{ f8 = 'CODEGEN.C';  src = 'src\codegen68k.c'; self = $true  }
   'emit_elf'   = @{ f8 = 'EMIT_ELF.C'; src = 'src\emit_elf.c';   self = $true  }
   'libc'       = @{ f8 = 'LIBC.C';     src = 'libc\core\libc.c'; self = $false }
+  'errno'      = @{ f8 = 'ERRNO.C';    src = 'libc\core\errno.c';  self = $false }
+  'signal'     = @{ f8 = 'SIGNAL.C';   src = 'libc\core\signal.c'; self = $false }
+  'time'       = @{ f8 = 'TIME.C';     src = 'libc\core\time.c';   self = $false }
 }
 
 function Stop-AllSim {

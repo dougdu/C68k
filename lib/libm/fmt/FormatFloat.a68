@@ -1,0 +1,153 @@
+
+	.model	flat
+
+	public 	_FormatFloat
+	extern 	__ecvt
+
+	.code
+
+; Parameter offsets
+num 	equ 	8
+
+_FormatFloat:
+	link 	a6,#0
+	movem.l d1-d2/a0-a2,-(sp)		; Save registers
+	move.l 	num(a6),d0 			; D0 = float to print
+	move.l 	#8,d2 				; D2 = number of digits to use
+	clr.l 	d3 				; No display exponent
+
+	; Handle zero early — __ecvt produces no digits for 0.0
+	tst.l	d0				; Is value exactly +0.0?
+	beq.s	_ff_Zero
+	cmpi.l	#$80000000,d0			; Is value -0.0?
+	beq.s	_ff_Zero
+
+	move.l 	d0,-(sp)			; Push number to print
+	move.l 	d2,-(sp)			; 8 digits (IN param)
+	move.l 	#__ff_DecimalOffset,-(sp)	; Decimal position (OUT param)
+	move.l 	#__ff_Sign,-(sp)		; Sign (OUT param)
+	jsr 	__ecvt				; D0 = Pointer to buffer
+	adda.l 	#16,sp
+
+	; Initialize buffers
+	movea.l d0,a0				; A0 --> raw digit stream
+	lea 	__ff_Buffer,a1 			; A1 --> output buffer
+
+	; All formats start with the sign
+	move.b 	#' ',d0 			; Assume positive so pre-load a space
+	tst.l	__ff_Sign			; Is the number be negative ?
+	beq.s 	_ff_NumberIsPositive		; Nope, skip
+	move.b 	#'-',d0 			; Load the minus sign
+
+_ff_NumberIsPositive:
+	move.b 	d0,(a1)+ 			; Emit the sign field
+
+	; Determine if we are going to use E format
+	move.l 	__ff_DecimalOffset,d1		; Signed exponent
+	bmi.s 	_ff_NegExponent
+
+	; Here we have a positive or 0 exponent
+	cmpi.l 	#8,d1 				; Use E format if exponent >= 8
+	blt.s 	_ff_EmitDigitString		; Not big enough, emit all digits
+	move.l 	d1,d3 				; Compute displayed exponent
+	subi.l 	#1,d3
+	move.b 	(a0)+,(a1)+ 			; Emit initial digit
+	subi.l 	#1,d2 				; Consume a digit slot
+	clr.l 	d1 				; No meaning in E format case
+	bra.s	_ff_NoDigitsOnLeft		; Emit remaining digits after decimal pt
+
+_ff_NegExponent:
+	; Here we have a negative exponent
+	cmpi.l 	#-7,d1 				; Use E format if exponent <= -7
+	bgt.s 	_ff_EmitDigitString		; Not small enough, emit all digits
+	move.l 	d1,d3 				; Compute displayed exponent
+	subi.l 	#1,d3
+
+; For E case emit the initial digit followed by the decimal point
+	move.b 	(a0)+,(a1)+			; Emit the initial digit
+	subi.l 	#1,d2 				; 1 less character to process
+	clr.l 	d1 				; No meaning in E format case
+	bra.s 	_ff_NoDigitsOnLeft		; Emit remaining digits after decimal pt
+
+_ff_EmitDigitString:
+	; Emit the integer portion of the number
+	tst.l 	d1 				; Any digits prior to the decimal point
+	ble.s 	_ff_NoDigitsOnLeft		; Nope, go emit the fractional part
+	tst.l 	d2 				; Out of digits?
+	beq.s	_ff_Exit
+	move.b	(a0)+,(a1)+			; Emit next digit
+	subi.l 	#1,d1				; Count down digits remaining prior to decimal point
+	subi.l 	#1,d2 				; Count down # digits to emit
+	bra.s 	_ff_EmitDigitString
+
+_ff_NoDigitsOnLeft:
+	; Emit the fractional portion of the number
+	movea.l a1,a2 				; Save buffer pos in case no digits on right
+	move.b 	#'.',(a1)+ 			; Emit the decimal point
+
+_ff_EmitFractionPartLoop:
+	tst.l 	d2 				; Any digit slots remaining?
+	beq.s 	_ff_EmitDigitStringDone		; Nope, all done with string
+	tst.l 	d1				; See if we need to emit leading '0's
+	beq.s 	_ff_NoEmitLeadingZeros
+	move.b 	#'0',(a1)+			; Emit leading '0'
+	addi.l 	#1,d1 				; Decriment count of leading zeros
+	sub.l 	#1,d2 				; Decriment count of digit slots
+	bra.s 	_ff_EmitFractionPartLoop	; Loop until all leading digits emitted
+
+_ff_NoEmitLeadingZeros:
+	move.b 	(a0)+,d0 			; Get character
+	move.b 	d0,(a1)+ 			; Put it in the output buffer
+	subi.l 	#1,d2 				; Consume a digit slot
+	cmpi.b 	#'0',d0				; Is it a '0' ?
+	beq.s 	_ff_EmitFractionPartLoop	; Yes, process next character
+	movea.l a1,a2 				; Hit a non-zero digit, accept all '0's
+	bra.s 	_ff_EmitFractionPartLoop	; Loop until all digits emitted
+
+_ff_EmitDigitStringDone:
+	movea.l a2,a1 				; Reset buffer pointer to suppress trailing '0's
+	move.b 	#'E',(a1)			; Emit the exponent marker
+	tst.l 	d3 				; Is there an exponent to display?
+	beq.s 	_ff_Exit			; Nope, skip
+	adda.l 	#1,a1 				; Move to exponent sign field
+	bpl.s 	_ff_EmitPosExponent		; Exponent is positive
+	move.b 	#'-',(a1)+			; Emit negative exponent sign
+	neg.l 	d3 				; Make it positive for digit processing
+	bra.s 	_ff_EmitExponent
+
+_ff_EmitPosExponent:
+	move.b 	#'+',(a1)+ 			; Emit positive exponent sign
+
+_ff_EmitExponent:
+	; We only expect 2 digit exponents since we only have single precision
+	divu 	#10,d3 				; Hiword = 1's digit, Loword = 10's
+	add.b 	#'0',d3 			; Convert 10's digit to ASCII
+	move.b 	d3,(a1)+			; Emit 10's digit
+	swap 	d3 				; Move 1's digit to Loword
+	add.b 	#'0',d3 			; Convert 1's digit to ASCII
+	move.b 	d3,(a1)+			; Emit the 1's digit
+
+_ff_Exit:
+	clr.b 	(a1)				; Null terminate the string
+	move.l 	#__ff_Buffer,d0			; Return internal buffer pointer
+	movem.l (sp)+,d1-d2/a0-a2		; Restore registers
+	unlk 	a6
+	rts
+
+_ff_Zero:
+	lea	__ff_Buffer,a1			; A1 --> output buffer
+	move.b	#' ',(a1)+			; Leading space (positive sign)
+	move.b	#'0',(a1)+			; The digit zero
+	clr.b	(a1)				; Null terminate
+	move.l	#__ff_Buffer,d0			; Return buffer pointer
+	movem.l (sp)+,d1-d2/a0-a2		; Restore registers
+	unlk	a6
+	rts
+
+	.bss
+
+__ff_DecimalOffset	ds.l 	1
+__ff_Sign		ds.l 	1
+__ff_Buffer		ds.b 	64
+
+	end

@@ -1,0 +1,237 @@
+	title	"IEEE 754 string to single-precision conversion"
+; ============================================================
+;  _atof — convert NUL-terminated string to IEEE 754 single
+;
+;  float _atof(char *str) — returns float in D0
+;
+;  Parses: [whitespace] [sign] [digits] [.digits] [E[sign]digits]
+;  This is a clean reimplementation for the native library.
+; ============================================================
+
+	.model	flat
+	include	ieee754.inc
+
+	public	_atof
+	extern	_fpmult, _fpadd, _fpltof, _fpneg, _fpdiv
+
+	.code
+
+FP_10		equ	SNG_TEN
+
+_atof:
+	link	a6,#0
+	movem.l	a0,-(sp)
+	movea.l	8(a6),a0		; a0 → string
+
+	; Skip whitespace
+_atof_ws:
+	move.b	(a0),d0
+	cmpi.b	#9,d0			; tab?
+	beq.s	_atof_skip
+	cmpi.b	#' ',d0			; space?
+	bne.s	_atof_sign
+_atof_skip:
+	addq.l	#1,a0
+	bra.s	_atof_ws
+
+	; Parse sign
+_atof_sign:
+	clr.l	d5			; d5 = sign flag (0=positive)
+	cmpi.b	#'+',d0
+	beq.s	_atof_skipsign
+	cmpi.b	#'-',d0
+	bne.s	_atof_digits
+	moveq	#1,d5
+_atof_skipsign:
+	addq.l	#1,a0
+
+	; Parse integer digits
+_atof_digits:
+	clr.l	d7			; d7 = accumulated number (float)
+	clr.l	d6			; d6 = exponent adjustment
+	clr.l	d4			; d4 = digit count
+	clr.l	d3			; d3 = decimal count
+
+_atof_digit_loop:
+	clr.l	d0
+	move.b	(a0),d0
+	cmpi.b	#'0',d0
+	blt.s	_atof_not_digit
+	cmpi.b	#'9',d0
+	bgt.s	_atof_not_digit
+	subi.l	#'0',d0
+	; number = number * 10 + digit
+	move.l	d0,-(sp)
+	jsr	_fpltof			; d0 = float(digit)
+	addq.l	#4,sp
+	move.l	d0,-(sp)		; save digit
+	move.l	d7,-(sp)		; number
+	move.l	#FP_10,-(sp)		; 10.0
+	jsr	_fpmult			; d0 = number * 10
+	addq.l	#8,sp
+	move.l	d0,-(sp)
+	jsr	_fpadd			; d0 = number*10 + digit
+	addq.l	#8,sp
+	move.l	d0,d7
+	addq.l	#1,d4			; digit count
+	addq.l	#1,a0
+	bra.s	_atof_digit_loop
+
+_atof_not_digit:
+	cmpi.b	#'.',d0			; decimal point?
+	bne.s	_atof_check_exp
+	addq.l	#1,a0
+
+	; Parse fractional digits
+_atof_frac_loop:
+	clr.l	d0
+	move.b	(a0),d0
+	cmpi.b	#'0',d0
+	blt.s	_atof_check_exp
+	cmpi.b	#'9',d0
+	bgt.s	_atof_check_exp
+	subi.l	#'0',d0
+	move.l	d0,-(sp)
+	jsr	_fpltof
+	addq.l	#4,sp
+	move.l	d0,-(sp)
+	move.l	d7,-(sp)
+	move.l	#FP_10,-(sp)
+	jsr	_fpmult
+	addq.l	#8,sp
+	move.l	d0,-(sp)
+	jsr	_fpadd
+	addq.l	#8,sp
+	move.l	d0,d7
+	addq.l	#1,d4
+	addq.l	#1,d3			; decimal count
+	addq.l	#1,a0
+	bra.s	_atof_frac_loop
+
+_atof_check_exp:
+	sub.l	d3,d6			; adjust exponent by decimal places
+
+	; Any digits at all?
+	tst.l	d4
+	bne.s	_atof_have_digits
+	clr.l	d7			; no digits → 0
+	bra	_atof_done
+
+_atof_have_digits:
+	; Apply sign
+	tst.l	d5
+	beq.s	_atof_no_neg
+	move.l	d7,-(sp)
+	jsr	_fpneg
+	addq.l	#4,sp
+	move.l	d0,d7
+_atof_no_neg:
+
+	; Check for exponent marker
+	move.b	(a0),d0
+	cmpi.b	#'e',d0
+	beq.s	_atof_parse_exp
+	cmpi.b	#'E',d0
+	bne.s	_atof_apply_exp
+
+_atof_parse_exp:
+	addq.l	#1,a0
+	clr.l	d5			; exp sign
+	move.b	(a0),d0
+	cmpi.b	#'+',d0
+	beq.s	_atof_exp_skipsign
+	cmpi.b	#'-',d0
+	bne.s	_atof_exp_digits
+	moveq	#1,d5
+_atof_exp_skipsign:
+	addq.l	#1,a0
+
+_atof_exp_digits:
+	clr.l	d1			; accumulate exponent
+_atof_exp_loop:
+	clr.l	d0
+	move.b	(a0),d0
+	cmpi.b	#'0',d0
+	blt.s	_atof_exp_done
+	cmpi.b	#'9',d0
+	bgt.s	_atof_exp_done
+	subi.l	#'0',d0
+	mulu	#10,d1
+	add.l	d0,d1
+	addq.l	#1,a0
+	bra.s	_atof_exp_loop
+_atof_exp_done:
+	tst.l	d5
+	beq.s	_atof_exp_pos
+	sub.l	d1,d6
+	bra.s	_atof_apply_exp
+_atof_exp_pos:
+	add.l	d1,d6
+
+_atof_apply_exp:
+	; Scale by 10^d6 using a SINGLE multiply or divide.
+	; Compute 10^|d6| by repeated squaring, then apply once.
+	; This avoids error accumulation from multiple divides.
+	move.l	d6,d1
+	beq.s	_atof_done		; no scaling needed
+	bpl.s	_atof_exp_positive
+	neg.l	d1			; d1 = |d6|
+
+_atof_exp_positive:
+	; Build 10^d1 by repeated squaring: base=10, result=1
+	move.l	#SNG_ONE,d2		; d2 = accumulator = 1.0
+	move.l	#FP_10,d3		; d3 = base = 10.0
+
+_atof_pow10_loop:
+	tst.l	d1
+	beq.s	_atof_pow10_done
+	; If d1 is odd, multiply accumulator by base
+	btst.l	#0,d1
+	beq.s	_atof_pow10_even
+	move.l	d1,-(sp)		; save counter
+	move.l	d3,-(sp)		; push base
+	move.l	d2,-(sp)		; push accumulator
+	jsr	_fpmult			; d0 = acc * base
+	addq.l	#8,sp
+	move.l	d0,d2			; update accumulator
+	move.l	(sp)+,d1		; restore counter
+_atof_pow10_even:
+	lsr.l	#1,d1			; d1 >>= 1
+	beq.s	_atof_pow10_done	; if zero, base squaring not needed
+	; Square the base: base = base * base
+	move.l	d1,-(sp)		; save counter
+	move.l	d3,-(sp)
+	move.l	d3,-(sp)
+	jsr	_fpmult			; d0 = base * base
+	addq.l	#8,sp
+	move.l	d0,d3			; update base
+	move.l	(sp)+,d1		; restore counter
+	bra.s	_atof_pow10_loop
+
+_atof_pow10_done:
+	; d2 = 10^|d6|. Now apply: multiply or divide once.
+	tst.l	d6
+	bpl.s	_atof_scale_up_once
+	; Scale down: number / 10^|d6|
+	move.l	d2,-(sp)
+	move.l	d7,-(sp)
+	jsr	_fpdiv
+	addq.l	#8,sp
+	move.l	d0,d7
+	bra.s	_atof_done
+
+_atof_scale_up_once:
+	; Scale up: number * 10^d6
+	move.l	d2,-(sp)
+	move.l	d7,-(sp)
+	jsr	_fpmult
+	addq.l	#8,sp
+	move.l	d0,d7
+
+_atof_done:
+	move.l	d7,d0
+	movem.l	(sp)+,a0
+	unlk	a6
+	rts
+
+	end

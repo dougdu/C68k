@@ -1,0 +1,296 @@
+	title	"IEEE 754 string to double-precision conversion"
+; ============================================================
+;  _atod — convert NUL-terminated string to IEEE 754 double
+;
+;  double _atod(char *str) — returns double in D0:D1
+;
+;  Parses: [whitespace] [sign] [digits] [.digits] [E[sign]digits]
+;  Full 53-bit precision using native double arithmetic.
+; ============================================================
+
+	.model	flat
+	include	ieee754.inc
+	include	ieee754d.inc
+
+	public	_atod
+	extern	_fpmultd, _fpaddd, _fpltod, _fpdivd
+
+	.code
+
+; Double constant: 10.0 = $4024000000000000
+DBL_TEN_HI	equ	$40240000
+DBL_TEN_LO	equ	$00000000
+; Double constant: 1.0 = $3FF0000000000000
+DBL_ONE_HI	equ	$3FF00000
+DBL_ONE_LO	equ	$00000000
+
+; Stack frame layout (negative offsets from A6)
+ACC_HI		equ	-4
+ACC_LO		equ	-8
+TMP_HI		equ	-12
+TMP_LO		equ	-16
+NSIGN		equ	-20
+DECADJ		equ	-24
+DIGCNT		equ	-28
+DECCNT		equ	-32
+SPTR		equ	-36
+FRAMESZ		equ	-36
+
+_atod:
+	link	a6,#FRAMESZ
+	movem.l	d2-d5/a0,-(sp)
+	movea.l	8(a6),a0		; a0 → string
+
+	; Initialize locals
+	clr.l	ACC_HI(a6)
+	clr.l	ACC_LO(a6)
+	clr.l	NSIGN(a6)
+	clr.l	DECADJ(a6)
+	clr.l	DIGCNT(a6)
+	clr.l	DECCNT(a6)
+
+	; Skip whitespace
+_ad_ws:
+	move.b	(a0),d0
+	cmpi.b	#9,d0
+	beq.s	_ad_skip
+	cmpi.b	#' ',d0
+	bne.s	_ad_sign
+_ad_skip:
+	addq.l	#1,a0
+	bra.s	_ad_ws
+
+	; Parse sign
+_ad_sign:
+	cmpi.b	#'+',d0
+	beq.s	_ad_skipsign
+	cmpi.b	#'-',d0
+	bne.s	_ad_intloop
+	move.l	#1,NSIGN(a6)
+_ad_skipsign:
+	addq.l	#1,a0
+
+; ---- Parse integer digits ----
+_ad_intloop:
+	clr.l	d0
+	move.b	(a0),d0
+	cmpi.b	#'0',d0
+	blt.s	_ad_intdone
+	cmpi.b	#'9',d0
+	bgt.s	_ad_intdone
+	subi.l	#'0',d0
+	bsr	_ad_accum_digit
+	addq.l	#1,DIGCNT(a6)
+	addq.l	#1,a0
+	bra.s	_ad_intloop
+
+_ad_intdone:
+	cmpi.b	#'.',d0
+	bne	_ad_checkexp
+	addq.l	#1,a0
+
+; ---- Parse fractional digits ----
+_ad_fracloop:
+	clr.l	d0
+	move.b	(a0),d0
+	cmpi.b	#'0',d0
+	blt	_ad_checkexp
+	cmpi.b	#'9',d0
+	bgt	_ad_checkexp
+	subi.l	#'0',d0
+	bsr	_ad_accum_digit
+	addq.l	#1,DIGCNT(a6)
+	addq.l	#1,DECCNT(a6)
+	addq.l	#1,a0
+	bra.s	_ad_fracloop
+
+; ---- Check for exponent ----
+_ad_checkexp:
+	move.l	DECCNT(a6),d0
+	sub.l	d0,DECADJ(a6)
+
+	tst.l	DIGCNT(a6)
+	bne.s	_ad_havedigits
+	clr.l	ACC_HI(a6)
+	clr.l	ACC_LO(a6)
+	bra	_ad_done
+
+_ad_havedigits:
+	; Apply sign
+	tst.l	NSIGN(a6)
+	beq.s	_ad_chkE
+	move.l	ACC_HI(a6),d0
+	eori.l	#$80000000,d0
+	move.l	d0,ACC_HI(a6)
+
+_ad_chkE:
+	move.b	(a0),d0
+	cmpi.b	#'e',d0
+	beq.s	_ad_parseexp
+	cmpi.b	#'E',d0
+	beq.s	_ad_parseexp
+	bra	_ad_applyexp
+
+_ad_parseexp:
+	addq.l	#1,a0
+	clr.l	d3			; exp sign
+	move.b	(a0),d0
+	cmpi.b	#'+',d0
+	beq.s	_ad_expskip
+	cmpi.b	#'-',d0
+	bne.s	_ad_expdigits
+	moveq	#1,d3
+_ad_expskip:
+	addq.l	#1,a0
+
+_ad_expdigits:
+	clr.l	d2			; exponent value
+_ad_exploop:
+	clr.l	d0
+	move.b	(a0),d0
+	cmpi.b	#'0',d0
+	blt.s	_ad_expdone
+	cmpi.b	#'9',d0
+	bgt.s	_ad_expdone
+	subi.l	#'0',d0
+	mulu	#10,d2
+	add.l	d0,d2
+	addq.l	#1,a0
+	bra.s	_ad_exploop
+_ad_expdone:
+	tst.l	d3
+	beq.s	_ad_exppos
+	sub.l	d2,DECADJ(a6)
+	bra.s	_ad_applyexp
+_ad_exppos:
+	add.l	d2,DECADJ(a6)
+
+; ---- Scale by 10^exponent via repeated squaring ----
+_ad_applyexp:
+	move.l	DECADJ(a6),d4		; d4 = exponent
+	beq	_ad_done
+
+	move.l	d4,d5			; d5 = original sign
+	bpl.s	_ad_expabs
+	neg.l	d4
+_ad_expabs:
+	; pow = 1.0 (in TMP), base = 10.0 (in d2:d3)
+	move.l	#DBL_ONE_HI,TMP_HI(a6)
+	move.l	#DBL_ONE_LO,TMP_LO(a6)
+	move.l	#DBL_TEN_HI,d2
+	move.l	#DBL_TEN_LO,d3
+
+_ad_pow_loop:
+	tst.l	d4
+	beq.s	_ad_pow_done
+
+	btst.l	#0,d4
+	beq.s	_ad_pow_even
+
+	; pow *= base
+	move.l	a0,SPTR(a6)
+	move.l	d4,-(sp)
+	move.l	d3,-(sp)		; base lo
+	move.l	d2,-(sp)		; base hi
+	move.l	TMP_LO(a6),-(sp)
+	move.l	TMP_HI(a6),-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	(sp)+,d4
+	move.l	d0,TMP_HI(a6)
+	move.l	d1,TMP_LO(a6)
+	movea.l	SPTR(a6),a0
+
+_ad_pow_even:
+	lsr.l	#1,d4
+	beq.s	_ad_pow_done
+
+	; base *= base
+	move.l	a0,SPTR(a6)
+	move.l	d4,-(sp)
+	move.l	d3,-(sp)		; base lo
+	move.l	d2,-(sp)		; base hi
+	move.l	d3,-(sp)		; base lo
+	move.l	d2,-(sp)		; base hi
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	(sp)+,d4
+	move.l	d0,d2
+	move.l	d1,d3
+	movea.l	SPTR(a6),a0
+	bra.s	_ad_pow_loop
+
+_ad_pow_done:
+	move.l	a0,SPTR(a6)
+	tst.l	d5
+	bpl.s	_ad_scaleup
+
+	; acc / pow
+	move.l	TMP_LO(a6),-(sp)
+	move.l	TMP_HI(a6),-(sp)
+	move.l	ACC_LO(a6),-(sp)
+	move.l	ACC_HI(a6),-(sp)
+	jsr	_fpdivd
+	lea	16(sp),sp
+	bra.s	_ad_scalestore
+
+_ad_scaleup:
+	; acc * pow
+	move.l	TMP_LO(a6),-(sp)
+	move.l	TMP_HI(a6),-(sp)
+	move.l	ACC_LO(a6),-(sp)
+	move.l	ACC_HI(a6),-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+
+_ad_scalestore:
+	move.l	d0,ACC_HI(a6)
+	move.l	d1,ACC_LO(a6)
+	movea.l	SPTR(a6),a0
+
+_ad_done:
+	move.l	ACC_HI(a6),d0
+	move.l	ACC_LO(a6),d1
+	movem.l	(sp)+,d2-d5/a0
+	unlk	a6
+	rts
+
+; ============================================================
+;  _ad_accum_digit — ACC = ACC * 10.0 + double(digit)
+;    Input: D0 = digit (0-9)
+;    Uses frame locals via A6
+;    Saves/restores A0
+; ============================================================
+_ad_accum_digit:
+	move.l	a0,SPTR(a6)
+
+	; Step 1: TMP = ACC * 10.0
+	move.l	d0,-(sp)		; save digit
+	move.l	#DBL_TEN_LO,-(sp)
+	move.l	#DBL_TEN_HI,-(sp)
+	move.l	ACC_LO(a6),-(sp)
+	move.l	ACC_HI(a6),-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	d0,TMP_HI(a6)
+	move.l	d1,TMP_LO(a6)
+
+	; Step 2: D0:D1 = double(digit)
+	; digit still on stack
+	jsr	_fpltod
+	addq.l	#4,sp
+
+	; Step 3: ACC = TMP + double(digit)
+	move.l	d1,-(sp)		; digit lo
+	move.l	d0,-(sp)		; digit hi
+	move.l	TMP_LO(a6),-(sp)
+	move.l	TMP_HI(a6),-(sp)
+	jsr	_fpaddd
+	lea	16(sp),sp
+
+	move.l	d0,ACC_HI(a6)
+	move.l	d1,ACC_LO(a6)
+	movea.l	SPTR(a6),a0
+	rts
+
+	end

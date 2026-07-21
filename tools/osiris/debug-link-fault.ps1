@@ -34,7 +34,7 @@ param(
   [string]$Asm      = 'C:\git\worm68k\68kTools\builds\win64\bin\Release\asm68K.exe',
   [string]$Objdump  = 'C:\SysGCC\m68k-elf\bin\m68k-elf-objdump.exe',
   [string]$Cc       = (Join-Path ([System.IO.Path]::GetTempPath()) 'c68k-p2\c68k.exe'),
-  [string]$FloatLib = 'C:\git\worm68k\68kTools\libraries\float\ieee754\libieee754d.a',
+  [string]$FloatLib = (Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'lib\libm\libm.a'),
   [string]$LinkCmd  = 'LINK -o HELLO.PRG SYS.O HELLO.O RT68K.O LIBC.O FLOAT.A'
 )
 $ErrorActionPreference = 'Stop'

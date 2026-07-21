@@ -1,0 +1,92 @@
+	title	"IEEE 754 single-precision to integer conversion"
+; ============================================================
+;  _fpftol — convert IEEE 754 single to 32-bit signed integer
+;
+;  long _fpftol(float x) — returns int(x) in D0 (truncate toward zero)
+;  Argument: 4(SP) = IEEE 754 single
+;
+;  Algorithm:
+;    1. Extract sign, exponent, mantissa
+;    2. If exponent < 127 → result is 0 (|x| < 1)
+;    3. Compute shift = exponent - 127 - 23
+;       if shift > 0: shift mantissa left (large number)
+;       if shift < 0: shift mantissa right (fractional digits lost)
+;    4. Apply sign
+; ============================================================
+
+	.model	flat
+	include	ieee754.inc
+
+	public	_fpftol
+
+	.code
+
+_fpftol:
+	move.l	4(sp),d0		; d0 = IEEE float
+	move.l	d1,-(sp)		; save d1
+	move.l	d2,-(sp)		; save d2
+
+	; Extract sign
+	move.l	d0,d2
+	andi.l	#IEEE754_SNG_SIGN_MASK,d2 ; d2 = sign
+
+	; Extract exponent
+	move.l	d0,d1
+	andi.l	#IEEE754_SNG_EXP_MASK,d1
+	EXTRACT_EXP d1
+
+	; Check for zero or tiny
+	tst.l	d1
+	beq.s	_ftol_zero		; exponent 0 → denormal or zero → 0
+	cmpi.l	#IEEE754_SNG_EXP_BIAS,d1
+	blt.s	_ftol_zero		; |x| < 1.0 → 0
+
+	; Check for too large
+	cmpi.l	#127+31,d1
+	bgt.s	_ftol_overflow
+
+	; Extract mantissa with implied bit
+	andi.l	#IEEE754_SNG_MANT_MASK,d0
+	ori.l	#IEEE754_SNG_IMPLIED_BIT,d0 ; d0 = 1.mantissa (24 bits)
+
+	; Compute shift amount
+	subi.l	#IEEE754_SNG_EXP_BIAS,d1 ; d1 = unbiased exponent (0..30)
+	subi.l	#IEEE754_SNG_MANT_BITS,d1 ; d1 = shift count (exp - 23)
+	beq.s	_ftol_apply_sign	; shift = 0: mantissa is the integer
+	bpl.s	_ftol_shift_left
+
+	; Shift right (fractional part lost)
+	neg.l	d1
+	lsr.l	d1,d0
+	bra.s	_ftol_apply_sign
+
+_ftol_shift_left:
+	lsl.l	d1,d0
+
+_ftol_apply_sign:
+	tst.l	d2			; negative?
+	beq.s	_ftol_done
+	neg.l	d0
+
+_ftol_done:
+	move.l	(sp)+,d2
+	move.l	(sp)+,d1
+	rts
+
+_ftol_zero:
+	moveq	#0,d0
+	move.l	(sp)+,d2
+	move.l	(sp)+,d1
+	rts
+
+_ftol_overflow:
+	; Return max/min integer
+	tst.l	d2
+	bne.s	_ftol_neg_overflow
+	move.l	#$7FFFFFFF,d0		; INT_MAX
+	bra.s	_ftol_done
+_ftol_neg_overflow:
+	move.l	#$80000000,d0		; INT_MIN
+	bra.s	_ftol_done
+
+	end

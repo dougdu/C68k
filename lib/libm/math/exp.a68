@@ -1,0 +1,169 @@
+	title	"IEEE 754 single-precision exponential"
+; ============================================================
+;  _exp / _expf — e^x
+;
+;  float _exp(float x) — returns e^x in D0
+;
+;  Algorithm:
+;    x = n*ln(2) + r, where n = round(x/ln2), |r| <= ln2/2
+;    exp(x) = 2^n * exp(r)
+;    exp(r) ≈ 1 + r + r²/2 + r³/6 + r⁴/24 + r⁵/120
+;    2^n is done by adding n to the exponent field.
+; ============================================================
+
+	.model	flat
+	include	ieee754.inc
+
+	public	_exp, _expf
+	extern	_fpadd, _fpsub, _fpmult, _fpftol, _fpltof
+
+	.code
+
+; Constants
+_exp_inv_ln2	dc.l	$3FB8AA3B	; 1/ln(2) = 1.442695
+_exp_ln2	dc.l	$3F317218	; ln(2) = 0.693147
+_exp_half	dc.l	SNG_HALF
+_exp_one	dc.l	SNG_ONE
+_exp_c2		dc.l	$3F000000	; 1/2  = 0.5
+_exp_c3		dc.l	$3E2AAAAB	; 1/6  = 0.166667
+_exp_c4		dc.l	$3D2AAAAB	; 1/24 = 0.041667
+_exp_c5		dc.l	$3C088889	; 1/120= 0.008333
+
+_exp:
+_expf:
+	link	a6,#-8
+	movem.l	d2-d4,-(sp)
+
+	move.l	8(a6),d2		; d2 = x
+
+	; Handle zero
+	move.l	d2,d0
+	andi.l	#$7FFFFFFF,d0
+	beq	_exp_return_one		; exp(0) = 1
+
+	; Check overflow/underflow
+	cmpi.l	#$42B17218,d2		; ~88.72 (ln(FLT_MAX))
+	bgt	_exp_overflow
+	cmpi.l	#$C2CE8ED0,d2		; ~-103.28
+	blt	_exp_underflow
+
+	; --- n = round(x / ln(2)) ---
+	move.l	_exp_inv_ln2(pc),-(sp)
+	move.l	d2,-(sp)
+	jsr	_fpmult			; d0 = x / ln(2)
+	addq.l	#8,sp
+
+	; Round to integer
+	move.l	d0,d3
+	move.l	#SNG_HALF,d0
+	move.l	d3,d4
+	andi.l	#IEEE754_SNG_SIGN_MASK,d4
+	or.l	d4,d0			; ±0.5
+	move.l	d0,-(sp)
+	move.l	d3,-(sp)
+	jsr	_fpadd
+	addq.l	#8,sp
+	move.l	d0,-(sp)
+	jsr	_fpftol			; d0 = n (integer)
+	addq.l	#4,sp
+	move.l	d0,-8(a6)		; save n
+
+	; --- r = x - n * ln(2) ---
+	move.l	d0,-(sp)
+	jsr	_fpltof			; d0 = float(n)
+	addq.l	#4,sp
+	move.l	_exp_ln2(pc),-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpmult			; d0 = n * ln(2)
+	addq.l	#8,sp
+	move.l	d0,-(sp)
+	move.l	d2,-(sp)
+	jsr	_fpsub			; d0 = x - n*ln(2) = r
+	addq.l	#8,sp
+	move.l	d0,d3			; d3 = r
+
+	; --- Polynomial: exp(r) = 1 + r*(1 + r*(1/2 + r*(1/6 + r*(1/24 + r/120)))) ---
+	; Horner from inside out:
+	; t = 1/120
+	move.l	_exp_c5(pc),d2
+
+	; t = 1/24 + r*t
+	move.l	d3,-(sp)
+	move.l	d2,-(sp)
+	jsr	_fpmult
+	addq.l	#8,sp
+	move.l	_exp_c4(pc),-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpadd
+	addq.l	#8,sp
+	move.l	d0,d2
+
+	; t = 1/6 + r*t
+	move.l	d3,-(sp)
+	move.l	d2,-(sp)
+	jsr	_fpmult
+	addq.l	#8,sp
+	move.l	_exp_c3(pc),-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpadd
+	addq.l	#8,sp
+	move.l	d0,d2
+
+	; t = 1/2 + r*t
+	move.l	d3,-(sp)
+	move.l	d2,-(sp)
+	jsr	_fpmult
+	addq.l	#8,sp
+	move.l	_exp_c2(pc),-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpadd
+	addq.l	#8,sp
+	move.l	d0,d2
+
+	; t = 1 + r*t
+	move.l	d3,-(sp)
+	move.l	d2,-(sp)
+	jsr	_fpmult
+	addq.l	#8,sp
+	move.l	_exp_one(pc),-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpadd
+	addq.l	#8,sp
+	move.l	d0,d2
+
+	; t = 1 + r*t  (final: exp(r) = 1 + r*polynomial)
+	move.l	d3,-(sp)
+	move.l	d2,-(sp)
+	jsr	_fpmult
+	addq.l	#8,sp
+	move.l	_exp_one(pc),-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpadd
+	addq.l	#8,sp
+
+	; --- Scale by 2^n: add n to the exponent field ---
+	; Construct n << 23 via arithmetic shifts (68000 immediate shift max is 8)
+	move.l	-8(a6),d1		; n (signed integer)
+	asl.l	#8,d1			; n << 8
+	asl.l	#8,d1			; n << 16
+	asl.l	#7,d1			; n << 23
+	add.l	d1,d0			; scale exp(r) by 2^n
+
+_exp_done:
+	movem.l	(sp)+,d2-d4
+	unlk	a6
+	rts
+
+_exp_return_one:
+	move.l	#SNG_ONE,d0
+	bra.s	_exp_done
+
+_exp_overflow:
+	move.l	#SNG_INF,d0
+	bra.s	_exp_done
+
+_exp_underflow:
+	moveq	#0,d0			; exp(very negative) = 0
+	bra.s	_exp_done
+
+	end

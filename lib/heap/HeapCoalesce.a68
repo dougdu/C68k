@@ -1,0 +1,238 @@
+************************************************************************
+*  __HeapCoalesce
+************************************************************************
+*
+*  Checks to see if a free block's adjacent blocks are also free
+*  and if so consolidate them into a single larger free block.
+*
+************************************************************************
+*  PARAMETERS
+************************************************************************
+*
+*  hHeap  : The handle of the heap the memory block was allocated from.
+*
+*  pBlock : Pointer to the memory block to be coalesced. This is a
+*	    pointer to the block header. The block may be allocated
+*	    or free; the function checks both neighbors and coalesces
+*	    whichever adjacent blocks are free.
+*
+************************************************************************
+*  RETURN VALUE
+************************************************************************
+*
+*  If coalescing occurred, the return value is a pointer to the
+*  resulting (larger) free block header. If no coalescing was possible
+*  (no adjacent free block), the return value is zero.
+************************************************************************
+
+	.model	flat
+
+	include heap.inc
+
+	extern  __HeapGetBucketOffset
+
+	.code
+
+__HeapCoalesce PROC USES d1/a0-a3, hHeap:DWORD, pBlock:DWORD
+	movea.l hHeap,a0 			; A0 --> Heap header
+	movea.l	pBlock,a1 			; A1 --> block to coalesce
+
+	; Check to see if we can coalesce with adjacent blocks
+
+	tst.l 	bhPrev(a1)			; Have a previous block?
+	beq.s 	_hclNoPrevBlock 		; Nope, go check for a next block
+	movea.l bhPrev(a1),a2 			; A2 --> Previous block
+	btst.b 	#FLG_FREE_BIT,bhFlags+3(a2)	; Is the previous block free?
+	beq.s 	_hclNoPrevBlock			; Nope, go check for a next block
+
+	; Here we have a previous block (A2) that we can coalesce with
+	; now check to see if we have a next block as well.
+
+	tst.l 	bhNext(a1)			; Have a next block?
+	beq.s 	__CoalesceWithPrev 		; Nope, go coalesce with the previous
+	movea.l bhNext(a1),a3 			; A3 --> Next block
+	btst.b 	#FLG_FREE_BIT,bhFlags+3(a3)	; Is the next block free?
+	beq.s 	__CoalesceWithPrev		; Nope, go coalesce with the previous
+	bra 	__CoalesceWithBoth		; Yes, coalesce with both surrounding blocks
+
+	; Here if the block to be freed has no adjacent above block that is free.
+
+_hclNoPrevBlock:
+	tst.l	bhNext(a1)			; Have a next block?
+	beq 	_hclNoCoalesce			; No, nothing to coalesce with
+	movea.l bhNext(a1),a3 			; A3 --> Next block
+	btst.b 	#FLG_FREE_BIT,bhFlags+3(a3)	; Is the next block free?
+	beq 	_hclNoCoalesce			; No, nothing to coalesce with
+	bra.s	__CoalesceWithNext		; Yes, coalesce with the next block
+
+__CoalesceWithPrev:
+	; Here we will coalesce with the previous block thus A2 points
+	; to what will be the new free block.  Block A1 (the absorbed)
+	; block will be removed from the block chain.
+
+	; A2 is the surviving free block; remove from its current bucket before size changes
+	move.l 	a2,-(sp)
+	move.l	a0,-(sp)
+	jsr 	__HeapUnlinkFromFreeBlockChain	; Remove A2 from its current bucket
+	adda.l 	#8,sp
+
+	; Update the size of the coalesced block
+	move.l 	bhSize(a1),d0			; Bump block size by size of absorbed block
+	add.l 	d0,bhSize(a2)
+
+	; Is the specified block already free?
+	btst.b 	#FLG_FREE_BIT,bhFlags+3(a1)	; Was the absorbed block free?
+	beq.s 	_hclcwpBlockNotFree		; Nope, skip
+
+	; Yes, remove the specified block from both the block chain and free block chain
+	move.l 	a1,-(sp)			; Push specified block
+	move.l	a0,-(sp)			; Push Heap Handle
+	jsr 	__HeapUnlinkFromBlockChain	; Remove the block from the block chain
+	jsr 	__HeapUnlinkFromFreeBlockChain	; Remove the block from the free block chain
+	jsr 	__HeapInvalidateBlockHeader 	; Invalidate the block header
+	adda.l 	#8,sp
+	bra.s 	_hclcwpExit
+
+_hclcwpBlockNotFree:
+	; Debug fill the specified block if enabled
+	btst.b 	#FLG_HEAP_ENABLE_DEBUG_FILL,hhFlags+3(a0) ; Debug fill enabled?
+	beq.s 	_hclcwpNoDebugFill		; Nope, skip
+	move.l 	a1,-(sp)
+	jsr 	__HeapDebugFillOnFree		; Debug fill the freed memory
+	adda.l 	#4,sp
+
+_hclcwpNoDebugFill:
+	; Remove the specified block from both the block chain and free block chain
+	move.l 	a1,-(sp)			; Push specified block
+	move.l	a0,-(sp)			; Push Heap Handle
+	jsr 	__HeapUnlinkFromBlockChain	; Remove the block from the block chain
+	jsr 	__HeapInvalidateBlockHeader 	; Invalidate the block header
+	adda.l 	#8,sp
+
+_hclcwpExit:
+	bra 	_hclCoalesceComplete
+
+__CoalesceWithNext:
+	; Here we will coalesce with the next block thus A1 points
+	; to what will be the new free block.  Block A3 (the adjacent
+	; above free block) will be removed from the block chain.
+	;
+	; 	A0 = pointer to the heap header
+	; 	A1 = pointer to block being freed (may be allocated or free)
+	; 	A2 = N/A (unused on entry)
+	; 	A3 = bhNext(A1) (i.e. pointer to block adjacent above A1 in address space)
+	;
+	; When we are done, the register values will be
+	;	A2 = address of the new coalesced block (= A1)
+
+	; Save the size of the block we are absorbing
+	move.l 	bhSize(a3),d1 			; D1 = size of block we are absorbing
+	btst.b 	#FLG_FREE_BIT,bhFlags+3(a1)	; Is the specified block already free?
+	bne.s 	_hclcwnBlockIsFree		; Yes, unlink A1 from its bucket too
+
+	; A1 is allocated; debug fill its data area if enabled
+	btst.b 	#FLG_HEAP_ENABLE_DEBUG_FILL,hhFlags+3(a0) ; Debug fill enabled?
+	beq.s 	_hclcwnAbsorbNext		; Nope, skip
+	move.l 	a1,-(sp)
+	jsr 	__HeapDebugFillOnFree		; Fill A1's data area
+	adda.l 	#4,sp
+	bra.s 	_hclcwnAbsorbNext
+
+_hclcwnBlockIsFree:
+	; A1 is already free; remove from its current bucket before size changes
+	move.l 	a1,-(sp)
+	move.l	a0,-(sp)
+	jsr 	__HeapUnlinkFromFreeBlockChain	; Remove A1 from its current bucket
+	adda.l 	#8,sp
+
+_hclcwnAbsorbNext:
+	; Remove A3 from block chain and free chain
+	move.l 	a3,-(sp)
+	move.l	a0,-(sp)
+	jsr	__HeapUnlinkFromBlockChain	; Remove the absorbed block from the block chain
+	jsr 	__HeapUnlinkFromFreeBlockChain	;   and from the free block chain
+	jsr 	__HeapInvalidateBlockHeader	;   and invalidate its header
+	adda.l 	#8,sp
+
+	add.l 	d1,bhSize(a1)
+	movea.l a1,a2
+	bra 	_hclCoalesceComplete
+
+__CoalesceWithBoth:
+	; Here we will coalesce with both the previous and next blocks
+	; thus A2 points to what will be the new free block.  Blocks
+	; A1 (the freed block) and A3 (the adjacent above free block)
+	; will be removed from the block chain.  In addition, block
+	; A3 will also be removed from the free block chain.
+	;
+	; 	A0 = pointer to the heap header
+	; 	A1 = pointer to block being freed
+	; 	A2 = bhPrev(A1) (i.e. pointer to block adjacent below the freed block)
+	; 	A3 = bhNext(A1) (i.e. pointer to block adjacent above the freed block)
+	;
+	; When we are done, the register values will be
+	;	A2 = address of the new coalesced block
+
+	; A2 is the surviving free block; remove from its current bucket before size changes
+	move.l 	a2,-(sp)
+	move.l	a0,-(sp)
+	jsr 	__HeapUnlinkFromFreeBlockChain	; Remove A2 from its current bucket
+	adda.l 	#8,sp
+
+	move.l 	bhSize(a1),d0			; Compute size of the coalesced block (A2)
+	add.l 	bhSize(a3),d0
+	add.l 	d0,bhSize(a2)
+
+	btst.b 	#FLG_FREE_BIT,bhFlags+3(a1)	; Is the specified block free?
+	bne.s 	_hclcwbBlockIsFree		; Yes, no need to debug fill data area
+	btst.b 	#FLG_HEAP_ENABLE_DEBUG_FILL,hhFlags+3(a0) ; Debug fill enabled?
+	beq.s 	_hclcwbBlockIsFree		; Nope, skip
+	move.l 	a1,-(sp)
+	jsr 	__HeapDebugFillOnFree
+	adda.l 	#4,sp
+
+_hclcwbBlockIsFree:
+	move.l 	a1,-(sp)			; Clean-up first absorbed block (A1)
+	move.l 	a0,-(sp)
+	jsr 	__HeapUnlinkFromBlockChain
+	jsr 	__HeapUnlinkFromFreeBlockChain
+	jsr     __HeapInvalidateBlockHeader
+	adda.l 	#8,sp
+
+	move.l 	a3,-(sp)			; Clean-up second absorbed block (A3)
+	move.l 	a0,-(sp)
+	jsr 	__HeapUnlinkFromBlockChain
+	jsr 	__HeapUnlinkFromFreeBlockChain
+	jsr     __HeapInvalidateBlockHeader
+	adda.l 	#8,sp
+
+
+_hclCoalesceComplete:
+	move.l 	bhSize(a2),d0			; Compute data area size
+	subi.l 	#BLK_HDR_SIZE,d0
+	move.l 	d0,bhRequestSize(a2)		; Store as request size
+	bclr.b 	#FLG_GARBAGE_BIT,bhFlags+3(a2)	; Flag the block as not garbage
+	bset.b 	#FLG_FREE_BIT,bhFlags+3(a2)	; Flag the block as free
+
+	; Insert the coalesced block into the correct size bucket (LIFO at head)
+	; D0 holds the data area size from the computation above
+	jsr 	__HeapGetBucketOffset		; D0 = byte offset of correct bucket
+	movea.l HEAP_FREE_BUCKET_BASE(a0,d0.l),a3 ; A3 = current bucket head
+	move.l 	a2,HEAP_FREE_BUCKET_BASE(a0,d0.l)  ; A2 is new bucket head
+	clr.l 	bhFreePrev(a2)			; No predecessor
+	move.l 	a3,bhFreeNext(a2)		; Forward link to old head
+	cmpa.l 	#0,a3				; Was bucket non-empty?
+	beq.s 	_hclInsertDone
+	move.l 	a2,bhFreePrev(a3)		; Update old head's back link
+
+_hclInsertDone:
+	move.l 	a2,d0				; Return value in d0
+	bra 	_hclExit
+
+_hclNoCoalesce:
+	clr.l 	d0				; Flag that no coalescing occurred
+
+_hclExit:
+	ENDP
+
+        end

@@ -1,0 +1,108 @@
+	title	"IEEE 754 double-precision comparison"
+; ============================================================
+;  _fpcmpd — compare two doubles, set CCR
+;
+;  void _fpcmpd(double dest, double src)
+;  dest at 4(sp):8(sp) (hi:lo), src at 12(sp):16(sp) (hi:lo)
+;
+;  Sets CCR flags as if (dest - src):
+;    N = dest < src
+;    Z = dest == src
+;    V = 0
+;  (and returns the three-way result -1/0/+1 in D0)
+;
+;  Uses the IEEE ordering property, extended to 64-bit:
+;   - +0 and -0 compare equal
+;   - different signs: the negative operand is the smaller
+;   - same sign: compare the 64-bit magnitude (unsigned hi, then lo);
+;     for two negatives the sense is reversed (larger magnitude = smaller value)
+;
+;  This mirrors the (correct) single-precision _fpcmp. The previous version's
+;  "both zero" pre-test clobbered its own scratch and ended up branching on
+;  dest_hi alone, so it wrongly reported "equal" whenever the first operand had
+;  a zero high longword (e.g. +0.0) — breaking `0.0 < x`, and hence `x > 0.0`.
+; ============================================================
+
+	.model	flat
+	include	ieee754d.inc
+
+	public	_fpcmpd
+
+	.code
+
+_fpcmpd:
+	movem.l	d2-d3,-(sp)		; save scratch; args now shifted by +8
+	move.l	12(sp),d0		; d0 = dest_hi
+	move.l	20(sp),d1		; d1 = src_hi
+
+	; ---- both +/-0 ?  (|dest| == 0) and (|src| == 0) ----
+	move.l	d0,d2
+	andi.l	#$7FFFFFFF,d2		; |dest_hi|
+	or.l	16(sp),d2		;   | dest_lo
+	move.l	d1,d3
+	andi.l	#$7FFFFFFF,d3		; |src_hi|
+	or.l	24(sp),d3		;   | src_lo
+	or.l	d3,d2			; all magnitude bits
+	bne.s	_dcmp_nz
+	movem.l	(sp)+,d2-d3
+	moveq	#0,d0
+	tst.l	d0			; Z=1 -> equal
+	rts
+
+_dcmp_nz:
+	; ---- signs differ? ----
+	move.l	d0,d2
+	eor.l	d1,d2			; sign bit of result = do the signs differ?
+	bmi.s	_dcmp_diffsign
+
+	; ---- same sign ----
+	tst.l	d0			; dest negative?
+	bmi.s	_dcmp_bothneg
+
+	; both positive: larger 64-bit magnitude = larger value
+	cmp.l	d1,d0			; dest_hi - src_hi (unsigned via bhi/bcs)
+	bhi.s	_dcmp_gt
+	bcs.s	_dcmp_lt
+	move.l	16(sp),d0		; dest_lo
+	cmp.l	24(sp),d0		; dest_lo - src_lo
+	bhi.s	_dcmp_gt
+	bcs.s	_dcmp_lt
+	bra.s	_dcmp_eq
+
+_dcmp_bothneg:
+	; both negative: larger 64-bit magnitude = more negative = smaller value
+	cmp.l	d1,d0			; dest_hi - src_hi
+	bhi.s	_dcmp_lt
+	bcs.s	_dcmp_gt
+	move.l	16(sp),d0		; dest_lo
+	cmp.l	24(sp),d0		; dest_lo - src_lo
+	bhi.s	_dcmp_lt
+	bcs.s	_dcmp_gt
+	bra.s	_dcmp_eq
+
+_dcmp_diffsign:
+	; different signs: the negative operand is the smaller
+	tst.l	d0			; dest negative?
+	bmi.s	_dcmp_lt		; dest < src
+	; else dest positive, src negative -> dest > src ; fall through
+
+_dcmp_gt:
+	movem.l	(sp)+,d2-d3
+	moveq	#1,d0
+	tst.l	d0			; N=0, Z=0 -> dest > src
+	rts
+
+_dcmp_lt:
+	movem.l	(sp)+,d2-d3
+	moveq	#-1,d0
+	tst.l	d0			; N=1, Z=0 -> dest < src
+	rts
+
+_dcmp_eq:
+	movem.l	(sp)+,d2-d3
+	moveq	#0,d0
+	tst.l	d0			; Z=1 -> equal
+	rts
+
+	end
+

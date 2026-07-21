@@ -1,0 +1,72 @@
+	title	"IEEE 754 single-precision comparison"
+; ============================================================
+;  _fpcmp / _fpcmpf — compare two single-precision floats
+;
+;  void _fpcmp(float dest, float src)
+;  Sets CCR flags as if (dest - src):
+;    N = dest < src
+;    Z = dest == src
+;
+;  Arguments: 4(SP)=dest, 8(SP)=src
+;
+;  Uses the IEEE float ordering property:
+;  - Positive floats: bit pattern order = numeric order
+;  - Negative floats: bit pattern order is reversed
+;  - ±0 must be treated as equal
+; ============================================================
+
+	.model	flat
+	include	ieee754.inc
+
+	public	_fpcmp, _fpcmpf
+
+	.code
+
+_fpcmp:
+_fpcmpf:
+	movem.l	d2-d3,-(sp)		; save scratch
+	move.l	12(sp),d0		; d0 = dest (adjusted for saved regs)
+	move.l	16(sp),d1		; d1 = src
+
+	; --- Both zero? (±0 == ±0) ---
+	move.l	d0,d2
+	andi.l	#$7FFFFFFF,d2		; |dest|
+	move.l	d1,d3
+	andi.l	#$7FFFFFFF,d3		; |src|
+	or.l	d3,d2			; |dest| | |src|
+	bne.s	_cmp_nonzero
+	; Both zero → equal
+	movem.l	(sp)+,d2-d3
+	moveq	#0,d0
+	tst.l	d0			; Z=1
+	rts
+
+_cmp_nonzero:
+	; --- Same sign? ---
+	move.l	d0,d2
+	eor.l	d1,d2
+	btst.l	#31,d2
+	bne.s	_cmp_diff_sign
+
+	; --- Same sign ---
+	btst.l	#31,d0			; both positive?
+	bne.s	_cmp_both_neg
+
+	; Both positive: larger bit pattern = larger value
+	movem.l	(sp)+,d2-d3
+	cmp.l	d1,d0			; dest - src
+	rts
+
+_cmp_both_neg:
+	; Both negative: larger bit pattern = MORE negative = SMALLER
+	movem.l	(sp)+,d2-d3
+	cmp.l	d0,d1			; src - dest (reversed)
+	rts
+
+_cmp_diff_sign:
+	; Different signs: the negative one is less
+	movem.l	(sp)+,d2-d3
+	tst.l	d0			; N set if dest is negative (dest < src)
+	rts
+
+	end

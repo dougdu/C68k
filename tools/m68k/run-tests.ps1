@@ -27,7 +27,7 @@ param(
   [string]$Ld   = 'C:\SysGCC\m68k-elf\bin\m68k-elf-ld.exe',
   [string]$Sim  = 'C:\git\worm68k\68kTools\builds\win64\bin\Release\sim68k.exe',
   [string]$Gdb  = 'C:\SysGCC\m68k-elf\bin\m68k-elf-gdb.exe',
-  [string]$FloatLib = 'C:\git\worm68k\68kTools\libraries\float\ieee754\libieee754d.a',
+  [string]$FloatLib = (Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'lib\libm\libm.a'),
   [int]$Port    = 1234,
   [switch]$Integrated
 )

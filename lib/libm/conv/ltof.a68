@@ -1,0 +1,67 @@
+	title	"IEEE 754 integer to single-precision conversion"
+; ============================================================
+;  _fpltof — convert 32-bit signed integer to IEEE 754 single
+;
+;  float _fpltof(long x) — returns float(x) in D0
+;  Argument: 4(SP) = signed 32-bit integer
+;
+;  Algorithm:
+;    1. Handle zero
+;    2. Record and remove sign
+;    3. Count leading zeros to find exponent
+;    4. Shift mantissa to position 23 (implied bit)
+;    5. Pack sign + exponent + mantissa
+; ============================================================
+
+	.model	flat
+	include	ieee754.inc
+
+	public	_fpltof
+
+	.code
+
+_fpltof:
+	move.l	4(sp),d0		; d0 = integer input
+	beq.s	_ltof_zero		; zero → return 0.0
+
+	move.l	d1,-(sp)		; save d1
+	move.l	d2,-(sp)		; save d2
+
+	; Record sign
+	moveq	#0,d2			; d2 = sign (0 = positive)
+	tst.l	d0
+	bpl.s	_ltof_pos
+	neg.l	d0			; make positive
+	move.l	#IEEE754_SNG_SIGN_MASK,d2
+_ltof_pos:
+
+	; Find the position of the highest set bit
+	; Exponent = 127 + (bit_position)
+	; Start with exponent for bit 31 and shift left counting
+	move.l	#127+31,d1		; d1 = exponent if MSB is bit 31
+
+_ltof_norm:
+	btst.l	#31,d0			; is top bit set?
+	bne.s	_ltof_pack
+	lsl.l	#1,d0			; shift left
+	subq.l	#1,d1			; decrement exponent
+	bra.s	_ltof_norm
+
+_ltof_pack:
+	; d0 has the value with bit 31 as the implied bit
+	; We need mantissa in bits 22-0 (shift right by 8, dropping bit 31)
+	lsr.l	#8,d0			; shift right 8 → implied bit now at bit 23
+	andi.l	#IEEE754_SNG_MANT_MASK,d0 ; strip implied bit (bit 23)
+	INSERT_EXP d1
+	or.l	d1,d0			; combine exponent
+	or.l	d2,d0			; combine sign
+
+	move.l	(sp)+,d2
+	move.l	(sp)+,d1
+	rts
+
+_ltof_zero:
+	moveq	#0,d0
+	rts
+
+	end

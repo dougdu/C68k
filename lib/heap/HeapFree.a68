@@ -1,0 +1,182 @@
+************************************************************************
+*  _HeapFree
+************************************************************************
+*
+*  Frees a memory block allocated from a heap by the HeapAlloc or
+*  HeapReAlloc function.
+*
+************************************************************************
+*  PARAMETERS
+************************************************************************
+*
+*  hHeap  : The heap handle of the memory block was allocated from.
+*
+*  pMem   : A pointer to the memory block to be freed. This pointer
+*           is returned by the HeapAlloc or HeapReAlloc function.
+*           This pointer can be NULL.
+*
+************************************************************************
+*  RETURN VALUE
+************************************************************************
+*
+*  If the function succeeds, the return value is nonzero.
+*
+*  If the function fails, the return value is zero. An application
+*  can call GetHeapError for extended error information.
+************************************************************************
+
+	.model	flat
+
+	include heap.inc
+
+	extern 	__HeapGetBucketOffset
+	extern	__HeapError
+
+	.code
+
+_HeapFree PROC USES d1-d2/a0-a2, hHeap:DWORD, pMem:DWORD
+	movea.l hHeap,a0 			; A0 --> Heap header
+
+	; Run any configured heap validations
+	move.l	#-1,-(sp)			; Flag caller as HeapFree
+	move.l 	a0,-(sp)			; Push heap handle
+	jsr 	__HeapAutoValidateFlagCheck
+	adda.l 	#8,sp
+	bne 	_hfErrorExit			; Validation failed
+
+	; Abort if the supplied block pointer is NULL
+	move.l 	pMem,d1				; Get pMem
+        beq  	_hfSuccess                 	; Return if NULL
+
+	IF SOA_ROUTE
+	; ---- Small Object Allocator discrimination (design §9.4) ----
+	; Recognize pMem as a slab cell; if so verify ownership and route to
+	; the SOA free path.  Otherwise fall through to the block free path.
+	; __HeapSlabFromPtr preserves D1 (= pMem) so the block path below is
+	; reached with D1 intact.
+	move.l 	pMem,-(sp)
+	jsr 	__HeapSlabFromPtr		; D0 = owning slab, or 0
+	adda.l 	#4,sp
+	tst.l 	d0
+	beq.s 	_hfNotCell			; not a cell -> block path
+	movea.l d0,a1				; A1 --> slab
+	move.l 	slFlags(a1),d1			; recognized: check ownership (slId vs hhId)
+	andi.l 	#HEAP_ID_MASK,d1
+	move.l 	hhFlags(a0),d2
+	andi.l 	#HEAP_ID_MASK,d2
+	cmp.l 	d2,d1
+	bne 	_hfInvalidHeap			; cell not owned by this heap
+	move.l 	pMem,-(sp)			; free the cell
+	move.l 	a1,-(sp)			; slab
+	move.l 	a0,-(sp)			; hHeap
+	jsr 	__HeapSoaFree
+	adda.l 	#12,sp
+	bra 	_hfExit				; D0 = result (-1 ok / 0 double-free)
+_hfNotCell:
+	ENDIF
+
+	; Adjust pointer to start of block header
+        sub.l  #BLK_HDR_SIZE,d1                 ; Point at block header
+
+	; Validate that the pointer is aligned as we expect
+	move.l	d1,d2 				; Verify block pointer bit pattern is ok
+	and.l 	#$FF000000+(BLK_HDR_SIZE-1),d2
+        bne   	_hfBlockInvalid         	; Abort, not a valid heap block
+
+	; Validate that the block header has the correct signature
+	movea.l	d1,a1				; A1 --> Block to free
+	cmpi.l 	#BLOCK_MAGIC,bhMagic(a1)	; Verify the magic number
+        bne   	_hfBlockInvalid         	; Abort, not a valid heap block
+
+	; Validate that the block is marked as allocated
+	btst.b 	#FLG_FREE_BIT,bhFlags+3(a1)	; Is the block already free?
+	bne 	_hfBlockInvalid			; Abort, if it is already free
+
+	; Validate that the block is part of the specified heap
+	move.l 	hhFlags(a0),d0 			; Get the Heap's Heap Id
+	andi.l 	#HEAP_ID_MASK,d0
+	move.l 	bhFlags(a1),d1 			; Get the Block's Heap Id
+	andi.l 	#HEAP_ID_MASK,d1
+	cmp.l 	d0,d1 				; Do they match?
+	bne	_hfInvalidHeap			; Nope, abort
+
+	btst.b 	#FLG_HEAP_ENABLE_TAIL_CHECK,hhFlags+3(a0)
+	beq.s 	_hfNoTailCheck
+	move.l 	bhRequestSize(a1),d0 		; Get the requested block size
+	addi.l 	#3,d0				; Round UP to nearest long word
+	andi.l 	#NOT(3),d0			; D0 = first tail fill offset (>= bhRequestSize)
+	lea 	bhData(a1,d0.l),a2		; A2 --> start of block tail
+	move.l 	bhSize(a1),d1 			; Compute tail size
+	subi.l 	#BLK_HDR_SIZE+1,d1		; +1 to adjust for dbra
+	sub.l 	d0,d1 				; D1 = tail size
+
+_hfTailCheckLoop:
+	cmpi.b 	#HEAP_TAIL,(a2)+		; Has the tail been corrupted?
+	bne	_hfBufferOverrun		; Yes, abort
+	dbra 	d1,_hfTailCheckLoop		; Loop until entire tail validated
+
+_hfNoTailCheck:
+	; Does the heap have coalesce on free disabled?
+	btst.b 	#FLG_HEAP_DISABLE_COALESCING-8,hhFlags+2(a0) ; (bit 8 in flags word)
+	bne 	_hfFreeWithNoCoalesce		; Yes, just free the block
+
+	; Attempt to coalesce with adjacent blocks
+	move.l 	a1,-(sp)			; Push the block being freed
+	move.l 	a0,-(sp)			; Push the Heap Handle
+	jsr 	__HeapCoalesce			; Go attempt to coalesce with surrounding blocks
+	adda.l 	#8,sp
+	tst.l 	d0				; Did we actually coalesce?
+	bne.s 	_hfSuccess			; Yes, return success
+
+_hfFreeWithNoCoalesce:
+	; Here we have nothing to coalesce with so just free the block
+
+	; Insert the freed block at the head of the correct size bucket
+	move.l 	bhSize(a1),d0			; D0 = total block size
+	sub.l 	#BLK_HDR_SIZE,d0		; D0 = data area size
+	jsr 	__HeapGetBucketOffset		; D0 = byte offset of correct bucket
+	movea.l HEAP_FREE_BUCKET_BASE(a0,d0.l),a2 ; A2 = current bucket head
+	move.l 	a1,HEAP_FREE_BUCKET_BASE(a0,d0.l)  ; A1 is new bucket head
+	clr.l 	bhFreePrev(a1)			; No predecessor
+	move.l 	a2,bhFreeNext(a1)		; Forward link to old head
+	cmpa.l 	#0,a2				; Was bucket non-empty?
+	beq 	_hfBlockFreed			; No, done
+	move.l 	a1,bhFreePrev(a2)		; Update old head's back link
+
+_hfBlockFreed:
+	; Here the block pointed to by A1 has been freed clean up the flags/byte count
+	bset.b 	#FLG_FREE_BIT,bhFlags+3(a1)	; Flag the block as free
+	bclr.b 	#FLG_GARBAGE_BIT,bhFlags+3(a1)	; Flag the block as not garbage
+	move.l 	bhSize(a1),d0 			; Get count of bytes in block
+	sub.l 	#BLK_HDR_SIZE,d0 		; Adjust for block header
+	move.l 	d0,bhRequestSize(a1) 		; Requested size is len of data area
+
+	; Is debug fill data enabled?
+	btst.b 	#FLG_HEAP_ENABLE_DEBUG_FILL,hhFlags+3(a0)
+	beq.s 	_hfSuccess			; No, don't write the debug data
+	move.l 	a1,-(sp)
+	jsr	__HeapDebugFillOnFree
+	adda.l 	#4,sp
+
+_hfSuccess:
+	move.l 	#-1,d0				; Flag as success
+	bra.s 	_hfExit
+
+_hfInvalidHeap:
+	move.l 	#HEAP_ERROR_HANDLE_BLOCK_MISMATCH,__HeapError ; Heap Id's don't match
+	bra.s 	_hfErrorExit
+
+_hfBufferOverrun:
+	move.l 	#HEAP_ERROR_TAIL_VALIDATION_FAILED,__HeapError ; Debug block tail is corrupt
+	bra.s 	_hfErrorExit
+
+_hfBlockInvalid:
+  	move.l  #HEAP_ERROR_INVALID_BLOCK,__HeapError ; Block pointer not valid
+
+_hfErrorExit:
+	clr.l 	d0				; Flag as an error
+
+_hfExit:
+	ENDP
+
+        end

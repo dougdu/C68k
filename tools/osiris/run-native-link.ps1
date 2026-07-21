@@ -32,7 +32,7 @@ param(
   [string]$Asm = 'C:\git\worm68k\68kTools\builds\win64\bin\Release\asm68K.exe',
   [string]$LinkPrg = 'C:\git\osiris\build\LINK.PRG',
   [string]$LibPrg = 'C:\git\osiris\build\LIB.PRG',
-  [string]$FloatLib = 'C:\git\worm68k\68kTools\libraries\float\ieee754\libieee754d.a',
+  [string]$FloatLib = (Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'lib\libm\libm.a'),
   [switch]$UseLib,          # archive libc.o into LIBC.A with LIB.PRG, link that
   [switch]$NoIntegrated,    # compile C via asm68K (isolate integrated-emitter issues)
   [switch]$Bare,            # link crt0/seam + program + runtime only (no libc/float)

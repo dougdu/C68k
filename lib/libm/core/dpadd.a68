@@ -1,0 +1,234 @@
+	title	"IEEE 754 double-precision addition/subtraction"
+; ============================================================
+;  _fpaddd — double add:  double(8(a6):12(a6)) + double(16(a6):20(a6))
+;  _fpsubd — double sub:  negate second arg, then add
+;
+;  Returns D0:D1 (D0=high, D1=low)
+;
+;  Mantissa is 53 bits: 21 bits in high word + 32 bits in low word.
+;  We work with the full 53-bit mantissa using register pairs.
+; ============================================================
+
+	.model	flat
+	include	ieee754d.inc
+
+	public	_fpaddd, _fpsubd
+
+	.code
+
+; ============================================================
+;  _fpsubd — negate b then add
+; ============================================================
+_fpsubd:
+	link	a6,#0
+	move.l	DBL_ARG2_HI(a6),d0
+	eori.l	#IEEE754_DBL_SIGN_MASK_HI,d0
+	move.l	d0,DBL_ARG2_HI(a6)
+	bra.s	_dpadd_entry
+
+; ============================================================
+;  _fpaddd
+; ============================================================
+_fpaddd:
+	link	a6,#0
+
+_dpadd_entry:
+	movem.l	d2-d7/a0-a2,-(sp)
+
+	; Load operands: a = d2:d3, b = d4:d5
+	move.l	DBL_ARG1_HI(a6),d2	; a high
+	move.l	DBL_ARG1_LO(a6),d3	; a low
+	move.l	DBL_ARG2_HI(a6),d4	; b high
+	move.l	DBL_ARG2_LO(a6),d5	; b low
+
+	; --- Handle zeros ---
+	move.l	d2,d0
+	andi.l	#$7FFFFFFF,d0
+	or.l	d3,d0
+	beq	_dpadd_return_b		; a is zero → return b
+	move.l	d4,d0
+	andi.l	#$7FFFFFFF,d0
+	or.l	d5,d0
+	beq	_dpadd_return_a		; b is zero → return a
+
+	; --- Extract exponents ---
+	move.l	d2,d6
+	andi.l	#IEEE754_DBL_EXP_MASK_HI,d6
+	EXTRACT_DBL_EXP d6		; d6 = a exponent
+
+	move.l	d4,d7
+	andi.l	#IEEE754_DBL_EXP_MASK_HI,d7
+	EXTRACT_DBL_EXP d7		; d7 = b exponent
+
+	; --- Handle inf/NaN ---
+	cmpi.l	#2047,d6
+	beq	_dpadd_a_special
+	cmpi.l	#2047,d7
+	beq	_dpadd_b_special
+
+	; --- Extract signs ---
+	move.l	d2,a0			; a0 = a sign (in bit 31)
+	move.l	d4,a1			; a1 = b sign
+
+	; --- Extract mantissas with implied bit ---
+	andi.l	#IEEE754_DBL_MANT_MASK_HI,d2
+	ori.l	#IEEE754_DBL_IMPLIED_BIT_HI,d2 ; d2:d3 = a mantissa (53 bits)
+
+	andi.l	#IEEE754_DBL_MANT_MASK_HI,d4
+	ori.l	#IEEE754_DBL_IMPLIED_BIT_HI,d4 ; d4:d5 = b mantissa (53 bits)
+
+	; --- Ensure a has larger exponent (swap if needed) ---
+	cmp.l	d7,d6
+	bge.s	_dpadd_no_swap
+	exg	d2,d4
+	exg	d3,d5
+	exg	d6,d7
+	exg	a0,a1
+_dpadd_no_swap:
+
+	; d6 = larger exp, d2:d3 = its mantissa, a0 = its sign
+	; d7 = smaller exp, d4:d5 = its mantissa, a1 = its sign
+
+	move.l	d6,a2			; a2 = result exponent (saved)
+	sub.l	d7,d6			; d6 = exponent difference
+
+	cmpi.l	#54,d6			; shift >= 54 → smaller is negligible
+	bge	_dpadd_result_a
+
+	; --- Shift smaller mantissa right by d6 bits ---
+	; d4:d5 is 64 bits, shift right d6 positions
+	move.l	d6,d7			; shift count
+_dpadd_shift:
+	tst.l	d7
+	beq.s	_dpadd_shifted
+	lsr.l	#1,d4			; shift high right
+	roxr.l	#1,d5			; shift low right with carry
+	subq.l	#1,d7
+	bra.s	_dpadd_shift
+_dpadd_shifted:
+
+	; --- Add or subtract based on signs ---
+	move.l	a0,d6
+	move.l	a1,d7
+	eor.l	d7,d6			; same sign if bit 31 clear
+	btst.l	#31,d6
+	bne.s	_dpadd_subtract
+
+	; Same sign: add mantissas (d2:d3 + d4:d5)
+	add.l	d5,d3			; add low words
+	addx.l	d4,d2			; add high words with carry
+
+	; Check for carry out of bit 52 (bit 20 of high word → bit 21)
+	btst.l	#21,d2
+	beq.s	_dpadd_normalize
+	; Shift right 1, increment exponent
+	lsr.l	#1,d2
+	roxr.l	#1,d3
+	move.l	a2,d6
+	addq.l	#1,d6
+	move.l	d6,a2
+	cmpi.l	#2047,d6
+	bge	_dpadd_overflow
+	bra.s	_dpadd_pack
+
+_dpadd_subtract:
+	; Different signs: subtract mantissas
+	sub.l	d5,d3			; subtract low
+	subx.l	d4,d2			; subtract high with borrow
+	bpl.s	_dpadd_normalize
+	; Result negative: negate and flip sign
+	neg.l	d3
+	negx.l	d2
+	move.l	a0,d6
+	eori.l	#IEEE754_DBL_SIGN_MASK_HI,d6
+	move.l	d6,a0
+
+_dpadd_normalize:
+	; Normalize: shift left until bit 20 of high word is set
+	move.l	d2,d6
+	or.l	d3,d6
+	beq	_dpadd_return_zero	; mantissa is zero
+
+_dpadd_norm_loop:
+	btst.l	#20,d2			; implied bit position
+	bne.s	_dpadd_pack
+	lsl.l	#1,d3			; shift low left
+	roxl.l	#1,d2			; shift high left with carry
+	move.l	a2,d6
+	subq.l	#1,d6
+	move.l	d6,a2
+	tst.l	d6
+	ble	_dpadd_return_zero	; underflow
+	bra.s	_dpadd_norm_loop
+
+_dpadd_pack:
+	; Strip implied bit, pack sign + exponent + mantissa
+	andi.l	#IEEE754_DBL_MANT_MASK_HI,d2 ; strip implied bit from high
+
+	move.l	a2,d6			; get exponent
+	INSERT_DBL_EXP d6		; shift into position
+	or.l	d6,d2			; combine exponent
+
+	move.l	a0,d6
+	andi.l	#IEEE754_DBL_SIGN_MASK_HI,d6
+	or.l	d6,d2			; combine sign
+
+	move.l	d2,d0			; result high
+	move.l	d3,d1			; result low
+
+_dpadd_done:
+	movem.l	(sp)+,d2-d7/a0-a2
+	unlk	a6
+	rts
+
+; --- Special cases ---
+
+_dpadd_return_a:
+	move.l	d2,d0
+	move.l	d3,d1
+	bra.s	_dpadd_done
+
+_dpadd_return_b:
+	move.l	d4,d0
+	move.l	d5,d1
+	bra.s	_dpadd_done
+
+_dpadd_result_a:
+	; Reconstruct a from mantissa and exponent
+	andi.l	#IEEE754_DBL_MANT_MASK_HI,d2
+	move.l	a2,d6
+	INSERT_DBL_EXP d6
+	or.l	d6,d2
+	move.l	a0,d6
+	andi.l	#IEEE754_DBL_SIGN_MASK_HI,d6
+	or.l	d6,d2
+	move.l	d2,d0
+	move.l	d3,d1
+	bra	_dpadd_done
+
+_dpadd_return_zero:
+	moveq	#0,d0
+	moveq	#0,d1
+	bra	_dpadd_done
+
+_dpadd_overflow:
+	move.l	#DBL_INF_HI,d0
+	moveq	#0,d1
+	move.l	a0,d6
+	andi.l	#IEEE754_DBL_SIGN_MASK_HI,d6
+	or.l	d6,d0
+	bra	_dpadd_done
+
+_dpadd_a_special:
+	; a is inf or NaN → return a (simplified)
+	move.l	DBL_ARG1_HI(a6),d0
+	move.l	DBL_ARG1_LO(a6),d1
+	bra	_dpadd_done
+
+_dpadd_b_special:
+	; b is inf or NaN → return b
+	move.l	DBL_ARG2_HI(a6),d0
+	move.l	DBL_ARG2_LO(a6),d1
+	bra	_dpadd_done
+
+	end

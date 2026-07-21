@@ -1,0 +1,1146 @@
+	title	"IEEE 754 double-precision math functions"
+; ============================================================
+;  Native double-precision transcendentals and utilities:
+;    _sqrtd, _sind, _cosd, _atand, _expd, _logd, _powd
+;    _floord, _ceild, _modfd, _fmodd
+;
+;  All polynomial evaluations use _fpmultd/_fpaddd/_fpsubd
+;  for full 53-bit double-precision accuracy.
+; ============================================================
+
+	.model	flat
+	include	ieee754.inc
+	include	ieee754d.inc
+
+	public	_sqrtd, _sind, _cosd, _atand, _expd, _logd, _powd
+	public	_floord, _ceild, _modfd, _fmodd
+	extern	_fpaddd, _fpsubd, _fpmultd, _fpdivd
+	extern	_fpdtof, _fpftod, _fpltod, _fpdtol
+	extern	_sqrt
+
+	.code
+
+; ============================================================
+;  Double-precision constants (high:low pairs)
+; ============================================================
+_d_zero		dc.l	$00000000,$00000000
+_d_one		dc.l	$3FF00000,$00000000
+_d_two		dc.l	$40000000,$00000000
+_d_half		dc.l	$3FE00000,$00000000
+_d_neg_one	dc.l	$BFF00000,$00000000
+
+_d_pi_2		dc.l	$3FF921FB,$54442D18
+_d_pi_4		dc.l	$3FE921FB,$54442D18
+_d_two_over_pi	dc.l	$3FE45F30,$6DC9C883
+
+; Sin coefficients: x*(1 + x²*(s1 + x²*(s2 + ...)))
+_d_s1		dc.l	$BFC55555,$55555549	; -1/3!
+_d_s2		dc.l	$3F811111,$1110F8A6	;  1/5!
+_d_s3		dc.l	$BF2A01A0,$19C161D5	; -1/7!
+_d_s4		dc.l	$3EC71DE3,$A556C734	;  1/9!
+_d_s5		dc.l	$BE5AE5E6,$8A2B9CEB	; -1/11!
+
+; Cos coefficients: 1 + x²*(c1 + x²*(c2 + ...))
+_d_c1		dc.l	$BFE00000,$00000000	; -1/2!
+_d_c2		dc.l	$3FA55555,$55555555	;  1/4!
+_d_c3		dc.l	$BF56C16C,$16C15177	; -1/6!
+_d_c4		dc.l	$3EFA01A0,$19CB1590	;  1/8!
+_d_c5		dc.l	$BE927E4F,$B7789F5C	; -1/10!
+
+; Atan constants
+_d_tan_pi8	dc.l	$3FDA8279,$9E3C0424	; sqrt(2)-1
+_d_at1		dc.l	$BFD55555,$55555550	; -1/3
+_d_at2		dc.l	$3FC99999,$9999999A	;  1/5
+_d_at3		dc.l	$BFC24924,$92492492	; -1/7
+_d_at4		dc.l	$3FBC71C7,$1C71C71C	;  1/9
+_d_at5		dc.l	$BFB745D1,$745D1746	; -1/11
+_d_at6		dc.l	$3FB3B13B,$13B13B14	;  1/13
+
+; Exp constants
+_d_inv_ln2	dc.l	$3FF71547,$652B82FE	; 1/ln(2)
+_d_ln2		dc.l	$3FE62E42,$FEFA39EF	; ln(2)
+_d_e1		dc.l	$3FE00000,$00000000	; 1/2!
+_d_e2		dc.l	$3FC55555,$55555555	; 1/3!
+_d_e3		dc.l	$3FA55555,$55555555	; 1/4!
+_d_e4		dc.l	$3F811111,$11111111	; 1/5!
+_d_e5		dc.l	$3F56C16C,$16C16C17	; 1/6!
+_d_e6		dc.l	$3F2A01A0,$1A01A01A	; 1/7!
+
+; Log constants
+_d_l1		dc.l	$3FD55555,$55555555	; 1/3
+_d_l2		dc.l	$3FC99999,$9999999A	; 1/5
+_d_l3		dc.l	$3FC24924,$92492492	; 1/7
+_d_l4		dc.l	$3FBC71C7,$1C71C71C	; 1/9
+_d_l5		dc.l	$3FB745D1,$745D1746	; 1/11
+
+
+; ============================================================
+;  _floord — floor(x): largest integer <= x
+; ============================================================
+_floord:
+	link	a6,#0
+	movem.l	d2-d5,-(sp)
+	move.l	DBL_ARG1_HI(a6),d2
+	move.l	DBL_ARG1_LO(a6),d3
+
+	move.l	d2,d4
+	andi.l	#IEEE754_DBL_EXP_MASK_HI,d4
+	EXTRACT_DBL_EXP d4
+	cmpi.l	#1075,d4
+	bge.s	_floord_int
+	cmpi.l	#IEEE754_DBL_EXP_BIAS,d4
+	blt.s	_floord_small
+
+	move.l	d3,-(sp)
+	move.l	d2,-(sp)
+	jsr	_fpdtol
+	addq.l	#8,sp
+	move.l	d0,d5
+	move.l	d0,-(sp)
+	jsr	_fpltod
+	addq.l	#4,sp
+	tst.l	d2
+	bpl.s	_floord_done
+	cmp.l	d2,d0
+	bne.s	_floord_sub1
+	cmp.l	d3,d1
+	beq.s	_floord_done
+_floord_sub1:
+	move.l	_d_one+4(pc),-(sp)
+	move.l	_d_one(pc),-(sp)
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpsubd
+	lea	16(sp),sp
+_floord_done:
+	movem.l	(sp)+,d2-d5
+	unlk	a6
+	rts
+_floord_int:
+	move.l	d2,d0
+	move.l	d3,d1
+	bra.s	_floord_done
+_floord_small:
+	tst.l	d2
+	bpl.s	_floord_z
+	move.l	_d_neg_one(pc),d0
+	move.l	_d_neg_one+4(pc),d1
+	bra.s	_floord_done
+_floord_z:
+	moveq	#0,d0
+	moveq	#0,d1
+	bra.s	_floord_done
+
+
+; ============================================================
+;  _ceild — ceil(x) = -floor(-x)
+; ============================================================
+_ceild:
+	link	a6,#0
+	move.l	DBL_ARG1_HI(a6),d0
+	eori.l	#IEEE754_DBL_SIGN_MASK_HI,d0
+	move.l	DBL_ARG1_LO(a6),d1
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	jsr	_floord
+	addq.l	#8,sp
+	eori.l	#IEEE754_DBL_SIGN_MASK_HI,d0
+	unlk	a6
+	rts
+
+
+; ============================================================
+;  _fmodd — fmod(x,y) = x - trunc(x/y)*y
+; ============================================================
+_fmodd:
+	link	a6,#0
+	movem.l	d2-d5,-(sp)
+	move.l	DBL_ARG1_HI(a6),d2
+	move.l	DBL_ARG1_LO(a6),d3
+	move.l	DBL_ARG2_HI(a6),d4
+	move.l	DBL_ARG2_LO(a6),d5
+	move.l	d5,-(sp)
+	move.l	d4,-(sp)
+	move.l	d3,-(sp)
+	move.l	d2,-(sp)
+	jsr	_fpdivd
+	lea	16(sp),sp
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpdtol
+	addq.l	#8,sp
+	move.l	d0,-(sp)
+	jsr	_fpltod
+	addq.l	#4,sp
+	move.l	d5,-(sp)
+	move.l	d4,-(sp)
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	move.l	d3,-(sp)
+	move.l	d2,-(sp)
+	jsr	_fpsubd
+	lea	16(sp),sp
+	movem.l	(sp)+,d2-d5
+	unlk	a6
+	rts
+
+
+; ============================================================
+;  _modfd — split into integer + fraction
+;  Args: 8:12(a6)=x, 16(a6)=ptr to ipart (double*)
+; ============================================================
+_modfd:
+	link	a6,#0
+	movem.l	d2-d3/a2,-(sp)
+	move.l	DBL_ARG1_HI(a6),d2
+	move.l	DBL_ARG1_LO(a6),d3
+	movea.l	DBL_ARG2_HI(a6),a2
+	move.l	d3,-(sp)
+	move.l	d2,-(sp)
+	jsr	_fpdtol
+	addq.l	#8,sp
+	move.l	d0,-(sp)
+	jsr	_fpltod
+	addq.l	#4,sp
+	move.l	d0,(a2)
+	move.l	d1,4(a2)
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	move.l	d3,-(sp)
+	move.l	d2,-(sp)
+	jsr	_fpsubd
+	lea	16(sp),sp
+	movem.l	(sp)+,d2-d3/a2
+	unlk	a6
+	rts
+
+
+; ============================================================
+;  _expd — e^x  (7-term Horner on reduced r)
+; ============================================================
+_expd:
+	link	a6,#-12
+	movem.l	d2-d5,-(sp)
+	move.l	DBL_ARG1_HI(a6),d2
+	move.l	DBL_ARG1_LO(a6),d3
+
+	move.l	d2,d0
+	andi.l	#$7FFFFFFF,d0
+	or.l	d3,d0
+	beq	_expd_one
+
+	move.l	d2,d0
+	andi.l	#$7FFFFFFF,d0
+	cmpi.l	#$40862E42,d0
+	bgt	_expd_ovf
+
+	; n = round(x / ln2)
+	move.l	_d_inv_ln2+4(pc),-(sp)
+	move.l	_d_inv_ln2(pc),-(sp)
+	move.l	d3,-(sp)
+	move.l	d2,-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	d0,d4
+	andi.l	#IEEE754_DBL_SIGN_MASK_HI,d4
+	move.l	_d_half(pc),d5
+	or.l	d4,d5
+	move.l	_d_half+4(pc),-(sp)
+	move.l	d5,-(sp)
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpaddd
+	lea	16(sp),sp
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpdtol
+	addq.l	#8,sp
+	move.l	d0,-4(a6)
+
+	; r = x - n*ln2
+	move.l	d0,-(sp)
+	jsr	_fpltod
+	addq.l	#4,sp
+	move.l	_d_ln2+4(pc),-(sp)
+	move.l	_d_ln2(pc),-(sp)
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	move.l	d3,-(sp)
+	move.l	d2,-(sp)
+	jsr	_fpsubd
+	lea	16(sp),sp
+	move.l	d0,-12(a6)
+	move.l	d1,-8(a6)
+	move.l	d0,d4
+	move.l	d1,d5
+
+	; Horner: 1+r*(1+r*(e1+r*(e2+r*(e3+r*(e4+r*(e5+r*e6))))))
+	move.l	_d_e6(pc),d2
+	move.l	_d_e6+4(pc),d3
+	; e5+r*t
+	move.l	d3,-(sp)
+	move.l	d2,-(sp)
+	move.l	d5,-(sp)
+	move.l	d4,-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	_d_e5+4(pc),-(sp)
+	move.l	_d_e5(pc),-(sp)
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpaddd
+	lea	16(sp),sp
+	move.l	d0,d2
+	move.l	d1,d3
+	; e4+r*t
+	move.l	d3,-(sp)
+	move.l	d2,-(sp)
+	move.l	d5,-(sp)
+	move.l	d4,-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	_d_e4+4(pc),-(sp)
+	move.l	_d_e4(pc),-(sp)
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpaddd
+	lea	16(sp),sp
+	move.l	d0,d2
+	move.l	d1,d3
+	; e3+r*t
+	move.l	d3,-(sp)
+	move.l	d2,-(sp)
+	move.l	d5,-(sp)
+	move.l	d4,-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	_d_e3+4(pc),-(sp)
+	move.l	_d_e3(pc),-(sp)
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpaddd
+	lea	16(sp),sp
+	move.l	d0,d2
+	move.l	d1,d3
+	; e2+r*t
+	move.l	d3,-(sp)
+	move.l	d2,-(sp)
+	move.l	d5,-(sp)
+	move.l	d4,-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	_d_e2+4(pc),-(sp)
+	move.l	_d_e2(pc),-(sp)
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpaddd
+	lea	16(sp),sp
+	move.l	d0,d2
+	move.l	d1,d3
+	; e1+r*t
+	move.l	d3,-(sp)
+	move.l	d2,-(sp)
+	move.l	d5,-(sp)
+	move.l	d4,-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	_d_e1+4(pc),-(sp)
+	move.l	_d_e1(pc),-(sp)
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpaddd
+	lea	16(sp),sp
+	move.l	d0,d2
+	move.l	d1,d3
+	; 1+r*t
+	move.l	d3,-(sp)
+	move.l	d2,-(sp)
+	move.l	d5,-(sp)
+	move.l	d4,-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	_d_one+4(pc),-(sp)
+	move.l	_d_one(pc),-(sp)
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpaddd
+	lea	16(sp),sp
+	move.l	d0,d2
+	move.l	d1,d3
+	; 1+r*t (outer)
+	move.l	d3,-(sp)
+	move.l	d2,-(sp)
+	move.l	d5,-(sp)
+	move.l	d4,-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	_d_one+4(pc),-(sp)
+	move.l	_d_one(pc),-(sp)
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpaddd
+	lea	16(sp),sp
+
+	; Scale by 2^n
+	move.l	-4(a6),d2
+	swap	d2
+	lsl.l	#4,d2
+	add.l	d2,d0
+_expd_ret:
+	movem.l	(sp)+,d2-d5
+	unlk	a6
+	rts
+_expd_one:
+	move.l	_d_one(pc),d0
+	move.l	_d_one+4(pc),d1
+	bra.s	_expd_ret
+_expd_ovf:
+	tst.l	d2
+	bpl.s	_expd_inf
+	moveq	#0,d0
+	moveq	#0,d1
+	bra.s	_expd_ret
+_expd_inf:
+	move.l	#DBL_INF_HI,d0
+	moveq	#0,d1
+	bra.s	_expd_ret
+
+
+; ============================================================
+;  _logd — ln(x) = e*ln(2) + 2*t*(1+t²*(l1+t²*(l2+...)))
+;  where t=(m-1)/(m+1), x=m*2^e, 1<=m<2
+; ============================================================
+_logd:
+	link	a6,#-8
+	movem.l	d2-d5,-(sp)
+	move.l	DBL_ARG1_HI(a6),d2
+	move.l	DBL_ARG1_LO(a6),d3
+
+	tst.l	d2
+	bmi	_logd_nan
+	move.l	d2,d0
+	or.l	d3,d0
+	beq	_logd_ninf
+
+	; e = biased_exp - 1023
+	move.l	d2,d4
+	andi.l	#IEEE754_DBL_EXP_MASK_HI,d4
+	EXTRACT_DBL_EXP d4
+	subi.l	#IEEE754_DBL_EXP_BIAS,d4
+	move.l	d4,-4(a6)
+
+	; m = x with exp=1023
+	move.l	d2,d4
+	andi.l	#IEEE754_DBL_MANT_MASK_HI,d4
+	ori.l	#$3FF00000,d4
+
+	; t = (m-1)/(m+1)
+	move.l	_d_one+4(pc),-(sp)
+	move.l	_d_one(pc),-(sp)
+	move.l	d3,-(sp)
+	move.l	d4,-(sp)
+	jsr	_fpsubd
+	lea	16(sp),sp
+	move.l	d0,d2
+	move.l	d1,d5
+	move.l	_d_one+4(pc),-(sp)
+	move.l	_d_one(pc),-(sp)
+	move.l	d3,-(sp)
+	move.l	d4,-(sp)
+	jsr	_fpaddd
+	lea	16(sp),sp
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	move.l	d5,-(sp)
+	move.l	d2,-(sp)
+	jsr	_fpdivd
+	lea	16(sp),sp
+	move.l	d0,d2
+	move.l	d1,d3
+
+	; t²
+	move.l	d3,-(sp)
+	move.l	d2,-(sp)
+	move.l	d3,-(sp)
+	move.l	d2,-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	d0,d4
+	move.l	d1,d5
+
+	; Horner: 1/11
+	move.l	_d_l5(pc),d0
+	move.l	_d_l5+4(pc),d1
+	; 1/9+t²*s
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	move.l	d5,-(sp)
+	move.l	d4,-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	_d_l4+4(pc),-(sp)
+	move.l	_d_l4(pc),-(sp)
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpaddd
+	lea	16(sp),sp
+	; 1/7+t²*s
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	move.l	d5,-(sp)
+	move.l	d4,-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	_d_l3+4(pc),-(sp)
+	move.l	_d_l3(pc),-(sp)
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpaddd
+	lea	16(sp),sp
+	; 1/5+t²*s
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	move.l	d5,-(sp)
+	move.l	d4,-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	_d_l2+4(pc),-(sp)
+	move.l	_d_l2(pc),-(sp)
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpaddd
+	lea	16(sp),sp
+	; 1/3+t²*s
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	move.l	d5,-(sp)
+	move.l	d4,-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	_d_l1+4(pc),-(sp)
+	move.l	_d_l1(pc),-(sp)
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpaddd
+	lea	16(sp),sp
+	; 1+t²*s
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	move.l	d5,-(sp)
+	move.l	d4,-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	_d_one+4(pc),-(sp)
+	move.l	_d_one(pc),-(sp)
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpaddd
+	lea	16(sp),sp
+
+	; ln(m) = 2*t*s
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	move.l	d3,-(sp)
+	move.l	d2,-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	_d_two+4(pc),-(sp)
+	move.l	_d_two(pc),-(sp)
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	d0,d4
+	move.l	d1,d5
+
+	; e*ln(2)+ln(m)
+	move.l	-4(a6),d0
+	move.l	d0,-(sp)
+	jsr	_fpltod
+	addq.l	#4,sp
+	move.l	_d_ln2+4(pc),-(sp)
+	move.l	_d_ln2(pc),-(sp)
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	d5,-(sp)
+	move.l	d4,-(sp)
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpaddd
+	lea	16(sp),sp
+_logd_ret:
+	movem.l	(sp)+,d2-d5
+	unlk	a6
+	rts
+_logd_nan:
+	move.l	#DBL_QNAN_HI,d0
+	move.l	#DBL_QNAN_LO,d1
+	bra.s	_logd_ret
+_logd_ninf:
+	move.l	#DBL_NEG_INF_HI,d0
+	moveq	#0,d1
+	bra.s	_logd_ret
+
+
+; ============================================================
+;  _cosd — cos(x) = sin(x + pi/2)
+; ============================================================
+_cosd:
+	link	a6,#0
+	move.l	_d_pi_2+4(pc),-(sp)
+	move.l	_d_pi_2(pc),-(sp)
+	move.l	DBL_ARG1_LO(a6),-(sp)
+	move.l	DBL_ARG1_HI(a6),-(sp)
+	jsr	_fpaddd
+	lea	16(sp),sp
+	move.l	d0,DBL_ARG1_HI(a6)
+	move.l	d1,DBL_ARG1_LO(a6)
+	unlk	a6
+	; fall through to _sind
+
+; ============================================================
+;  _sind — sin(x)
+; ============================================================
+_sind:
+	link	a6,#-12
+	movem.l	d2-d5,-(sp)
+	move.l	DBL_ARG1_HI(a6),d2
+	move.l	DBL_ARG1_LO(a6),d3
+
+	move.l	d2,d0
+	andi.l	#$7FFFFFFF,d0
+	or.l	d3,d0
+	beq	_sind_retx
+
+	; k=round(x*2/pi)
+	move.l	_d_two_over_pi+4(pc),-(sp)
+	move.l	_d_two_over_pi(pc),-(sp)
+	move.l	d3,-(sp)
+	move.l	d2,-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	d0,d4
+	andi.l	#IEEE754_DBL_SIGN_MASK_HI,d4
+	move.l	_d_half(pc),d5
+	or.l	d4,d5
+	move.l	_d_half+4(pc),-(sp)
+	move.l	d5,-(sp)
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpaddd
+	lea	16(sp),sp
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpdtol
+	addq.l	#8,sp
+	move.l	d0,-4(a6)
+
+	; r=x-k*pi/2
+	move.l	d0,-(sp)
+	jsr	_fpltod
+	addq.l	#4,sp
+	move.l	_d_pi_2+4(pc),-(sp)
+	move.l	_d_pi_2(pc),-(sp)
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	move.l	d3,-(sp)
+	move.l	d2,-(sp)
+	jsr	_fpsubd
+	lea	16(sp),sp
+	move.l	d0,-12(a6)
+	move.l	d1,-8(a6)
+	move.l	d0,d4
+	move.l	d1,d5
+
+	; x²
+	move.l	d5,-(sp)
+	move.l	d4,-(sp)
+	move.l	d5,-(sp)
+	move.l	d4,-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	d0,d2
+	move.l	d1,d3
+
+	move.l	-4(a6),d4
+	andi.l	#3,d4
+	btst.l	#0,d4
+	bne	_sind_cpoly
+
+	; Sin poly: 5-term Horner
+	move.l	_d_s5(pc),d0
+	move.l	_d_s5+4(pc),d1
+	; s4+x²*t (macro-expand 5 Horner steps)
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	move.l	d3,-(sp)
+	move.l	d2,-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	_d_s4+4(pc),-(sp)
+	move.l	_d_s4(pc),-(sp)
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpaddd
+	lea	16(sp),sp
+	; s3+x²*t
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	move.l	d3,-(sp)
+	move.l	d2,-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	_d_s3+4(pc),-(sp)
+	move.l	_d_s3(pc),-(sp)
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpaddd
+	lea	16(sp),sp
+	; s2+x²*t
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	move.l	d3,-(sp)
+	move.l	d2,-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	_d_s2+4(pc),-(sp)
+	move.l	_d_s2(pc),-(sp)
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpaddd
+	lea	16(sp),sp
+	; s1+x²*t
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	move.l	d3,-(sp)
+	move.l	d2,-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	_d_s1+4(pc),-(sp)
+	move.l	_d_s1(pc),-(sp)
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpaddd
+	lea	16(sp),sp
+	; 1+x²*t
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	move.l	d3,-(sp)
+	move.l	d2,-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	_d_one+4(pc),-(sp)
+	move.l	_d_one(pc),-(sp)
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpaddd
+	lea	16(sp),sp
+	; *r
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	move.l	-8(a6),-(sp)
+	move.l	-12(a6),-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	bra	_sind_sign
+
+_sind_cpoly:
+	; Cos poly: 5-term Horner
+	move.l	_d_c5(pc),d0
+	move.l	_d_c5+4(pc),d1
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	move.l	d3,-(sp)
+	move.l	d2,-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	_d_c4+4(pc),-(sp)
+	move.l	_d_c4(pc),-(sp)
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpaddd
+	lea	16(sp),sp
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	move.l	d3,-(sp)
+	move.l	d2,-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	_d_c3+4(pc),-(sp)
+	move.l	_d_c3(pc),-(sp)
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpaddd
+	lea	16(sp),sp
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	move.l	d3,-(sp)
+	move.l	d2,-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	_d_c2+4(pc),-(sp)
+	move.l	_d_c2(pc),-(sp)
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpaddd
+	lea	16(sp),sp
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	move.l	d3,-(sp)
+	move.l	d2,-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	_d_c1+4(pc),-(sp)
+	move.l	_d_c1(pc),-(sp)
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpaddd
+	lea	16(sp),sp
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	move.l	d3,-(sp)
+	move.l	d2,-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	_d_one+4(pc),-(sp)
+	move.l	_d_one(pc),-(sp)
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpaddd
+	lea	16(sp),sp
+
+_sind_sign:
+	move.l	-4(a6),d4
+	andi.l	#3,d4
+	cmpi.l	#2,d4
+	blt.s	_sind_ret
+	eori.l	#IEEE754_DBL_SIGN_MASK_HI,d0
+_sind_ret:
+	movem.l	(sp)+,d2-d5
+	unlk	a6
+	rts
+_sind_retx:
+	move.l	d2,d0
+	move.l	d3,d1
+	bra.s	_sind_ret
+
+
+; ============================================================
+;  _atand — 3-segment range reduction + 7-term Horner
+; ============================================================
+_atand:
+	link	a6,#-16
+	movem.l	d2-d5,-(sp)
+	move.l	DBL_ARG1_HI(a6),d2
+	move.l	DBL_ARG1_LO(a6),d3
+
+	move.l	d2,d4
+	andi.l	#IEEE754_DBL_SIGN_MASK_HI,d4
+	move.l	d4,-16(a6)
+	bclr.l	#31,d2
+
+	move.l	d2,d0
+	or.l	d3,d0
+	beq	_atand_retx
+
+	moveq	#0,d5
+
+	; Seg2: |x|>1
+	cmpi.l	#$3FF00000,d2
+	blt.s	_atand_cmid
+	bgt.s	_atand_recip
+	tst.l	d3
+	ble.s	_atand_cmid
+_atand_recip:
+	ori.l	#1,d5
+	move.l	d3,-(sp)
+	move.l	d2,-(sp)
+	move.l	_d_one+4(pc),-(sp)
+	move.l	_d_one(pc),-(sp)
+	jsr	_fpdivd
+	lea	16(sp),sp
+	move.l	d0,d2
+	move.l	d1,d3
+
+_atand_cmid:
+	; Seg1: |x|>tan(pi/8)
+	move.l	_d_tan_pi8(pc),d0
+	cmp.l	d0,d2
+	blt.s	_atand_poly
+	bgt.s	_atand_mid
+	move.l	_d_tan_pi8+4(pc),d0
+	cmp.l	d0,d3
+	ble.s	_atand_poly
+_atand_mid:
+	ori.l	#2,d5
+	; u=(x-1)/(x+1)
+	move.l	_d_one+4(pc),-(sp)
+	move.l	_d_one(pc),-(sp)
+	move.l	d3,-(sp)
+	move.l	d2,-(sp)
+	jsr	_fpaddd
+	lea	16(sp),sp
+	move.l	d0,-(sp)
+	move.l	d1,-(sp)
+	move.l	_d_one+4(pc),-(sp)
+	move.l	_d_one(pc),-(sp)
+	move.l	d3,-(sp)
+	move.l	d2,-(sp)
+	jsr	_fpsubd
+	lea	16(sp),sp
+	; d0:d1=x-1, (x+1) hi:lo on stack at 8(sp):12(sp)
+	; Rearrange for fpdivd: dividend then divisor
+	move.l	12(sp),-(sp)		; x+1 lo
+	move.l	12(sp),-(sp)		; x+1 hi (at former 8(sp), now offset by 4)
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpdivd
+	lea	16(sp),sp
+	addq.l	#8,sp
+	move.l	d0,d2
+	move.l	d1,d3
+
+_atand_poly:
+	move.l	d5,-4(a6)
+	move.l	d2,-12(a6)
+	move.l	d3,-8(a6)
+
+	; x²
+	move.l	d3,-(sp)
+	move.l	d2,-(sp)
+	move.l	d3,-(sp)
+	move.l	d2,-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	d0,d2
+	move.l	d1,d3
+
+	; 7-term Horner: at6,at5,...at1,1
+	move.l	_d_at6(pc),d0
+	move.l	_d_at6+4(pc),d1
+	; at5+x²*t
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	move.l	d3,-(sp)
+	move.l	d2,-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	_d_at5+4(pc),-(sp)
+	move.l	_d_at5(pc),-(sp)
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpaddd
+	lea	16(sp),sp
+	; at4+x²*t
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	move.l	d3,-(sp)
+	move.l	d2,-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	_d_at4+4(pc),-(sp)
+	move.l	_d_at4(pc),-(sp)
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpaddd
+	lea	16(sp),sp
+	; at3+x²*t
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	move.l	d3,-(sp)
+	move.l	d2,-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	_d_at3+4(pc),-(sp)
+	move.l	_d_at3(pc),-(sp)
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpaddd
+	lea	16(sp),sp
+	; at2+x²*t
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	move.l	d3,-(sp)
+	move.l	d2,-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	_d_at2+4(pc),-(sp)
+	move.l	_d_at2(pc),-(sp)
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpaddd
+	lea	16(sp),sp
+	; at1+x²*t
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	move.l	d3,-(sp)
+	move.l	d2,-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	_d_at1+4(pc),-(sp)
+	move.l	_d_at1(pc),-(sp)
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpaddd
+	lea	16(sp),sp
+	; 1+x²*t
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	move.l	d3,-(sp)
+	move.l	d2,-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	_d_one+4(pc),-(sp)
+	move.l	_d_one(pc),-(sp)
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpaddd
+	lea	16(sp),sp
+
+	; *reduced_x
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	move.l	-8(a6),-(sp)
+	move.l	-12(a6),-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+
+	move.l	-4(a6),d5
+	btst.l	#1,d5
+	beq.s	_atand_cr
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	move.l	_d_pi_4+4(pc),-(sp)
+	move.l	_d_pi_4(pc),-(sp)
+	jsr	_fpaddd
+	lea	16(sp),sp
+_atand_cr:
+	btst.l	#0,d5
+	beq.s	_atand_sgn
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	move.l	_d_pi_2+4(pc),-(sp)
+	move.l	_d_pi_2(pc),-(sp)
+	jsr	_fpsubd
+	lea	16(sp),sp
+_atand_sgn:
+	move.l	-16(a6),d4
+	or.l	d4,d0
+	movem.l	(sp)+,d2-d5
+	unlk	a6
+	rts
+_atand_retx:
+	move.l	DBL_ARG1_HI(a6),d0
+	move.l	DBL_ARG1_LO(a6),d1
+	movem.l	(sp)+,d2-d5
+	unlk	a6
+	rts
+
+
+; ============================================================
+;  _sqrtd — Newton-Raphson (3 iterations from single seed)
+; ============================================================
+_sqrtd:
+	link	a6,#0
+	movem.l	d2-d5,-(sp)
+	move.l	DBL_ARG1_HI(a6),d2
+	move.l	DBL_ARG1_LO(a6),d3
+
+	tst.l	d2
+	bmi.s	_sqrtd_nan
+	move.l	d2,d0
+	or.l	d3,d0
+	beq.s	_sqrtd_z
+
+	move.l	d3,-(sp)
+	move.l	d2,-(sp)
+	jsr	_fpdtof
+	addq.l	#8,sp
+	move.l	d0,-(sp)
+	jsr	_sqrt
+	addq.l	#4,sp
+	move.l	d0,-(sp)
+	jsr	_fpftod
+	addq.l	#4,sp
+	move.l	d0,d4
+	move.l	d1,d5
+
+	; 3 Newton steps: y=(y+x/y)/2
+	moveq	#3,d0
+	move.l	d0,-(sp)
+_sqrtd_lp:
+	move.l	d5,-(sp)
+	move.l	d4,-(sp)
+	move.l	d3,-(sp)
+	move.l	d2,-(sp)
+	jsr	_fpdivd
+	lea	16(sp),sp
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	move.l	d5,-(sp)
+	move.l	d4,-(sp)
+	jsr	_fpaddd
+	lea	16(sp),sp
+	subi.l	#$00100000,d0
+	move.l	d0,d4
+	move.l	d1,d5
+	subq.l	#1,(sp)
+	bne.s	_sqrtd_lp
+	addq.l	#4,sp
+	move.l	d4,d0
+	move.l	d5,d1
+_sqrtd_ret:
+	movem.l	(sp)+,d2-d5
+	unlk	a6
+	rts
+_sqrtd_z:
+	moveq	#0,d0
+	moveq	#0,d1
+	bra.s	_sqrtd_ret
+_sqrtd_nan:
+	move.l	#DBL_QNAN_HI,d0
+	move.l	#DBL_QNAN_LO,d1
+	bra.s	_sqrtd_ret
+
+
+; ============================================================
+;  _powd — x^y = exp(y*log(x))
+; ============================================================
+_powd:
+	link	a6,#0
+	movem.l	d2-d3,-(sp)
+	move.l	DBL_ARG2_HI(a6),d2
+	move.l	DBL_ARG2_LO(a6),d3
+	move.l	DBL_ARG1_LO(a6),-(sp)
+	move.l	DBL_ARG1_HI(a6),-(sp)
+	jsr	_logd
+	addq.l	#8,sp
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	move.l	d3,-(sp)
+	move.l	d2,-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	jsr	_expd
+	addq.l	#8,sp
+	movem.l	(sp)+,d2-d3
+	unlk	a6
+	rts
+
+	end

@@ -11,7 +11,7 @@
 
       m68k-elf-ld -pie --no-dynamic-linker -z max-page-size=0x20 -s \
           -T osiris-prg.ld  osiris_sys.o <compiler>.o... libc.o rt68k.o \
-          libieee754d.a
+          libm.a
 
   This is stage2 of the P10 self-hosting bootstrap; running CC.PRG under sim68k
   to recompile the same source yields stage3 (must be byte-identical).
@@ -22,7 +22,7 @@ param(
   [string]$Asm = 'C:\git\worm68k\68kTools\builds\win64\bin\Release\asm68K.exe',
   [string]$Ld = 'C:\git\osiris\toolchain\binutils\m68k-elf-ld.exe',
   [string]$LdScript = 'C:\git\osiris\ld\osiris-prg.ld',
-  [string]$FloatLib = 'C:\git\worm68k\68kTools\libraries\float\ieee754\libieee754d.a',
+  [string]$FloatLib = (Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'lib\libm\libm.a'),
   [string]$OutDir = (Join-Path ([System.IO.Path]::GetTempPath()) 'c68k-cc')
 )
 $ErrorActionPreference = 'Stop'
@@ -48,12 +48,13 @@ foreach ($n in $tus) {
   $objs += $o
 }
 
-$libcO = Join-Path $OutDir 'libc.o'
 $sysO  = Join-Path $OutDir 'osiris_sys.o'
 $rtO   = Join-Path $OutDir 'rt68k.o'
-Write-Host 'cc   libc.c' -ForegroundColor Cyan
-& $Cc -fintegrated-as -c "-I$inc" -o $libcO $libcC
-if ($LASTEXITCODE -ne 0) { throw 'cc libc failed' }
+# Phase 4: compile the split libc TUs (libc/core/*.c) into libc.a; link via -lc
+# so CC.PRG dead-strips the libc it doesn't use.
+Write-Host 'build libc.a (split TUs)' -ForegroundColor Cyan
+$buildLibc = Join-Path (Split-Path $PSScriptRoot -Parent) 'build-libc.ps1'
+& $buildLibc -Cc $Cc -OutDir $OutDir -CcArgs @('-fintegrated-as') | Out-Null
 Write-Host 'asm  osiris_sys.a68 ; rt68k.a68' -ForegroundColor Cyan
 & $Asm /Cx /elf /c /nologo "/Fo$sysO" $sysA | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'asm crt0 failed' }
@@ -62,7 +63,7 @@ if ($LASTEXITCODE -ne 0) { throw 'asm rt68k failed' }
 
 $prg = Join-Path $OutDir 'CC.PRG'
 Write-Host 'ld   -> CC.PRG' -ForegroundColor Cyan
-& $Ld -pie --no-dynamic-linker -z max-page-size=0x20 -s -T $LdScript -o $prg $sysO @objs $libcO $rtO $FloatLib
+& $Ld -pie --no-dynamic-linker -z max-page-size=0x20 -s -T $LdScript -o $prg $sysO @objs "-L$OutDir" -lc $rtO $FloatLib
 if ($LASTEXITCODE -ne 0) { throw "link CC.PRG failed (rc=$LASTEXITCODE)" }
 
 Write-Host ("OK: {0}  ({1:n0} bytes)" -f $prg, (Get-Item $prg).Length) -ForegroundColor Green
