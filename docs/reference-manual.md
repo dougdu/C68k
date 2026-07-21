@@ -376,7 +376,7 @@ OS-independent, `libgcc`/EABI-named so the code generator's calls are convention
 | --- | --- |
 | 32-bit integer | `__mulsi3`, `__divsi3`, `__udivsi3`, `__modsi3`, `__umodsi3` (+ variable shifts) |
 | 64-bit `long long` | `__muldi3`, `__divdi3`, `__udivdi3`, `__moddi3`, `__umoddi3`, `__ashldi3`, `__ashrdi3`, `__lshrdi3`, `__cmpdi2`, `__ucmpdi2` |
-| Soft `float`/`double` | the IEEE-754 library (`libieee754d`): `_fpadd`/`_fpsub`/`_fpmult`/`_fpdiv`/`_fpcmp` (single) and `…d` (double), conversions `_fpltof`/`_fpftol`/`_fpltod`/`_fpdtol`/`_fpftod`/`_fpdtof`, and `__cmpdf2` for correct double compares |
+| Soft `float`/`double` | the IEEE-754 library (`libieee754d`): `_fpadd`/`_fpsub`/`_fpmult`/`_fpdiv`/`_fpcmp` (single) and `…d` (double), conversions `_fpltof`/`_fpftol`/`_fpltod`/`_fpdtol`/`_fpftod`/`_fpdtof` |
 
 The 68000's `MULS/MULU/DIVS/DIVU` are only 16-bit, so 32-bit and all 64-bit / floating arithmetic go
 through these helpers. The compiler's `-O1` strength reduction removes many of the integer calls.

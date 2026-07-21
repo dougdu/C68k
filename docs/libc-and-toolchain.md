@@ -148,7 +148,7 @@ because the base 68000 lacks the instruction. It is **OS-independent**. Symbol n
 | **32-bit integer** | `__mulsi3`, `__divsi3`, `__udivsi3`, `__modsi3`, `__umodsi3`, `__ashlsi3`, `__ashrsi3`, `__lshrsi3` | The 68000 `MULS/MULU/DIVS/DIVU` are 16-bit; 32-bit and variable shifts need helpers. |
 | **64-bit `long long`** | `__muldi3`, `__divdi3`, `__udivdi3`, `__moddi3`, `__ashldi3`, `__cmpdi2` | No 64-bit unit at all. |
 | **Soft single (`float`)** | `__addsf3`, `__subsf3`, `__mulsf3`, `__divsf3`, `__cmpsf2`, `__fixsfsi`, `__floatsisf` | No FPU on the base 68000. |
-| **Soft double (`double`)** | `__adddf3`, `__subdf3`, `__muldf3`, `__divdf3`, `__cmpdf2`, `__fixdfsi`, `__floatsidf`, `__extendsfdf2`, `__truncdfsf2` | IEEE-754 double in software. |
+| **Soft double (`double`)** | `__adddf3`, `__subdf3`, `__muldf3`, `__divdf3`, `__fixdfsi`, `__floatsidf`, `__extendsfdf2`, `__truncdfsf2` | IEEE-754 double in software. |
 | **Memory helpers** | `memcpy`/`memset` fast paths, struct-copy thunks | Emitted for aggregate copies/initializers. |
 
 - **Soft-float source.** Adapt a proven, permissively licensed implementation (Berkeley

@@ -18,7 +18,6 @@
         PUBLIC  __muldi3,__divdi3,__moddi3,__udivdi3,__umoddi3
         PUBLIC  __ashldi3,__ashrdi3,__lshrdi3,__cmpdi2,__ucmpdi2
         PUBLIC  _memcpy,_memset,_memmove
-        PUBLIC  __cmpdf2
 
 * D0 = D0 * D1  (low 32 bits), shift-and-add.
 __mulsi3:
@@ -372,63 +371,6 @@ ucmpd_lo:
         rts
 ucmpd_eq:
         moveq   #0,d0
-        rts
-
-*======================================================================
-* IEEE-754 double compare (C stack ABI). Returns D0 = -1/0/1 for a<b/==/>.
-* a = 4(sp):8(sp) (hi:lo), b = 12(sp):16(sp). Replaces the soft-float lib's
-* _fpcmpd, which mis-flags a comparison whose dest operand has a zero high
-* word (e.g. `x > 0.0`). Preserves D2-D7.
-*======================================================================
-__cmpdf2:
-        movem.l d2-d5,-(sp)
-        move.l  20(sp),d0           ; a_hi
-        move.l  24(sp),d1           ; a_lo
-        move.l  28(sp),d2           ; b_hi
-        move.l  32(sp),d3           ; b_lo
-        move.l  d0,d4               ; both +/-0 ?  (|a| | |b|) == 0
-        andi.l  #$7FFFFFFF,d4
-        or.l    d1,d4               ; |a| magnitude bits
-        move.l  d2,d5
-        andi.l  #$7FFFFFFF,d5
-        or.l    d3,d5               ; |b| magnitude bits
-        or.l    d5,d4
-        bne     cdf_nz
-        moveq   #0,d0               ; both zero -> equal
-        bra     cdf_ret
-cdf_nz:
-        move.l  d0,d4
-        eor.l   d2,d4               ; sign(a) ^ sign(b) in bit 31
-        bmi     cdf_diff
-        tst.l   d0                  ; same sign
-        bmi     cdf_neg
-        cmp.l   d2,d0               ; both positive: larger pattern = larger
-        bhi     cdf_gt
-        bcs     cdf_lt
-        cmp.l   d3,d1
-        bhi     cdf_gt
-        bcs     cdf_lt
-        moveq   #0,d0
-        bra     cdf_ret
-cdf_neg:
-        cmp.l   d2,d0               ; both negative: larger pattern = smaller
-        bhi     cdf_lt
-        bcs     cdf_gt
-        cmp.l   d3,d1
-        bhi     cdf_lt
-        bcs     cdf_gt
-        moveq   #0,d0
-        bra     cdf_ret
-cdf_diff:
-        tst.l   d0                  ; different signs: negative is smaller
-        bmi     cdf_lt
-cdf_gt:
-        moveq   #1,d0
-        bra     cdf_ret
-cdf_lt:
-        moveq   #-1,d0
-cdf_ret:
-        movem.l (sp)+,d2-d5
         rts
 
 *======================================================================
