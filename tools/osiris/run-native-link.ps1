@@ -40,6 +40,7 @@ param(
   [switch]$NoIntegrated,    # compile C via asm68K (isolate integrated-emitter issues)
   [switch]$Bare,            # link crt0/seam + program + runtime only (no archives)
   [switch]$NoFloat,         # link libc.a/libheap.a but not libm.a (isolate the float archive)
+  [switch]$NoStrip,         # keep the .symtab (unstripped) -- exercises LINK's symtab path
   [string]$Cpu = '',        # sim68k --cpu (e.g. 68000 for the full 24-bit/16MB model)
   [string]$Mem = '',        # sim68k --mem (e.g. MAX)
   [int]$BootWait = 5,
@@ -210,10 +211,10 @@ if ($useArchive) { $linkObjs += 'EXTRA.A' }
 else { foreach($eo in $extraObjs){ $linkObjs += $eo.N } }
 $linkObjs += 'RT68K.O'
 if (-not $Bare) { $linkObjs += 'LIBC.A'; if (-not $NoFloat) { $linkObjs += 'LIBM.A' }; $linkObjs += 'LIBHEAP.A' }
-# Strip the output (-s), matching the cross ld default. (Also avoids LINK.PRG's
-# unstripped .symtab build, whose scratch buffers are still fixed-size pending
-# the Stage-2 growable-table work.)
-$linkCmd = "LINK -s -o $Run.PRG " + ($linkObjs -join ' ')
+# Strip the output (-s) by default, matching the cross ld default. -NoStrip
+# keeps the full .symtab (LINK sizes it to the actual symbol count).
+$sflag = if ($NoStrip) { '' } else { '-s ' }
+$linkCmd = "LINK ${sflag}-o $Run.PRG " + ($linkObjs -join ' ')
 try {
   Start-Sleep -Seconds $BootWait
   if ($useArchive) {
