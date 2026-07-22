@@ -149,24 +149,15 @@ $ccArgs=@(); if (-not $NoIntegrated) { $ccArgs += '-fintegrated-as' }
 function Chk($desc){ if($LASTEXITCODE -ne 0){ throw "$desc failed (rc=$LASTEXITCODE)" } }
 & $Asm /Cx /elf /c /nologo "/Fo$sysO" $sysA  2>&1 | Out-Null; Chk 'asm crt0'
 & $Asm /Cx /elf /c /nologo "/Fo$rtO"  $rtA   2>&1 | Out-Null; Chk 'asm runtime'
-# Phase 6: the native Osiris LINK member-selects per object from the c68k
-# archives -- the same dead-stripping the cross ld does, no whole-archive
-# LIBC.O blob. The native LINK.PRG keeps a SINGLE archive context per link (it
-# searches only the last archive on the command line; multi-archive is a linker
-# enhancement), so merge libc.a + libm.a + libheap.a into one combined archive
-# with ar's MRI 'addlib' -- member selection still strips per object. Build
-# libc.a here; libm.a/libheap.a come from the tree (built on demand if missing).
-$combA = Join-Path $work 'LIBC68K.A'
+# The native Osiris LINK member-selects per object from the c68k archives --
+# the same dead-stripping the cross ld does. LINK.PRG now searches MULTIPLE
+# archives per link (fixpoint over all archives), so libc.a/libm.a/libheap.a
+# are staged and linked as three separate archives -- no host-side merge.
+# Build libc.a here; libm.a/libheap.a come from the tree (built on demand).
 if (-not $Bare) {
   & (Join-Path $repo 'tools\build-libc.ps1') -OutDir $work | Out-Null; Chk 'build libc.a'
   if (-not (Test-Path $FloatLib)) { & (Join-Path $repo 'tools\build-libm.ps1')   | Out-Null; Chk 'build libm.a' }
   if (-not (Test-Path $HeapLib))  { & (Join-Path $repo 'tools\build-libheap.ps1') | Out-Null; Chk 'build libheap.a' }
-  $mri  = "create $($combA -replace '\\','/')`naddlib $($libcA -replace '\\','/')`n"
-  if (-not $NoFloat) { $mri += "addlib $($FloatLib -replace '\\','/')`n" }
-  $mri += "addlib $($HeapLib -replace '\\','/')`nsave`nend`n"
-  Remove-Item $combA -Force -EA SilentlyContinue
-  $mri | & $Ar -M 2>&1 | Out-Null; Chk 'ar -M combine archives'
-  & $Ranlib $combA 2>&1 | Out-Null; Chk 'ranlib combined archive'
 }
 & $Cc @ccArgs -c $Src   -o $progO "-I$inc"    2>&1 | Out-Null; Chk 'cc program'
 
@@ -189,7 +180,11 @@ $stage=@(
   @{ N="$Run.O";   F=$progO }
 )
 foreach($eo in $extraObjs){ $stage += $eo }
-if (-not $Bare) { $stage += @{ N='LIBC68K.A'; F=$combA } }
+if (-not $Bare) {
+  $stage += @{ N='LIBC.A';    F=$libcA }
+  if (-not $NoFloat) { $stage += @{ N='LIBM.A';    F=$FloatLib } }
+  $stage += @{ N='LIBHEAP.A'; F=$HeapLib }
+}
 if ($UseLib) { $stage += @{ N='LIB.PRG'; F=$LibPrg } }
 foreach($s in $stage){ $n=Name11 $s.N; Remove-Fat12File $bz $n; Add-Fat12File $bz $n ([IO.File]::ReadAllBytes($s.F)) }
 [IO.File]::WriteAllBytes($img,$bz)
@@ -208,19 +203,16 @@ $psi.RedirectStandardInput=$true; $psi.UseShellExecute=$false
 $p=[System.Diagnostics.Process]::Start($psi)
 function _send($proc,[string]$s){ $b=[Text.Encoding]::ASCII.GetBytes($s); $proc.StandardInput.BaseStream.Write($b,0,$b.Length); $proc.StandardInput.BaseStream.Flush() }
 
-# object list for LINK: crt0, program, extras (or their archive), runtime, [combined c68k archive]
+# object list for LINK: crt0, program, extras (or their archive), runtime, [libc/libm/libheap archives]
 $linkObjs = @('SYS.O', "$Run.O")
 $useArchive = ($UseLib -and $extraObjs.Count -gt 0)
 if ($useArchive) { $linkObjs += 'EXTRA.A' }
 else { foreach($eo in $extraObjs){ $linkObjs += $eo.N } }
 $linkObjs += 'RT68K.O'
-if (-not $Bare) { $linkObjs += 'LIBC68K.A' }
-# Strip the output (-s), matching the cross ld default. This is also required
-# for larger links: unstripped, LINK.PRG builds a full .symtab, but its fixed
-# buffers (LL_MAXSYM=1024 symbols, LM_SLACK=64 KB image tail) overflow once a
-# link pulls enough objects -- the libheap members push the symbol count to
-# ~6k, corrupting the symtab and bus-erroring the linker in lo_build_strtab.
-# Stripping skips that whole path, so heap programs link natively.
+if (-not $Bare) { $linkObjs += 'LIBC.A'; if (-not $NoFloat) { $linkObjs += 'LIBM.A' }; $linkObjs += 'LIBHEAP.A' }
+# Strip the output (-s), matching the cross ld default. (Also avoids LINK.PRG's
+# unstripped .symtab build, whose scratch buffers are still fixed-size pending
+# the Stage-2 growable-table work.)
 $linkCmd = "LINK -s -o $Run.PRG " + ($linkObjs -join ' ')
 try {
   Start-Sleep -Seconds $BootWait
