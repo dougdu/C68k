@@ -11,5 +11,8 @@ extern int errno;
 #define EEXIST 17  /* File exists */
 #define EINVAL 22  /* Invalid argument */
 #define EMFILE 24  /* Too many open files */
+#define EDOM 33    /* Numerical argument out of domain */
+#define ERANGE 34  /* Numerical result out of range */
+#define EILSEQ 84  /* Illegal byte sequence */
 
 #endif /* _ERRNO_H */

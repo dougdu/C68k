@@ -9,6 +9,10 @@ deviates from the standard.
 It is a working reference for driving the library toward conformance. Rows
 marked ⚠️ or ❌ are the actionable gaps.
 
+**Status (2026‑07‑22):** the Tier 1 gaps in the roadmap below are now
+implemented and verified — `tests/lockstep/tier1.c` passes 27/27 on both Osiris
+and CP/M‑68K. The tables reflect that work.
+
 ## Target model
 
 C68K targets the Motorola 68000 family under two operating systems (Osiris and
@@ -58,11 +62,11 @@ OS): `<float.h>`, `<iso646.h>`, `<limits.h>`, `<stdarg.h>`, `<stdbool.h>`,
 |--------|---------|:------:|----------|-------------------|
 | `<assert.h>` | `assert` diagnostic macro | ✅ | `libc/include/assert.h`, `libc/core/assert.c` | Honours `NDEBUG`. Conforming. |
 | `<complex.h>` | Complex arithmetic (`_Complex`) | ❌ | — | Not provided; compiler has no `_Complex` support. |
-| `<ctype.h>` | Character classification | ⚠️ | `libc/include/ctype.h`, `libc/core/is*.c` | Missing `isblank`, `isgraph`. C/ASCII locale only. |
-| `<errno.h>` | Error numbers | ⚠️ | `libc/include/errno.h`, `libc/core/errno.c` | **Missing the C99‑mandated `EDOM`, `ERANGE`, `EILSEQ`**; ships a POSIX subset instead. |
+| `<ctype.h>` | Character classification | ✅ | `libc/include/ctype.h`, `libc/core/is*.c` | Complete (C/ASCII locale). |
+| `<errno.h>` | Error numbers | ✅ | `libc/include/errno.h`, `libc/core/errno.c` | `EDOM`/`ERANGE`/`EILSEQ` now defined (plus a POSIX subset). Math routines do not yet *set* them (Tier 2). |
 | `<fenv.h>` | Floating‑point environment | ❌ | — | No FP exception/rounding control (soft‑float is fixed round‑to‑nearest). |
 | `<float.h>` | Floating‑type characteristics | ✅ | `include/float.h`, `libc/include/float.h` | Complete. |
-| `<inttypes.h>` | Integer format conversions | ⚠️ | `libc/include/inttypes.h` | `PRI*`/`SCN*` partial; `imaxabs`/`imaxdiv`/`strtoimax`/`strtoumax` absent. |
+| `<inttypes.h>` | Integer format conversions | ✅ | `libc/include/inttypes.h`, `libc/core/imax*.c`, `strto[iu]max.c` | Full `PRI*`/`SCN*` set; `imaxabs`/`imaxdiv`/`strtoimax`/`strtoumax` present. |
 | `<iso646.h>` | Alternative operator spellings | ✅ | `libc/include/iso646.h` | Complete. |
 | `<limits.h>` | Integer‑type limits | ✅ | `include/limits.h`, `libc/include/limits.h` | Complete for ILP32. |
 | `<locale.h>` | Localization | ❌ | — | Only the "C" locale is implied; `setlocale`/`localeconv` absent. |
@@ -73,9 +77,9 @@ OS): `<float.h>`, `<iso646.h>`, `<limits.h>`, `<stdarg.h>`, `<stdbool.h>`,
 | `<stdbool.h>` | Boolean type/values | ✅ | `include/stdbool.h`, `libc/include/stdbool.h` | Complete. |
 | `<stddef.h>` | Common definitions | ✅ | `include/stddef.h` | `size_t`, `ptrdiff_t`, `wchar_t`, `NULL`, `offsetof`. |
 | `<stdint.h>` | Fixed‑width integers | ✅ | `include/stdint.h` | Complete (exact/least/fast/ptr/max + limits + `*_C` macros). |
-| `<stdio.h>` | Input/output | ⚠️ | `libc/include/stdio.h`, `libc/core/*.c` | No `scanf`/`fscanf`, wide/positioning/`tmp*`/`remove`/`rename`/`perror`/`ungetc`/`rewind`/`clearerr`. See §stdio. |
-| `<stdlib.h>` | General utilities | ⚠️ | `libc/include/stdlib.h`, `libc/core/*.c` | No `getenv`/`system`/`_Exit`/`atoll`/`llabs`/`lldiv`/`strtof`/multibyte. |
-| `<string.h>` | String handling | ⚠️ | `libc/include/string.h`, `libc/core/str*.c`, **rt** | Missing `strcoll`,`strxfrm`,`strspn`,`strcspn`,`strpbrk`. |
+| `<stdio.h>` | Input/output | ⚠️ | `libc/include/stdio.h`, `libc/core/*.c` | Added `scanf`/`fscanf`/`vscanf`/`vfscanf`/`vprintf`/`vsprintf`/`ungetc`/`rewind`/`clearerr`/`perror`/`remove`. Still no `freopen`/`setvbuf`/`tmp*`/`fgetpos`/wide; `rename` is a failing stub; `scanf`/`fscanf` read a line at a time. See §stdio. |
+| `<stdlib.h>` | General utilities | ⚠️ | `libc/include/stdlib.h`, `libc/core/*.c` | Added `atoll`/`llabs`/`lldiv`/`strtof`/`_Exit`/`getenv`/`system`. Only the multibyte functions (`mblen`/`mbtowc`/…) remain absent (no wide‑char support). |
+| `<string.h>` | String handling | ⚠️ | `libc/include/string.h`, `libc/core/str*.c`, **rt** | Added `strspn`/`strcspn`/`strpbrk`. Only `strcoll`/`strxfrm` remain absent (no locale). |
 | `<tgmath.h>` | Type‑generic math | ❌ | — | Requires `<complex.h>` + `<math.h>` generic macros. |
 | `<time.h>` | Date and time | ⚠️ | `libc/include/time.h`, `libc/core/time.c` | `clock` stubbed; `localtime`==`gmtime` (no TZ/DST); `time_t` 32‑bit. |
 | `<wchar.h>` | Extended/wide characters | ❌ | — | Not provided. |
@@ -111,10 +115,10 @@ variants) are ❌: `cabs`, `cacos`, `cacosh`, `carg`, `casin`, `casinh`, `catan`
 |---|---|:--:|---|---|
 | `isalnum` | alphanumeric | ✅ | libc / `isalnum.c` | ASCII/C locale. |
 | `isalpha` | alphabetic | ✅ | libc / `isalpha.c` | |
-| `isblank` | space or tab | ❌ | — | C99 addition; not implemented. |
+| `isblank` | space or tab | ✅ | libc / `isblank.c` | |
 | `iscntrl` | control char | ✅ | libc / `iscntrl.c` | |
 | `isdigit` | decimal digit | ✅ | libc / `isdigit.c` | |
-| `isgraph` | printable, non‑space | ❌ | — | Not implemented. |
+| `isgraph` | printable, non‑space | ✅ | libc / `isgraph.c` | |
 | `islower` | lowercase | ✅ | libc / `islower.c` | |
 | `isprint` | printable incl. space | ✅ | libc / `isprint.c` | |
 | `ispunct` | punctuation | ✅ | libc / `ispunct.c` | |
@@ -129,11 +133,11 @@ variants) are ❌: `cabs`, `cacos`, `cacosh`, `carg`, `casin`, `casinh`, `catan`
 | Item | Purpose | Status | Library / File | Notes |
 |---|---|:--:|---|---|
 | `errno` | Last‑error lvalue | ⚠️ | libc / `errno.c` | Plain `extern int` (single‑threaded). Conforming for a hosted single‑thread. |
-| `EDOM` | Domain error | ❌ | — | **C99‑required; missing.** |
-| `ERANGE` | Range error | ❌ | — | **C99‑required; missing.** |
-| `EILSEQ` | Illegal byte sequence | ❌ | — | **C99‑required; missing.** |
+| `EDOM` | Domain error | ✅ | libc / `errno.h` | Value 33. Not yet *set* by math routines (Tier 2). |
+| `ERANGE` | Range error | ✅ | libc / `errno.h` | Value 34. Not yet *set* by math/`strto*` (Tier 2). |
+| `EILSEQ` | Illegal byte sequence | ✅ | libc / `errno.h` | Value 84. |
 
-Provided instead (POSIX numbers): `ENOENT`, `EIO`, `EBADF`, `ENOMEM`, `EACCES`,
+Also provided (POSIX numbers): `ENOENT`, `EIO`, `EBADF`, `ENOMEM`, `EACCES`,
 `EEXIST`, `EINVAL`, `EMFILE`.
 
 ### `<fenv.h>` — floating‑point environment
@@ -146,13 +150,13 @@ Header absent. All ❌: `feclearexcept`, `fegetexceptflag`, `feraiseexcept`,
 
 | Function | Purpose | Status | Library / File | Notes |
 |---|---|:--:|---|---|
-| `imaxabs` | `intmax_t` abs | ❌ | — | |
-| `imaxdiv` | `intmax_t` div/rem | ❌ | — | |
-| `strtoimax` | string → `intmax_t` | ❌ | — | Can wrap `strtoll`. |
-| `strtoumax` | string → `uintmax_t` | ❌ | — | Can wrap `strtoull`. |
+| `imaxabs` | `intmax_t` abs | ✅ | libc / `imaxabs.c` | |
+| `imaxdiv` | `intmax_t` div/rem | ✅ | libc / `imaxdiv.c` | `imaxdiv_t` in `<inttypes.h>`. |
+| `strtoimax` | string → `intmax_t` | ✅ | libc / `strtoimax.c` | wraps `strtoll`. |
+| `strtoumax` | string → `uintmax_t` | ✅ | libc / `strtoumax.c` | wraps `strtoull`. |
 | `wcstoimax` | wide string → `intmax_t` | ❌ | — | Needs `<wchar.h>`. |
 | `wcstoumax` | wide string → `uintmax_t` | ❌ | — | Needs `<wchar.h>`. |
-| `PRI*` / `SCN*` macros | `printf`/`scanf` format macros | ⚠️ | hdr | Only 32/64‑bit `d/i/u/o/x/X` provided; 8/16/`LEAST`/`FAST`/`MAX`/`PTR` variants missing. |
+| `PRI*` / `SCN*` macros | `printf`/`scanf` format macros | ✅ | hdr | Full set: `d/i/o/u/x/X` (PRI) and `d/i/o/u/x` (SCN) for 8/16/32/64/`LEAST`/`FAST`/`MAX`/`PTR`. |
 
 ### `<locale.h>` — localization
 
@@ -243,7 +247,8 @@ integer set with limits and `INT*_C`/`UINT*_C` constructors. ✅
 | `fflush` | Flush buffer | ✅ | libc / `fflush.c` | |
 | `freopen` | Reassign stream | ❌ | — | |
 | `setbuf` / `setvbuf` | Buffering control | ❌ | — | Buffering fixed at `BUFSIZ`. |
-| `remove` / `rename` | Delete/rename file | ❌ | — | Backends have `unlink`; can wrap. |
+| `remove` | Delete file | ✅ | libc / `remove.c` | wraps `sys_unlink`. |
+| `rename` | Rename file | ⚠️ | libc / `rename.c` | Failing stub — no rename seam yet; sets `errno=EINVAL`. |
 | `tmpfile` / `tmpnam` | Temp files | ❌ | — | |
 | `printf` | Formatted stdout | ⚠️ | libc / `printf.c`,`vformat.c` | Int/str/char, `%f/%e/%g`, width/prec/flags; no `%a`, `%n`, wide. |
 | `fprintf` | Formatted to stream | ⚠️ | libc / `fprintf.c` | as `printf`. |
@@ -251,24 +256,25 @@ integer set with limits and `INT*_C`/`UINT*_C` constructors. ✅
 | `snprintf` | Bounded to buffer | ✅ | libc / `snprintf.c` | |
 | `vfprintf` | va_list to stream | ✅ | libc / `vfprintf.c` | |
 | `vsnprintf` | va_list, bounded | ✅ | libc / `vsnprintf.c` | |
-| `vprintf` `vsprintf` `vscanf`… | other v‑forms | ❌ | — | Only `vfprintf`/`vsnprintf`/`vsscanf` provided. |
-| `scanf` `fscanf` | Formatted input | ❌ | — | Only `sscanf` exists; can layer on it. |
-| `sscanf` | Parse from string | ⚠️ | libc / `sscanf.c`,`vsscanf.c` | `d/i/u/o/x/X/p`, `f/e/g`, `s/c/%`, width, `*`, `h/l/ll`. |
+| `vprintf` `vsprintf` | va_list print variants | ✅ | libc / `vprintf.c`,`vsprintf.c` | |
+| `vscanf` `vfscanf` | va_list scan variants | ✅ | libc / `vscanf.c`,`vfscanf.c` | Line‑buffered (see `scanf`). |
+| `scanf` `fscanf` | Formatted input | ⚠️ | libc / `scanf.c`,`fscanf.c`,`vfscanf.c` | Layered on `vsscanf`: read a line, then parse. Input the format does not consume is dropped with the rest of the line. |
+| `sscanf` | Parse from string | ⚠️ | libc / `sscanf.c`,`vsscanf.c` | `d/i/u/o/x/X/p`, `f/e/g`, `s/c/%`, width, `*`, `hh/h/l/ll`. |
 | `vsscanf` | va_list parse | ✅ | libc / `vsscanf.c` | |
 | `fgetc` `getc` `getchar` | Read char | ✅ | libc / `fgetc.c`,`getc.c`,`getchar.c` | |
 | `fgets` | Read line | ✅ | libc / `fgets.c` | |
-| `ungetc` | Push back char | ❌ | — | |
+| `ungetc` | Push back char | ✅ | libc / `ungetc.c` | One‑char pushback guaranteed. |
 | `fputc` `putc` `putchar` | Write char | ✅ | libc / `fputc.c`,`putc.c`,`putchar.c` | |
 | `fputs` `puts` | Write string | ✅ | libc / `fputs.c`,`puts.c` | |
 | `gets` | Read line (unsafe) | ❌ | — | Intentionally omitted (removed in C11). |
 | `fread` `fwrite` | Binary I/O | ✅ | libc / `fread.c`,`fwrite.c` | |
 | `fseek` | Set position | ⚠️ | libc / `fseek.c` | `SEEK_*`; backend seek support varies. |
 | `ftell` | Get position | ✅ | libc / `ftell.c` | |
-| `rewind` | Reset position | ❌ | — | Trivial via `fseek`. |
+| `rewind` | Reset position | ✅ | libc / `rewind.c` | `fseek(...,SEEK_SET)` + clears EOF/err. |
 | `fgetpos` `fsetpos` | `fpos_t` position | ❌ | — | |
 | `feof` `ferror` | Stream status | ✅ | libc / `feof.c`,`ferror.c` | |
-| `clearerr` | Clear status | ❌ | — | |
-| `perror` | Print error message | ❌ | — | Pairs with `strerror`. |
+| `clearerr` | Clear status | ✅ | libc / `clearerr.c` | |
+| `perror` | Print error message | ✅ | libc / `perror.c` | Uses `strerror(errno)`. |
 
 Macros: `EOF`, `BUFSIZ`, `SEEK_SET/CUR/END`, `stdin/stdout/stderr` present.
 Missing: `FOPEN_MAX`, `FILENAME_MAX`, `TMP_MAX`, `L_tmpnam`,
@@ -280,26 +286,26 @@ Missing: `FOPEN_MAX`, `FILENAME_MAX`, `TMP_MAX`, `L_tmpnam`,
 |---|---|:--:|---|---|
 | `malloc` `calloc` `realloc` `free` | Dynamic memory | ✅ | libc / `malloc.c` → **libheap** | Real reclaiming heap; `free`/`realloc` work. |
 | `atoi` `atol` | string → int/long | ✅ | libc / `atoi.c`,`atol.c` | |
-| `atoll` | string → long long | ❌ | — | |
+| `atoll` | string → long long | ✅ | libc / `atoll.c` | |
 | `atof` | string → double | ⚠️ | libc / `atof.c` | via libm `atod`. |
 | `strtol` `strtoul` | string → (u)long | ✅ | libc / `strtol.c`,`strtoul.c` | |
 | `strtoll` `strtoull` | string → (u)long long | ✅ | libc / `strtoll.c`,`strtoull.c` | |
 | `strtod` | string → double | ✅ | libc / `strtod.c` | |
-| `strtof` | string → float | ❌ | — | Can wrap `strtod`. |
+| `strtof` | string → float | ✅ | libc / `strtof.c` | narrows `strtod`. |
 | `strtold` | string → long double | ⚠️ | libc / `strtold.c` | `long double`==`double`. |
 | `rand` `srand` | PRNG | ⚠️ | libc / `rand.c` | LCG, `RAND_MAX` 32767 (minimum compliant). |
 | `abs` `labs` | int/long abs | ✅ | libc / `abs.c`,`labs.c` | |
-| `llabs` | long long abs | ❌ | — | |
+| `llabs` | long long abs | ✅ | libc / `llabs.c` | |
 | `div` `ldiv` | int/long div+rem | ✅ | libc / `div.c`,`ldiv.c` | |
-| `lldiv` | long long div+rem | ❌ | — | |
+| `lldiv` | long long div+rem | ✅ | libc / `lldiv.c` | `lldiv_t` in `<stdlib.h>`. |
 | `bsearch` | Binary search | ✅ | libc / `bsearch.c` | |
 | `qsort` | Sort | ⚠️ | libc / `qsort.c` | Shell sort (conforming behaviour, not the named algorithm). |
 | `abort` | Abnormal exit | ⚠️ | libc / `exit.c` | Implemented as `exit(1)`: runs `atexit` handlers + flushes, and does **not** raise `SIGABRT`. |
 | `atexit` | Register exit handler | ✅ | libc / `exit.c` | LIFO table, 32 handlers (meets the C99 minimum). |
 | `exit` | Normal exit | ✅ | libc / `exit.c` | Flushes streams. |
-| `_Exit` | Exit w/o cleanup | ❌ | — | |
-| `getenv` | Environment lookup | ❌ | — | No environment on these OSes. |
-| `system` | Run command | ❌ | — | |
+| `_Exit` | Exit w/o cleanup | ✅ | libc / `_Exit.c` | No `atexit`/flush. |
+| `getenv` | Environment lookup | ⚠️ | libc / `getenv.c` | Always returns `NULL` (no environment on these OSes). |
+| `system` | Run command | ⚠️ | libc / `system.c` | `system(NULL)`→0 (no processor); any command→−1. |
 | `mblen` `mbtowc` `wctomb` `mbstowcs` `wcstombs` | Multibyte/wide | ❌ | — | No wide‑char support. |
 
 ### `<string.h>` — string handling
@@ -317,7 +323,7 @@ Missing: `FOPEN_MAX`, `FILENAME_MAX`, `TMP_MAX`, `L_tmpnam`,
 | `strcoll` | Locale compare | ❌ | — | No locale. |
 | `strxfrm` | Locale transform | ❌ | — | No locale. |
 | `strchr` `strrchr` | Find char | ✅ | libc / `strchr.c`,`strrchr.c` | |
-| `strspn` `strcspn` `strpbrk` | Span/find‑set | ❌ | — | Not implemented. |
+| `strspn` `strcspn` `strpbrk` | Span/find‑set | ✅ | libc / `strspn.c`,`strcspn.c`,`strpbrk.c` | |
 | `strstr` | Find substring | ✅ | libc / `strstr.c` | |
 | `strtok` | Tokenize | ✅ | libc / `strtok.c` | |
 | `strlen` | Length | ✅ | libc / `strlen.c` | |
@@ -380,18 +386,24 @@ listed for completeness so they are not mistaken for standard coverage.
 Ordered roughly by value‑to‑effort. None of these require compiler changes
 except where noted.
 
-### Tier 1 — small, high‑value fixes (pure header/libc additions)
-1. **`<errno.h>`**: add `EDOM`, `ERANGE`, `EILSEQ` (C99‑mandated). Prerequisite
-   for conforming `<math.h>`/`strto*` error reporting.
-2. **`<ctype.h>`**: add `isblank`, `isgraph`.
-3. **`<string.h>`**: add `strspn`, `strcspn`, `strpbrk` (trivial, pure C).
-4. **`<stdlib.h>`**: add `atoll`, `llabs`, `lldiv`, `strtof` (wrap `strtod`),
-   `_Exit`; stub `getenv`→`NULL` and `system`→`-1` for source portability.
-5. **`<stdio.h>`**: add `rewind`, `clearerr`, `perror`, `ungetc`, `remove`,
-   `rename` (wrap `unlink`), and `vprintf`/`vsprintf` (wrap existing v‑engine).
-   Add `scanf`/`fscanf` layered on the existing `vsscanf` engine.
-6. **`<inttypes.h>`**: add `imaxabs`, `imaxdiv`, `strtoimax`, `strtoumax`, and
-   complete the `PRI*`/`SCN*` macro set.
+### Tier 1 — small, high‑value fixes — ✅ DONE (2026‑07‑22)
+Implemented as pure header/libc additions and verified by
+`tests/lockstep/tier1.c` (27/27 on Osiris and CP/M‑68K):
+1. ✅ **`<errno.h>`**: `EDOM`, `ERANGE`, `EILSEQ` defined.
+2. ✅ **`<ctype.h>`**: `isblank`, `isgraph`.
+3. ✅ **`<string.h>`**: `strspn`, `strcspn`, `strpbrk`.
+4. ✅ **`<stdlib.h>`**: `atoll`, `llabs`, `lldiv`, `strtof`, `_Exit`, `getenv`
+   (→`NULL`), `system` (`NULL`→0 else −1).
+5. ✅ **`<stdio.h>`**: `rewind`, `clearerr`, `perror`, `ungetc`, `remove`,
+   `vprintf`, `vsprintf`, and `scanf`/`fscanf`/`vscanf`/`vfscanf` (layered on
+   `vsscanf`); also `hh` length support added to the scanner.
+6. ✅ **`<inttypes.h>`**: `imaxabs`, `imaxdiv`, `strtoimax`, `strtoumax`, and the
+   complete `PRI*`/`SCN*` macro set.
+
+Residual Tier 1 follow‑ups (need OS‑seam or engine work, deferred):
+- `rename` is a failing stub — promote when the syscall seam gains a rename.
+- `scanf`/`fscanf` are line‑buffered (input past the parsed fields is dropped
+  with the rest of the line); a char‑streaming scanner would remove this limit.
 
 ### Tier 2 — moderate
 7. **`<math.h>` correctness**: give the functions **external** linkage (real

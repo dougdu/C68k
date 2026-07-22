@@ -74,7 +74,9 @@ int vsscanf(const char *s, const char *fmt, va_list ap) {
           *va_arg(ap, long long *) = (long long)sv;
         else if (lng == 1)
           *va_arg(ap, long *) = sv;
-        else if (shrt)
+        else if (shrt >= 2)
+          *va_arg(ap, signed char *) = (signed char)sv;
+        else if (shrt == 1)
           *va_arg(ap, short *) = (short)sv;
         else
           *va_arg(ap, int *) = (int)sv;

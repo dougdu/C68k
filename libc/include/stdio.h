@@ -52,6 +52,7 @@ int fgetc(FILE *fp);
 int getc(FILE *fp);
 int getchar(void);
 char *fgets(char *s, int n, FILE *fp);
+int ungetc(int c, FILE *fp);
 
 int fputc(int c, FILE *fp);
 int putc(int c, FILE *fp);
@@ -61,8 +62,13 @@ int puts(const char *s);
 
 int fseek(FILE *fp, long off, int whence);
 long ftell(FILE *fp);
+void rewind(FILE *fp);
 int feof(FILE *fp);
 int ferror(FILE *fp);
+void clearerr(FILE *fp);
+void perror(const char *s);
+int remove(const char *path);
+int rename(const char *oldp, const char *newp);
 
 int printf(const char *fmt, ...);
 int fprintf(FILE *fp, const char *fmt, ...);
@@ -70,8 +76,14 @@ int sprintf(char *buf, const char *fmt, ...);
 int snprintf(char *buf, size_t size, const char *fmt, ...);
 int vfprintf(FILE *fp, const char *fmt, va_list ap);
 int vsnprintf(char *buf, size_t size, const char *fmt, va_list ap);
+int vprintf(const char *fmt, va_list ap);
+int vsprintf(char *buf, const char *fmt, va_list ap);
 
+int scanf(const char *fmt, ...);
+int fscanf(FILE *fp, const char *fmt, ...);
 int sscanf(const char *s, const char *fmt, ...);
+int vscanf(const char *fmt, va_list ap);
+int vfscanf(FILE *fp, const char *fmt, va_list ap);
 int vsscanf(const char *s, const char *fmt, va_list ap);
 
 FILE *open_memstream(char **ptr, size_t *sizeloc);
