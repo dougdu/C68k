@@ -276,6 +276,10 @@ Summarized here; specified in [libc-and-toolchain.md](libc-and-toolchain.md).
   /modulo/shift** helpers the 68000 lacks in one instruction. Emitted-code calls resolve here.
 - **`lib/libm`** — a math library sourced from a permissive donor (e.g. **openlibm** / **fdlibm** /
   picolibc's libm) adapted to soft-float ILP32-BE; OS-independent.
+- **`lib/heap`** — the **SOA heap allocator** (`libheap.a`, vendored from worm68k) that backs
+  `malloc`/`free`/`realloc`/`calloc`. It is the **sole allocator** (there is no bump fallback), so
+  **`free` really reclaims** and freed memory is reused. The only OS difference is how the heap
+  *grows*, which is isolated in the seam's `_sbrk`; the allocator itself is OS-independent.
 
 ## 10. Build & test pipeline
 
@@ -332,6 +336,7 @@ c68k/
   lib/
     runtime/                soft-float, long long, mul/div/shift helpers
     libm/                   math library (soft-float)
+    heap/                   SOA heap allocator (libheap.a) — real malloc/free
   tools/
     osiris-prg.ld cpm68k.ld linker scripts (mirrored/derived from Osiris/worm68k)
     link/ lib/              CP/M-68K ports of the native LINK / LIB tools

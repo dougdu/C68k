@@ -50,6 +50,7 @@ flowchart TB
 | CP/M seam + crt0 | `libc/cpm/` | CP/M-68K | BDOS `TRAP #2` primitives, `crt0.cpm` |
 | Runtime support | `lib/runtime/` | both (once) | soft-float, 64-bit `long long`, int helpers |
 | Math | `lib/libm/` | both (once) | `<math.h>` over soft-float |
+| Heap | `lib/heap/` | both (once) | SOA allocator (`libheap.a`) backing `malloc`/`free`/`realloc`/`calloc` |
 | Headers | `libc/include/` | both | the C standard headers |
 
 ## 2. The OS-independent core
@@ -61,8 +62,8 @@ targets.
 - **`<stdio.h>`** — `FILE` streams with buffering, `fopen`/`fread`/`fwrite`/`fclose`/`fseek`,
   `fgetc`/`fputc`/`fgets`/`fputs`, and the **`printf`/`scanf` family** over one shared
   format engine. All byte movement bottoms out in `_sys_read`/`_sys_write`.
-- **`<string.h>`**, **`<ctype.h>`**, **`<stdlib.h>`** (`malloc`/`free`/`realloc` over `_sbrk`,
-  `atoi`/`strtol`/`qsort`/`bsearch`/`abs`/`div`, `rand`), **`<errno.h>`**, **`<assert.h>`**,
+- **`<string.h>`**, **`<ctype.h>`**, **`<stdlib.h>`** (`malloc`/`free`/`realloc`/`calloc` over the
+  **libheap** allocator, `atoi`/`strtol`/`qsort`/`bsearch`/`abs`/`div`, `rand`), **`<errno.h>`**, **`<assert.h>`**,
   **`<stdarg.h>`** glue, **`<limits.h>`**/**`<stdint.h>`**/**`<stddef.h>`** (ILP32 values),
   **`<time.h>`** formatting (clock source is a seam call).
 - **`malloc`** is backed by the vendored **libheap** allocator, so **`free` really

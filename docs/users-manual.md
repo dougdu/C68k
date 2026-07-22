@@ -61,7 +61,7 @@ contains everything c68k owns:
 | `bin/c68k.exe` | the cross-compiler |
 | `include/` | the compiler's freestanding builtin headers |
 | `libc/` | the C library sources (core + per-OS seam + headers) |
-| `lib/` | the integer runtime and soft-float sources |
+| `lib/` | the integer runtime, soft-float, math (`libm`), and heap allocator (`libheap`) sources |
 | `docs/` | this manual, the reference, the SDK guide, architecture |
 
 ### 2.2 The external link-time toolchain

@@ -66,7 +66,7 @@ flowchart TB
     XC --> OBJ["68000 objects (.o, ELF32-BE)"]
     OBJ --> LINKO["ld / LINK + osiris-prg.ld"] --> PRG["HELLO.PRG  (Osiris)"]
     OBJ --> LINKC["ld / LINK + cpm68k.ld"] --> DRI["mkdri"] --> K68["HELLO.68K  (CP/M-68K)"]
-    LIBC["libc: OS-independent core\n+ per-OS syscall backend + crt0\n+ soft-float / long-long / libm"] --> LINKO
+    LIBC["libc: OS-independent core\n+ per-OS syscall backend + crt0\n+ soft-float / long-long / libm / heap (real malloc, free)"] --> LINKO
     LIBC --> LINKC
     XC -. "compiles its own source" .-> NAT["CC.PRG / CC.68K (native, self-hosted)"]
     PRG & K68 -. "tested in lockstep" .-> SIM["sim68k"]
@@ -98,7 +98,7 @@ c68k/
   include/         shared headers/equates: syscall seam, target ABI, compiler defs   (P0+)
   src/             the compiler — chibicc front end + the 68000 back end              (P0+)
   libc/            C library: OS-independent core + per-OS backend + crt0             (P4+)
-  lib/             runtime support: soft-float, 64-bit long-long, libm                (P3+)
+  lib/             runtime support: soft-float, long-long, libm, heap (malloc)        (P3+)
   tools/           linker scripts, LINK/LIB ports, mkdri glue, the lockstep harness   (P0+)
   tests/           C99 conformance programs + golden output                           (P0+)
   samples/         example programs                                                   (P4+)

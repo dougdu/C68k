@@ -180,7 +180,7 @@ Osiris under `sim68k`.
 - [x] `crt0.osiris` (relocs/argv/heap/`_exit` via `4Ch`). _(`_start` in `osiris_sys.a68`: DOS 48h arena
       claim, stack+heap, `main`, exit via 4Ch; loader applies the R_68K_RELATIVE relocs & zero-fills
       bss. argv is minimal (argc=1) — full command-tail parsing is a refinement.)_
-- [x] Core `<string.h>`, `<ctype.h>`, `<stdlib.h>` (`malloc` over `_sbrk`), `<errno.h>`.
+- [x] Core `<string.h>`, `<ctype.h>`, `<stdlib.h>` (`malloc`/`free` over **libheap**), `<errno.h>`.
       _([`libc/core/`](../libc/core) + [`libc/include/`](../libc/include); malloc is backed by the
       vendored **libheap** allocator over the `sys_sbrk` arena \u2014 real reclaiming `free`.)_
 - [x] Core `<stdio.h>`: buffered `FILE`, `printf`/`fwrite`/`fopen`/`fread`/`fseek`. _(Buffered `FILE`,
