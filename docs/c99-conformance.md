@@ -72,7 +72,7 @@ OS): `<float.h>`, `<iso646.h>`, `<limits.h>`, `<stdarg.h>`, `<stdbool.h>`,
 | `<iso646.h>` | Alternative operator spellings | ✅ | `libc/include/iso646.h` | Complete. |
 | `<limits.h>` | Integer‑type limits | ✅ | `include/limits.h`, `libc/include/limits.h` | Complete for ILP32. |
 | `<locale.h>` | Localization | ❌ | — | Only the "C" locale is implied; `setlocale`/`localeconv` absent. |
-| `<math.h>` | Mathematics | ⚠️ | `libc/include/math.h` → **libm** | `double`‑only subset via `static` inline wrappers; no `float`/`long double` variants, macros, classification, or `errno`. |
+| `<math.h>` | Mathematics | ⚠️ | `libc/include/math.h`, `libc/core/*.c` → **libm** | Base transcendentals inline (double‑only); C99 classification/constants/IEEE‑754 utilities + rounding added (Tier 2 Phase 2a). Pending: hyperbolic, `exp2`/`log2`/`expm1`/`log1p`, `cbrt`/`hypot`, `remainder`, `erf`/gamma; no `f`/`l` variants; base fns don't set `errno`. |
 | `<setjmp.h>` | Non‑local jumps | ❌ | — | `setjmp`/`longjmp` not implemented. |
 | `<signal.h>` | Signal handling | ⚠️ | `libc/include/signal.h`, `libc/core/signal.c` | Synchronous only — no async delivery on these OSes; `raise` calls handlers inline. |
 | `<stdarg.h>` | Variable arguments | ✅ | `include/stdarg.h` | m68k `va_list`. Conforming. |
@@ -169,13 +169,17 @@ Header absent. `setlocale` ❌, `localeconv` ❌, `struct lconv` ❌.
 Present functions are `double`‑only and implemented as **`static` inline
 wrappers** in the header over libm's `d`‑suffixed primitives.
 
-Global deviations for this header: no `float`/`long double` (`…f`/`…l`)
-variants; no `errno` (`EDOM`/`ERANGE`) reporting; no domain/range checks; no
-`HUGE_VAL`/`HUGE_VALF`/`HUGE_VALL`, `INFINITY`, `NAN`; no classification macros
-(`fpclassify`, `isnan`, `isinf`, `isfinite`, `isnormal`, `signbit`) or comparison
-macros (`isgreater`, `isless`, …). Because the wrappers are `static`, each
-translation unit gets its own copy — their addresses are not unique across TUs
-and they cannot satisfy an external reference.
+The **base transcendentals** stay `static` inline (their C names would collide
+with libm's internal single‑precision `_sqrt`/`_exp`/… symbols, so extern
+linkage needs a vendored‑libm fork).  The **C99 additions** (Tier 2 Phase 2a)
+are real extern functions in `libc/core/*.c` over the same kernels, plus the
+standard macros: `HUGE_VAL`/`INFINITY`/`NAN`, `FP_*`, and the classification
+(`fpclassify`, `isnan`, `isinf`, `isfinite`, `isnormal`, `signbit`) and
+comparison (`isgreater`, …) macros are all present.  Still pending: `f`/`l`
+variants; `errno` on the inline base fns; the hyperbolic / `exp2` / `log2` /
+`expm1` / `log1p` / `cbrt` / `hypot` / `remainder` / `erf`–gamma families
+(Phase 2b/2c).  `fma` is a double‑rounded `x*y+z`; and because the soft‑float
+adder truncates, `rint`/`nearbyint` use a floor‑based ties‑to‑even.
 
 | Function | Purpose | Status | Library / File | Notes |
 |---|---|:--:|---|---|
@@ -199,15 +203,18 @@ and they cannot satisfy an external reference.
 | `sinh` `cosh` `tanh` | hyperbolic | ❌ | — | |
 | `asinh` `acosh` `atanh` | inverse hyperbolic | ❌ | — | |
 | `exp2` `expm1` | 2^x, e^x−1 | ❌ | — | |
-| `log2` `log1p` `logb` `ilogb` | logarithms/exponent | ❌ | — | |
-| `frexp` `ldexp` `scalbn` `scalbln` | exponent manipulation | ❌ | — | |
+| `log2` `log1p` | log2 / log(1+x) | ❌ | — | Phase 2b. |
+| `logb` `ilogb` | exponent extract | ✅ | libc / `logb.c`,`ilogb.c` | |
+| `frexp` `ldexp` `scalbn` `scalbln` | exponent manipulation | ✅ | libc / `frexp.c`,`ldexp.c`,`scalbn.c`,`scalbln.c` | |
 | `cbrt` `hypot` | cube root, hypotenuse | ❌ | — | |
 | `erf` `erfc` `lgamma` `tgamma` | error/gamma | ❌ | — | |
-| `trunc` `round` `nearbyint` `rint` | rounding | ❌ | — | |
-| `lround` `llround` `lrint` `llrint` | round‑to‑integer | ❌ | — | |
-| `remainder` `remquo` | IEEE remainder | ❌ | — | |
-| `copysign` `nan` `nextafter` `nexttoward` | sign/representation | ❌ | — | |
-| `fdim` `fmax` `fmin` `fma` | difference/max/min/FMA | ❌ | — | |
+| `trunc` `round` `nearbyint` `rint` | rounding | ✅ | libc / `trunc.c`,`round.c`,`nearbyint.c`,`rint.c` | `rint`/`nearbyint` ties‑to‑even. |
+| `lround` `llround` `lrint` `llrint` | round‑to‑integer | ✅ | libc / `lround.c`,`llround.c`,`lrint.c`,`llrint.c` | |
+| `remainder` `remquo` | IEEE remainder | ❌ | — | Phase 2b. |
+| `copysign` `nan` `nextafter` `nexttoward` | sign/representation | ✅ | libc / `copysign.c`,`nan.c`,`nextafter.c`,`nexttoward.c` | |
+| `fdim` `fmax` `fmin` `fma` | difference/max/min/FMA | ✅ | libc / `fdim.c`,`fmax.c`,`fmin.c`,`fma.c` | `fma` double‑rounded. |
+| `fpclassify` `isnan` `isinf` `isfinite` `isnormal` `signbit` | classification | ✅ | libc / `__*.c` + hdr | standard macros over `__` helpers. |
+| `HUGE_VAL` `INFINITY` `NAN` | constants | ✅ | libc / `__huge_val.c`,`__nan_val.c` + hdr | function‑backed (not constant expressions). |
 
 ### `<setjmp.h>` — non‑local jumps
 
@@ -408,14 +415,20 @@ string and stream entry points). Remaining scanf gaps — the `%[` scanset and
 `%a` hex‑float — are minor and tracked with the broader conversion‑coverage work.
 
 ### Tier 2 — moderate
-7. **`<math.h>` correctness**: give the functions **external** linkage (real
-   library symbols in libm/libc instead of `static` inline), add `HUGE_VAL`/
-   `INFINITY`/`NAN`, `EDOM`/`ERANGE` handling, and the classification macros
-   (`isnan`, `isinf`, `isfinite`, `signbit`, `fpclassify`). Then broaden the
-   function set (`sinh`…`atanh`, `log2`, `exp2`, `cbrt`, `hypot`, `trunc`,
-   `round`, `copysign`, `frexp`, `ldexp`, `fmax`, `fmin`, `fdim`, `fma`, …) and
-   add the `f`/`l` variants (may alias the `double` routines given
-   `long double`==`double`).
+7. **`<math.h>`** — Phase 2a ✅ DONE (2026‑07‑22): added `HUGE_VAL`/`INFINITY`/
+   `NAN`, `FP_*`, the classification + comparison macros, and the IEEE‑754
+   utility / rounding functions (`copysign`, `frexp`, `ldexp`, `scalbn`/
+   `scalbln`, `logb`, `ilogb`, `trunc`, `round`, `rint`/`nearbyint`, `l*`/`ll*`,
+   `nextafter`, `nexttoward`, `nan`, `fdim`, `fmax`, `fmin`, `fma`) as real
+   extern C over the libm kernels. Verified `tests/lockstep/tier2.c` 53/53 on
+   both OSes.
+   - Phase 2b (pending): decompositions `sinh`/`cosh`/`tanh`, `asinh`/`acosh`/
+     `atanh`, `exp2`/`expm1`, `log2`/`log1p`, `cbrt`, `hypot`, `remainder`/
+     `remquo`, plus `errno` (`EDOM`/`ERANGE`) wiring.
+   - Phase 2c (pending): `erf`/`erfc`/`lgamma`/`tgamma`.
+   - The 12 **base** transcendentals stay `static` inline — their C names
+     collide with libm's single‑precision `_sqrt`/`_exp`/… so extern linkage
+     would need a vendored‑libm fork; `f`/`l` variants also pending.
 8. **`<setjmp.h>`**: `setjmp`/`longjmp` via a small asm shim (save/restore
    `d2‑d7`, `a2‑a7`, PC).
 9. **`<locale.h>`**: minimal "C"‑only `setlocale`/`localeconv`.
