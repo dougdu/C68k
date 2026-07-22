@@ -11,8 +11,11 @@
   with cpmcp, boots simenv/c68k-sim68k.exe headless, selects D:, types the
   program name, captures the ACIA console, and asserts the expected substrings.
 
-  Drive map: A: = cpmboot144 (utilities), B: = unmounted (DO NOT touch),
+  Drive map: A: = CP/M boot floppy (utilities), B: = unmounted (DO NOT touch),
   C: = scsi0 (system), D: = scsi1 (deploy target).
+
+  -Model selects the CBIOS memory platform: '16mb' (cpu=68000, default) boots
+  cpmboot-16mb-144.img; '1mb' (cpu=68008) boots cpmboot-1mb-144.img.
 
 .EXAMPLE
   pwsh tools/cpm/run-cpm.ps1 -Src samples/hello.c -Expect 'Hello, Osiris'
@@ -23,6 +26,7 @@ param(
   [string]$Run = '',
   [string[]]$Expect = @(),
   [string]$Cc = (Join-Path ([System.IO.Path]::GetTempPath()) 'c68k-p2\c68k.exe'),
+  [ValidateSet('16mb','1mb')][string]$Model = '16mb',
   [int]$BootWait = 8,
   [int]$RunWait = 3,
   [switch]$KeepArtifacts
@@ -49,7 +53,8 @@ if (-not (Test-Path (Join-Path $simenv 'c68k-sim68k.exe'))) {
 }
 $sim   = Join-Path $simenv 'c68k-sim68k.exe'
 $rom   = Join-Path $simenv 'bootrom.bin'
-$flop  = Join-Path $simenv 'cpmboot144.img'
+$cpu   = if ($Model -eq '1mb') { '68008' } else { '68000' }
+$flop  = Join-Path $simenv "cpmboot-$Model-144.img"
 $scsi0 = Join-Path $simenv 'scsi0.img'
 $scsi1 = Join-Path $simenv 'scsi1.img'
 $cpmrm = Join-Path $simenv 'cpmrm.exe'
@@ -81,7 +86,7 @@ $dn = "0:$($Run.ToUpper()).68K"
 if ($LASTEXITCODE -ne 0) { throw "cpmcp failed to deploy $dn (rc=$LASTEXITCODE)" }
 
 $a = @(
-  '--cpu','68008','--mem','MAX',"--rom:$rom",
+  '--cpu',$cpu,'--mem','MAX',"--rom:$rom",
   '--acia-port','none','--acia-cts','tied','--tee-acia',$outF,'--fdc-threads','on',
   '--fd0',$bootImg,'--scsi0',$scsi0,'--scsi1',$dataImg
 )

@@ -29,6 +29,7 @@ param(
   [string[]]$Tu = @('strings','hashmap','unicode','type','main','tokenize','preprocess','codegen68k','emit_elf','parse','errno','signal','time'),
   [string]$Cc68k = (Join-Path ([System.IO.Path]::GetTempPath()) 'c68k-cc68k\CC.68K'),
   [string]$Cc = (Join-Path ([System.IO.Path]::GetTempPath()) 'c68k-p2\c68k.exe'),
+  [ValidateSet('16mb','1mb')][string]$Model = '16mb',
   [int]$BootWait = 9,
   [switch]$KeepArtifacts
 )
@@ -71,7 +72,8 @@ function Stop-AllSim {
 if (-not (Test-Path (Join-Path $simenv 'c68k-sim68k.exe'))) { & (Join-Path $repo 'tools\bootstrap-simenv.ps1') }
 $sim   = Join-Path $simenv 'c68k-sim68k.exe'
 $rom   = Join-Path $simenv 'bootrom.bin'
-$flop  = Join-Path $simenv 'cpmboot144.img'
+$cpu   = if ($Model -eq '1mb') { '68008' } else { '68000' }
+$flop  = Join-Path $simenv "cpmboot-$Model-144.img"
 $scsi0 = Join-Path $simenv 'scsi0.img'
 $scsi1 = Join-Path $simenv 'scsi1.img'
 $cpmrm = Join-Path $simenv 'cpmrm.exe'
@@ -133,7 +135,7 @@ function Invoke-Stage3One($name) {
   $port = 8000 + (Get-Random -Minimum 0 -Maximum 1500)
   $psi = New-Object System.Diagnostics.ProcessStartInfo
   $psi.FileName = $sim
-  foreach ($a in @('--cpu','68008','--mem','MAX',"--rom:$rom",'--acia-port','none','--acia-cts','tied','--acia-tcp-port',"$port",'--fdc-threads','on','--fd0',$bootImg,'--scsi0',$scsi0,'--scsi1',$dataImg)) { [void]$psi.ArgumentList.Add($a) }
+  foreach ($a in @('--cpu',$cpu,'--mem','MAX',"--rom:$rom",'--acia-port','none','--acia-cts','tied','--acia-tcp-port',"$port",'--fdc-threads','on','--fd0',$bootImg,'--scsi0',$scsi0,'--scsi1',$dataImg)) { [void]$psi.ArgumentList.Add($a) }
   $psi.WorkingDirectory = $simenv
   $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true; $psi.UseShellExecute = $false
   $p = New-Object System.Diagnostics.Process; $p.StartInfo = $psi

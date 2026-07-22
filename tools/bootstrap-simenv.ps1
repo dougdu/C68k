@@ -20,9 +20,10 @@
 #
 # Copies (idempotent — re-run cheaply; pass -Force for a full refresh):
 #   <worm>\68kTools\builds\win64\bin\Release\sim68k.exe -> c68k-sim68k.exe
-#   <worm>\68kTools\sim68k\bootrom.bin        -> bootrom.bin      (CP/M + Osiris boot ROM)
-#   <worm>\68kTools\sim68k\cpmboot144.img     -> cpmboot144.img   (CP/M boot floppy, A:)
-#   <worm>\68kTools\sim68k\scsi0.img          -> scsi0.img        (CP/M C:)
+#   <worm>\68kTools\sim68k\bootrom.bin           -> bootrom.bin           (CP/M + Osiris boot ROM)
+#   <worm>\68kTools\sim68k\cpmboot-16mb-144.img  -> cpmboot-16mb-144.img  (CP/M boot floppy A:, 16 MB / 68000 model — default)
+#   <worm>\68kTools\sim68k\cpmboot-1mb-144.img   -> cpmboot-1mb-144.img   (CP/M boot floppy A:,  1 MB / 68008 model)
+#   <worm>\68kTools\sim68k\scsi0.img             -> scsi0.img             (CP/M C:)
 #   <worm>\68kTools\sim68k\scsi1.img          -> scsi1.img        (CP/M D:, deploy target)
 #   <osiris>\build\osiris-boot-144.img        -> osiris-boot-144.img (Osiris boot floppy)
 #   <worm>\tools\cpmrm.exe                    -> cpmrm.exe        (cpmtools: remove)
@@ -45,8 +46,9 @@ New-Item -ItemType Directory -Force -Path $simenv | Out-Null
 $wSim = Join-Path $WormRoot '68kTools\sim68k'
 $map = @(
     @{ Src = Join-Path $WormRoot '68kTools\builds\win64\bin\Release\sim68k.exe'; Dst = 'c68k-sim68k.exe' }
-    @{ Src = Join-Path $wSim 'bootrom.bin';    Dst = 'bootrom.bin' }
-    @{ Src = Join-Path $wSim 'cpmboot144.img'; Dst = 'cpmboot144.img' }
+    @{ Src = Join-Path $wSim 'bootrom.bin';          Dst = 'bootrom.bin' }
+    @{ Src = Join-Path $wSim 'cpmboot-16mb-144.img'; Dst = 'cpmboot-16mb-144.img' }
+    @{ Src = Join-Path $wSim 'cpmboot-1mb-144.img';  Dst = 'cpmboot-1mb-144.img' }
     @{ Src = Join-Path $wSim 'scsi0.img';      Dst = 'scsi0.img' }
     @{ Src = Join-Path $wSim 'scsi1.img';      Dst = 'scsi1.img' }
     @{ Src = Join-Path $OsirisRoot 'build\osiris-boot-144.img'; Dst = 'osiris-boot-144.img' }

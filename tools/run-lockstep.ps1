@@ -14,7 +14,8 @@
 #>
 [CmdletBinding()]
 param(
-  [string]$Cc = (Join-Path ([System.IO.Path]::GetTempPath()) 'c68k-p2\c68k.exe')
+  [string]$Cc = (Join-Path ([System.IO.Path]::GetTempPath()) 'c68k-p2\c68k.exe'),
+  [ValidateSet('16mb','1mb')][string]$Model = '16mb'
 )
 $ErrorActionPreference = 'Continue'
 $repo = Split-Path $PSScriptRoot -Parent
@@ -49,7 +50,7 @@ foreach ($c in $cases) {
   $osOk = ($LASTEXITCODE -eq 0)
   Write-Host ("   Osiris  : {0}" -f ($(if ($osOk) { 'PASS' } else { 'FAIL' }))) -ForegroundColor ($(if ($osOk) { 'Green' } else { 'Red' }))
 
-  & $cpmRun -Src $src -Run $c.Run -Expect $c.Expect -Cc $Cc *> $null
+  & $cpmRun -Src $src -Run $c.Run -Expect $c.Expect -Cc $Cc -Model $Model *> $null
   $cpmOk = ($LASTEXITCODE -eq 0)
   Write-Host ("   CP/M-68K: {0}" -f ($(if ($cpmOk) { 'PASS' } else { 'FAIL' }))) -ForegroundColor ($(if ($cpmOk) { 'Green' } else { 'Red' }))
 
