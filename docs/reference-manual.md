@@ -405,9 +405,10 @@ layout at `0x500`, then `mkdri`).
 **Archives & dead-stripping:** `libc`/`libm`/`libheap` are `.a` archives of one object per function,
 so a program links only what it references — a `puts`-only program is ~10 KB, versus ~88 KB when the
 whole `libc` was one object. Both `m68k-elf-ld` and the native Osiris `LINK.PRG` member-select the
-archives (the native `LINK.PRG` takes one archive per link, so the three are merged for that path;
-the native link strips `-s` like the cross `ld` — required, since unstripped LINK overflows its fixed
-symtab buffers on large links — so heap programs link and run natively).
+archives (the native `LINK.PRG` handles multiple archives per link, so the three are passed
+separately; it strips `-s` by default like the cross `ld`, and unstripped native links work too — its
+symtab scales to the symbol count and its internal tables are bounds-checked — so heap programs link
+and run natively).
 
 ## 11. Platform reference: Osiris vs CP/M-68K
 

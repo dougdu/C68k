@@ -194,12 +194,12 @@ bit-comparable objects.
   (the ELF static-PIE *is* the executable), and `LIB.PRG` builds `.a` archives. `LINK.PRG`
   **member-selects** the c68k archives (verified: `hello` pulls only libc's `puts` path; `printftest`
   pulls libc `printf` + libm's `%f` members, cross-archive) — the same dead-stripping as the cross
-  `ld`. Two native-linker notes: (1) `LINK.PRG` searches **one archive per link**, so
-  `libc.a`+`libm.a`+`libheap.a` are merged into a single archive (`ar -M addlib`) for the native path
-  ([run-native-link.ps1](../tools/osiris/run-native-link.ps1)); (2) the native link **strips**
-  (`-s`, like the cross `ld`) — required, since unstripped `LINK.PRG` overflows its fixed symtab
-  buffers once a link pulls ~6 k symbols (the libheap members) and bus-errors in `lo_build_strtab`.
-  Stripped, **heap programs link and run natively** (`memtest` `MEM PASS 15/15` on-target).
+  `ld`. The native `LINK.PRG` handles **multiple archives per link**, so
+  `libc.a`+`libm.a`+`libheap.a` are passed as three separate archives — no host-side merge
+  ([run-native-link.ps1](../tools/osiris/run-native-link.ps1)). The native link **strips** by default
+  (`-s`, like the cross `ld`, and fastest); unstripped native links also work (the symtab scales to the
+  symbol count and every internal table is bounds-checked). **Heap programs link and run natively**
+  (`memtest` `MEM PASS 15/15` on-target).
 - **CP/M-68K native ports:** port `LINK` and `LIB` from their Osiris sources to run **on CP/M-68K**
   (their own file I/O moves from DOS handles to BDOS FCBs — the same seam concern as libc). The
   ported `LINK.68K` produces a linked ELF laid out per `cpm68k.ld`; **`mkdri`** (itself buildable
