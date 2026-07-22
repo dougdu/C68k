@@ -215,7 +215,13 @@ if ($useArchive) { $linkObjs += 'EXTRA.A' }
 else { foreach($eo in $extraObjs){ $linkObjs += $eo.N } }
 $linkObjs += 'RT68K.O'
 if (-not $Bare) { $linkObjs += 'LIBC68K.A' }
-$linkCmd = "LINK -o $Run.PRG " + ($linkObjs -join ' ')
+# Strip the output (-s), matching the cross ld default. This is also required
+# for larger links: unstripped, LINK.PRG builds a full .symtab, but its fixed
+# buffers (LL_MAXSYM=1024 symbols, LM_SLACK=64 KB image tail) overflow once a
+# link pulls enough objects -- the libheap members push the symbol count to
+# ~6k, corrupting the symtab and bus-erroring the linker in lo_build_strtab.
+# Stripping skips that whole path, so heap programs link natively.
+$linkCmd = "LINK -s -o $Run.PRG " + ($linkObjs -join ' ')
 try {
   Start-Sleep -Seconds $BootWait
   if ($useArchive) {

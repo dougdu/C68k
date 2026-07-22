@@ -196,11 +196,10 @@ bit-comparable objects.
   pulls libc `printf` + libm's `%f` members, cross-archive) — the same dead-stripping as the cross
   `ld`. Two native-linker notes: (1) `LINK.PRG` searches **one archive per link**, so
   `libc.a`+`libm.a`+`libheap.a` are merged into a single archive (`ar -M addlib`) for the native path
-  ([run-native-link.ps1](../tools/osiris/run-native-link.ps1)); (2) pulling any **libheap** member
-  currently **bus-errors `LINK.PRG` itself** during member selection (`lo_find_container` runs
-  `lo_strlen` over a container whose name pointer is `0xFFFFFFFF`; caught under `sid68k !ex catch
-  bus`), so heap programs link with the cross `ld` until that `LINK.PRG` fix lands — non-heap
-  programs link and run natively today.
+  ([run-native-link.ps1](../tools/osiris/run-native-link.ps1)); (2) the native link **strips**
+  (`-s`, like the cross `ld`) — required, since unstripped `LINK.PRG` overflows its fixed symtab
+  buffers once a link pulls ~6 k symbols (the libheap members) and bus-errors in `lo_build_strtab`.
+  Stripped, **heap programs link and run natively** (`memtest` `MEM PASS 15/15` on-target).
 - **CP/M-68K native ports:** port `LINK` and `LIB` from their Osiris sources to run **on CP/M-68K**
   (their own file I/O moves from DOS handles to BDOS FCBs — the same seam concern as libc). The
   ported `LINK.68K` produces a linked ELF laid out per `cpm68k.ld`; **`mkdri`** (itself buildable
