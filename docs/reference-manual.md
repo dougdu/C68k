@@ -204,7 +204,7 @@ Types & macros: `div_t`, `ldiv_t`; `RAND_MAX` (32767); `EXIT_SUCCESS`/`EXIT_FAIL
 | `void *malloc(size_t n)` | Allocate `n` bytes (uninitialised). |
 | `void *calloc(size_t nmemb, size_t size)` | Allocate and zero. |
 | `void *realloc(void *p, size_t n)` | Resize an allocation. |
-| `void free(void *p)` | Release an allocation. **Note:** the allocator is a **bump allocator** over `_sbrk`, so `free` is a **no-op** — only the most-recently allocated block can be reclaimed (via `realloc`). Memory is fully reclaimed at process exit. |
+| `void free(void *p)` | Release an allocation. The allocator is backed by **libheap**, so `free` **really reclaims** and memory can be reused. |
 | `int atoi(const char *s)` / `long atol(const char *s)` / `double atof(const char *s)` | Parse an int / long / double. |
 | `long strtol(const char *, char **end, int base)` / `unsigned long strtoul(...)` | Parse with base and end pointer. |
 | `long long strtoll(...)` / `unsigned long long strtoull(...)` | 64-bit variants. |

@@ -1065,9 +1065,9 @@ void assemble_to_elf(char *inpath, char *outpath) {
   //  1. Files are sequential 128-byte records with no random seek on a read
   //     handle (sys_seek is a stub), so fseek(SEEK_END)/ftell can't size the
   //     input -- it comes back 0 and the assembler would see nothing.
-  //  2. libc malloc is a bump allocator (free is a no-op) and the front-end and
-  //     assembler share one heap in the integrated -c process. Slurping the
-  //     whole .s (parse.c's is ~640 KB) would not fit the ~600 KB TPA. Streaming
+  //  2. The front-end and assembler share one bounded heap in the integrated
+  //     -c process (the whole run fits in the ~600 KB TPA). Slurping the
+  //     whole .s (parse.c's is ~640 KB) would not fit. Streaming
   //     keeps the assembler's transient footprint to one line; only the output
   //     sections and symbol/reloc tables accumulate. assemble_line copies every
   //     name it retains (labels, PUBLIC/EXTERN, branch fixups), so reusing one
@@ -1098,7 +1098,7 @@ void assemble_to_elf(char *inpath, char *outpath) {
       char *nl = malloc(ncap);
       memcpy(nl, line, len);
       line = nl;
-      cap = ncap; // old buffer leaks on the bump allocator; growth is rare
+      cap = ncap; // old buffer is reclaimed with the compile arena; growth is rare
     }
     line[len++] = (char)c;
   }

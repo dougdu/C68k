@@ -4,32 +4,87 @@
 #include "libc_internal.h"
 
 /* =====================================================================
- * <stdlib.h> allocator -- a bump allocator over sys_sbrk kept as one
- * cohesive core object (it shares g_heap_top).  free is a no-op, but realloc
- * grows the top-of-heap block in place and __heap_mark/__heap_release give
- * arena semantics (used to reclaim the front-end on the tiny CP/M heap).
- * Phase 5 replaces this with the libheap shims.
+ * <stdlib.h> allocator -- thin shims over the vendored SOA heap
+ * (lib/heap/libheap.a).  free() really reclaims, matching every other
+ * real-world C library.
+ *
+ * The machine heap is created lazily on first use over the whole sbrk arena
+ * the crt0 seam reserved (c_heapbase/c_heaplen, exposed via sys_heapavail()).
+ * malloc/calloc draw from the "current" heap -- normally the machine heap, but
+ * a scratch arena while one is open (heap_arena.c); free/realloc find a
+ * block's owning heap by address range, so pointers that cross the arena
+ * boundary are always freed against the heap that owns them.
  * ===================================================================== */
-static char *g_heap_top = 0; /* end of the most-recent bump allocation */
+
+/* libheap public entry points (C stack ABI; asm _HeapXxx == C HeapXxx). */
+extern void *GetMachineHeap(void);
+extern void *MachineHeapInitialize(long lOptions, void *lStart, long lSize);
+extern void *HeapAlloc(void *hHeap, long lFlags, long lBytes);
+extern int HeapFree(void *hHeap, void *pMem);
+extern void *HeapReAlloc(void *hHeap, long lFlags, void *pMem, long lBytes);
+
+/* Scratch-arena routing state, shared with heap_arena.c.  The mark/release
+ * arena lives in its own object so a program that only calls malloc never
+ * drags in HeapCreate/HeapDestroy/HeapCompact.  While _heap_arena is NULL the
+ * machine heap serves every request; while it is set, new allocations draw
+ * from it and any pointer in [_heap_arena_lo, _heap_arena_hi) belongs to it. */
+void *_heap_machine = 0; /* the machine heap, once created */
+void *_heap_arena = 0;   /* open scratch arena, or NULL */
+char *_heap_arena_lo = 0;
+char *_heap_arena_hi = 0;
+
+/* Lazily create the machine heap over the remaining sbrk arena, once. */
+void *_heap_machine_get(void) {
+  if (_heap_machine)
+    return _heap_machine;
+  void *h = GetMachineHeap();
+  if (h) {
+    _heap_machine = h;
+    return h;
+  }
+  char *base = (char *)sys_sbrk(0); /* start of the free arena */
+  int avail = sys_heapavail();      /* bytes from the break to the arena top */
+  if (avail <= 0)
+    return NULL;
+  if (sys_sbrk(avail) == (void *)-1) /* hand the whole arena to libheap */
+    return NULL;
+  _heap_machine = MachineHeapInitialize(0, base, avail);
+  return _heap_machine;
+}
+
+/* Heap that new allocations draw from: the open scratch arena, else machine. */
+static void *cur_heap(void) {
+  return _heap_arena ? _heap_arena : _heap_machine_get();
+}
+
+/* Owning heap of an existing block: the arena if the pointer lies within its
+ * one contiguous block, else the machine heap. */
+static void *owner_heap(void *p) {
+  if (_heap_arena && (char *)p >= _heap_arena_lo && (char *)p < _heap_arena_hi)
+    return _heap_arena;
+  return _heap_machine_get();
+}
 
 void *malloc(size_t n) {
-  size_t total = (n + 4 + 3) & ~(size_t)3; /* 4-byte size header, rounded */
-  char *p = sys_sbrk((int)total);
-  if (p == (char *)-1) {
+  if (n == 0)
+    n = 1; /* return a unique, freeable pointer */
+  void *h = cur_heap();
+  void *p = h ? HeapAlloc(h, 0, (long)n) : NULL;
+  if (!p)
+    errno = ENOMEM;
+  return p;
+}
+
+void free(void *p) {
+  if (p)
+    HeapFree(owner_heap(p), p);
+}
+
+void *calloc(size_t nmemb, size_t size) {
+  if (size && nmemb > (size_t)-1 / size) { /* multiplication overflow */
     errno = ENOMEM;
     return NULL;
   }
-  g_heap_top = p + total;
-  *(size_t *)p = n;
-  return p + 4;
-}
-
-/* free is a no-op except that realloc/__heap_release can reclaim the
- * top-of-heap block; a general free-list is unnecessary for the compiler's
- * allocate-mostly workload and would risk exposing latent use-after-free. */
-void free(void *p) { (void)p; }
-
-void *calloc(size_t nmemb, size_t size) {
   size_t n = nmemb * size;
   void *p = malloc(n);
   if (p)
@@ -37,41 +92,20 @@ void *calloc(size_t nmemb, size_t size) {
   return p;
 }
 
-/* Grow/shrink the top-of-heap block in place; else copy to a fresh block.
- * The in-place case eliminates the doubling leak of growable arrays. */
 void *realloc(void *p, size_t n) {
   if (!p)
     return malloc(n);
-  char *hdr = (char *)p - 4;
-  size_t old = *(size_t *)hdr;
-  size_t oldtotal = (old + 4 + 3) & ~(size_t)3;
-  if (hdr + oldtotal == g_heap_top) {
-    size_t newtotal = (n + 4 + 3) & ~(size_t)3;
-    if (newtotal != oldtotal &&
-        sys_sbrk((int)(newtotal - oldtotal)) == (char *)-1)
-      return NULL;
-    g_heap_top = hdr + newtotal;
-    *(size_t *)hdr = n;
-    return p;
+  if (n == 0) {
+    free(p);
+    return NULL;
   }
-  void *q = malloc(n);
-  if (q)
-    memcpy(q, p, old < n ? old : n);
+  void *h = owner_heap(p);
+  void *q = h ? HeapReAlloc(h, 0, p, (long)n) : NULL;
+  if (!q)
+    errno = ENOMEM; /* HeapReAlloc leaves the original block intact on failure */
   return q;
 }
 
-/* Arena mark/release over the bump heap. __heap_mark captures the current
- * break; __heap_release rolls it back, freeing everything allocated since.
- * Used by the native driver to reclaim the whole front-end (tokens, AST,
- * codegen buffer) after cc1 writes the .s and before the integrated
- * assembler runs -- so the assembler starts from a nearly empty heap. */
-void *__heap_mark(void) { return sys_sbrk(0); }
+/* __heap_mark/__heap_release live in heap_arena.c so this object stays free of
+ * HeapCreate/HeapDestroy/HeapCompact for the common malloc-only program. */
 
-void __heap_release(void *mark) {
-  char *cur = sys_sbrk(0);
-  if ((char *)mark >= cur)
-    return;
-  size_t back = (size_t)(cur - (char *)mark);
-  sys_sbrk(-(int)back); /* negative delta rolls the break back */
-  g_heap_top = (char *)mark;
-}

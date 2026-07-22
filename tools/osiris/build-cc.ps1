@@ -62,7 +62,12 @@ if ($LASTEXITCODE -ne 0) { throw 'asm rt68k failed' }
 
 $prg = Join-Path $OutDir 'CC.PRG'
 Write-Host 'ld   -> CC.PRG' -ForegroundColor Cyan
-& $Ld -pie --no-dynamic-linker -z max-page-size=0x20 -s -T $LdScript -o $prg $sysO @objs "-L$OutDir" -lc $rtO $FloatLib
+# libheap backs malloc/free/realloc; link it (a non-allocating program
+# dead-strips it entirely).  Build it on demand if missing.
+$heapLib = Join-Path $repo 'lib\heap\libheap.a'
+if (-not (Test-Path $heapLib)) { & (Join-Path (Split-Path $PSScriptRoot -Parent) 'build-libheap.ps1') | Out-Null }
+$heapArgs = @($heapLib)
+& $Ld -pie --no-dynamic-linker -z max-page-size=0x20 -s -T $LdScript -o $prg $sysO @objs "-L$OutDir" -lc $rtO $FloatLib @heapArgs
 if ($LASTEXITCODE -ne 0) { throw "link CC.PRG failed (rc=$LASTEXITCODE)" }
 
 Write-Host ("OK: {0}  ({1:n0} bytes)" -f $prg, (Get-Item $prg).Length) -ForegroundColor Green

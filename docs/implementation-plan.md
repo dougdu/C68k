@@ -181,8 +181,8 @@ Osiris under `sim68k`.
       claim, stack+heap, `main`, exit via 4Ch; loader applies the R_68K_RELATIVE relocs & zero-fills
       bss. argv is minimal (argc=1) — full command-tail parsing is a refinement.)_
 - [x] Core `<string.h>`, `<ctype.h>`, `<stdlib.h>` (`malloc` over `_sbrk`), `<errno.h>`.
-      _([`libc/core/libc.c`](../libc/core/libc.c) + [`libc/include/`](../libc/include); malloc is a
-      bump allocator over `sys_sbrk`.)_
+      _([`libc/core/`](../libc/core) + [`libc/include/`](../libc/include); malloc is backed by the
+      vendored **libheap** allocator over the `sys_sbrk` arena \u2014 real reclaiming `free`.)_
 - [x] Core `<stdio.h>`: buffered `FILE`, `printf`/`fwrite`/`fopen`/`fread`/`fseek`. _(Buffered `FILE`,
       `fopen`/`fclose`/`fread`/`fwrite`/`fgets`/`fputs`/`puts`/`fseek`, and the `printf` family
       (`printf`/`fprintf`/`snprintf`, integer/string/char formats incl. `%lld`) — all running on
@@ -374,11 +374,11 @@ dependency ([architecture.md §8](architecture.md#8-object-emission-text-asm-now
 > over the TCP ACIA console). Getting the on-target compile to run at all surfaced two seam fixes and
 > one proof-method change: (1) the integrated assembler read its `.s` with a **whole-file slurp**
 > (`fseek`/`ftell`) that CP/M's record-only I/O (a deliberate `sys_seek` stub) can't size, and that
-> also couldn't fit a large `.s` on the bump heap — replaced with a **streaming line reader** that
+> also couldn't fit a large `.s` in the bounded target heap — replaced with a **streaming line reader** that
 > tolerates CRLF and stops at CP/M's `^Z` text-EOF pad; (2) the front-end (`cc1`) hands off to the
 > assembler entirely through the `.s` on disk, so all of its tokens/AST/codegen buffer are **dead**
-> once it returns — [`libc/core/libc.c`](../libc/core/libc.c) gained `__heap_mark`/`__heap_release`
-> (an arena mark/rollback over the bump `sys_sbrk` heap, plus in-place `realloc` of the top block),
+> once it returns — [`libc/core/heap_arena.c`](../libc/core/heap_arena.c) provides `__heap_mark`/`__heap_release`
+> (a private scratch heap opened with `HeapCreate`, sized via `HeapCompact`, and destroyed wholesale with `HeapDestroy`),
 > and the native driver **marks the heap before `cc1` and releases it before assembling**, so the
 > assembler runs from a near-empty heap instead of on top of the front-end's leaked allocations;
 > (3) base CP/M stores files in whole **128-byte records**, so an object whose length isn't a

@@ -83,8 +83,8 @@ C standards coverage.
   (`SysGCC ld` / `mkdri`), and native self-host (Osiris `LIB.PRG` + `LINK.PRG`).
 - **G6** Vendor the heap and IEEE-754 float **sources** (not prebuilt `.a`) so each toolchain
   builds its own archive from a single source of truth.
-- **G7** Provide a `malloc`/`free`/`realloc`/`calloc` seam over `libheap` (real reclamation),
-  gated so it can A/B against the current bump allocator.
+- **G7** Provide a `malloc`/`free`/`realloc`/`calloc` seam over `libheap` (real reclamation)
+  as the sole allocator — a conforming `free` that actually reclaims.
 
 ### Non-Goals
 - **N1** SOA internals / small-object density (heap spec; lands transparently once `libheap` is in).
@@ -125,7 +125,7 @@ for standalone links.)
 | soft-float format helpers | 30 | `fpdtol`, `floord` (from float lib) for `%f/%e/%g` |
 | `<string.h>` | 37 | `mem*` come from `rt68k` |
 | `<ctype.h>` | 139 | |
-| `<stdlib.h>` | 157 | **bump `malloc` / no-op `free` / `realloc` / `calloc`**, `atoi`/`strtol`/`qsort`/`exit`… |
+| `<stdlib.h>` | 157 | **`malloc`/`free`/`realloc`/`calloc` over `libheap`** (real reclamation), `atoi`/`strtol`/`qsort`/`exit`… |
 | `<signal.h>` | 553 | minimal, synchronous |
 | `<stdio.h>` | 585 | buffered streams: `_streams[]` FILE table, `printf` family, `fopen`/`fread`/`fwrite`/`fflush`/`fclose`, exit-time flush |
 | `<time.h>` | 1381 | wall clock over the seam |
@@ -159,7 +159,7 @@ libheap.a     (SOA heap engine; malloc/free backend)     [vendored]
   `fwrite.o`…) reference. **Exit-time flush** is a hook pulled in **only if** a stdio object is
   linked (a registered-flush slot), so `exit` does not drag stdio into non-stdio programs.
 - **`malloc` shims** (`malloc`/`free`/`realloc`/`calloc`) are small `libc.a` objects that call the
-  `libheap` engine; behind a build switch they can fall back to today's bump allocator.
+  `libheap` engine — the single allocator (real reclamation).
 - **Soft-float ABI placement (I1).** The compiler-emitted float core is always available; the
   pragmatic default is to keep the vendored IEEE-754 as one `libm.a` that is always in the link
   (member-selected). Splitting the ABI core into `librt68k` is a later refinement (§14 Q1).
@@ -247,7 +247,8 @@ upstream spec docs as provenance. Record the source commit/version for future sy
 - **Public headers unchanged** — `libc/include/*` keep their contents; only the implementation is
   refactored and re-archived.
 - **Link lines change**, not source: scripts swap `libc.o … libieee754d.a` for `-lc -lm -lheap`.
-- **`malloc` semantics** improve (real `free`) behind a switch; default can stay bump-allocator
+- **`malloc` semantics** are real (`libheap`, reclaiming `free`) — the sole allocator; the compiler
+  runs on it via a `HeapCreate`/`HeapDestroy` scratch arena.
   until the heap path is validated (G7), then flip.
 - **Incremental & reversible** — Phase 1 archives the *current* single object with no behaviour
   change, proving the plumbing before any code moves.
@@ -264,7 +265,7 @@ upstream spec docs as provenance. Record the source commit/version for future sy
 | R4 | Removing the external float path breaks a script not in the inventory | Build break | Grep-audit all `*.ps1`/`makefile*` for `libieee754d`/float path before flipping (Phase 2). |
 | R5 | Soft-float ABI not linked without `-lm` | Float programs fail to link | I1: `libm.a` always in the default link line; member-selected so free when unused. |
 | R6 | Self-host stage2≠stage3 after refactor | Selfhost gate breaks | Target-libc change is orthogonal to host compiler objects (C5); re-run `selfhost`. |
-| R7 | Real `free()` surfaces latent UAF in target-only code | Regression | Host runs already exercise real `free` cleanly; gate malloc-on-heap behind a switch; run on-target lockstep + smoke (Phase 5). |
+| R7 | Real `free()` surfaces latent UAF in target-only code | Regression | Host runs already exercise real `free` cleanly; on-target lockstep + smoke plus a 15-check `memtest` (churn + coalescing stress) validate the heap allocator (Phase 5). |
 | R8 | Per-function explosion complicates the build | Maintenance | Mirror the heap makefile pattern; generate object lists; keep coupled cores together. |
 
 ---
@@ -282,7 +283,7 @@ upstream spec docs as provenance. Record the source commit/version for future sy
 | 4a | libc split — infrastructure + clean carves | ✅ | multi-file `libc.a` build; carve errno/signal/time; lockstep green; measured drop |
 | 4b | libc split — decouple hotspots | ✅ | fp64 → own object; stdio core no longer references `realloc` (drain hook) |
 | 4c | libc split — one object per function (**goal**) | ✅ | every public libc function separately linkable; shared engines/state in cohesive cores; `libc.c` deleted |
-| 5 | `malloc` on `libheap` | ⬜ | real `free` behind a switch; on-target lockstep + smoke pass |
+| 5 | `malloc` on `libheap` | ✅ | real `free` is the **sole allocator**; compiler arena via `HeapCreate`/`HeapDestroy`; bump allocator removed; lockstep **10/10** both OSes; self-host byte-identical |
 | 6 | Native self-host archives + docs + CP/M parity | ⬜ | `LIB.PRG`/`LINK.PRG` build+consume the archives; `sdk.md`/`reference-manual.md` updated; final size win recorded |
 
 ### Phase A — Design & baseline  ✅
@@ -364,13 +365,13 @@ remainder, drained to empty and deleted at the end.
 - [x] Validated: **lockstep 9/9** (its `filerw` drives the file drain path) and the **self-host smoke PASSes byte-identical** (`CC.PRG` compiles on-target through its `open_memstream` assembly buffer). Total from Phase A: hello **88,240 → 72,068 (−18.3%)**.
 
 #### Phase 4c — One object per function (goal)  ✅
-- [x] Carved `string`/`ctype`/`stdlib`/`stdio`/`stdio`-fmt into per-function files; de-`static`d shared helpers into [libc_internal.h](../libc/core/libc_internal.h) with private externs; kept the genuinely-shared engines/state as cohesive cores — `vformat.c` (`_vformat` + fmt statics), `stdio_core.c` (`_streams`), `malloc.c` (bump-allocator core), `exit.c` (`_atexit_*`), plus `rand`/`qsort`/`strcasecmp`/`fgetc`/`open_memstream`. **`libc.c` drained and deleted.** `libc.a` = **86 objects, 175,534 bytes** (was 4 objects); new carved files are picked up by the glob (no build change).
+- [x] Carved `string`/`ctype`/`stdlib`/`stdio`/`stdio`-fmt into per-function files; de-`static`d shared helpers into [libc_internal.h](../libc/core/libc_internal.h) with private externs; kept the genuinely-shared engines/state as cohesive cores — `vformat.c` (`_vformat` + fmt statics), `stdio_core.c` (`_streams`), `malloc.c` (allocator core), `exit.c` (`_atexit_*`), plus `rand`/`qsort`/`strcasecmp`/`fgetc`/`open_memstream`. **`libc.c` drained and deleted.** `libc.a` = **86 objects, 175,534 bytes** (was 4 objects); new carved files are picked up by the glob (no build change).
 - [x] Re-measured (Osiris `.PRG`, `-O0`): a `puts`-only program links stdio-core + fputs only, **not** `printf`/`malloc`/`qsort`/`strto*` — **hello 72,068 → 10,784 (−85%)**. `printftest` 31,648 (pulls fmt + float core), `filerw` 15,432, `hexdump` 38,348, `fp64conv` 36,140, `bare` 2,820. CP/M `.68K` ~−35 KB across the gallery. Lockstep **9/9** both OSes; self-host `CC.PRG` 473,772 → **456,004** (dead-strip) and smoke **byte-identical**.
 
-### Phase 5 — `malloc` on `libheap`  ⬜
-- [ ] `malloc`/`free`/`realloc`/`calloc` shims over the heap; `_MachineHeapInitialize` in the crt0
-      seam over `c_heapbase`/`c_heaplen`; gate behind a build switch (A/B vs bump allocator).
-- [ ] `realloc(NULL,·)`/`realloc(·,0)` and `calloc` overflow handled; on-target lockstep + smoke pass.
+### Phase 5 — `malloc` on `libheap`  ✅
+- [x] `malloc`/`free`/`realloc`/`calloc` shims over the vendored SOA heap ([malloc.c](../libc/core/malloc.c)) — real reclamation via `HeapAlloc`/`HeapFree`/`HeapReAlloc` — are the **sole allocator** (a non-reclaiming `free` would diverge from every real-world C library; the earlier bump allocator was **removed**, not kept as a crutch). The machine heap is created **lazily on first `malloc`** (not in crt0, which would drag `libheap` into every binary and undo the Phase 4c dead-strip) over the whole `sbrk` arena the seam reserved: `base = sys_sbrk(0)`, `avail = sys_heapavail()`, `sys_sbrk(avail)`, `MachineHeapInitialize(0, base, avail)`. Added `_sys_heapavail` (bytes from the break to the arena top over `c_heapbase`/`c_heaplen`) to both seams ([osiris_sys.a68](../libc/osiris/osiris_sys.a68), [cpm_sys.a68](../libc/cpm/cpm_sys.a68)); single-base-register form keeps it to **1 PIE reloc** (bare `.PRG` +32 B net). Non-allocating programs dead-strip `libheap` entirely, so the allocator is **size-neutral** for them (gallery sizes unchanged).
+- [x] **The self-host compiler works on the real allocator** (the requirement, not something to design around). cc1 is arena-style (never frees its tokens/AST/codegen), so `__heap_mark`/`__heap_release` open a private scratch heap via **`HeapCreate`** sized to the machine heap's largest free block (**`HeapCompact`**), route allocations there, and **`HeapDestroy`** it wholesale once the assembly is on disk — real reclamation of the whole compile arena in one `O(1)` call. Kept in its own object ([heap_arena.c](../libc/core/heap_arena.c)) so ordinary `malloc` users never link `HeapCreate`/`HeapDestroy`/`HeapCompact`; `free`/`realloc` pick a block's owning heap by address range so pointers crossing the arena boundary are always freed correctly.
+- [x] `realloc(NULL,n)` → `malloc`; `realloc(p,0)` → `free`+`NULL`; `calloc` multiplication overflow → `NULL`+`ENOMEM`. Allocator battery [memtest.c](../tests/lockstep/memtest.c) strengthened to **15 checks** including a 16 MB malloc/free churn and an interleaved free/refill that exercises free-list reuse + coalescing — this stress surfaced a heap bug (stale `SLAB`/`AREN` magic on released slab/arena memory could be mis-read as a live SOA cell after that memory was reused as a plain block). Fixed upstream (`clr.l` the descriptor magic on release in [HeapArena.a68](../lib/heap/HeapArena.a68) / [HeapSlab.a68](../lib/heap/HeapSlab.a68)) and pulled via `tools/vendor-sync.ps1`. Validated: gallery 6/6, lockstep **10/10 both OSes** (`MEM PASS 15/15`), self-host `CC.PRG` **467,372** with smoke **byte-identical** (arena exercised on-target).
 
 ### Phase 6 — Native self-host archives + docs + CP/M parity  ⬜
 - [ ] Build `libc.a`/`libm.a`/`libheap.a` on Osiris via `LIB.PRG`; link with `LINK.PRG`.
@@ -407,3 +408,5 @@ remainder, drained to empty and deleted at the end.
 | 2026-07-21 | Phase 4a | Split libc: infra (`libc_internal.h`, `tools/build-libc.ps1` → `libc.a`) + carved errno/signal/time; all program + self-host builds link `-lc`; stage3 harnesses extended. Lockstep **9/9**; Osiris `.PRG` −14 KB (~16%); `CC.PRG` links. Goal restated: **one object per stdlib function** (4b/4c). |
 | 2026-07-21 | Phase 4b | Decoupled hotspots: fp64 conv helpers → `fp64.c` (own object; −~2.2 KB for non-fp64 programs); memstream `FILE.drain` hook so stdio core no longer references `realloc` (+ stale-hook slot-reuse fix). Lockstep **9/9**; self-host smoke byte-identical. hello −18.3% vs baseline. |
 | 2026-07-21 | Phase 4c | **Goal reached — one object per function.** Split `string`/`ctype`/`stdlib`/`stdio`/fmt into per-function files (`libc.a` 4 → **86 objects**); shared engines kept as cohesive cores (`vformat`/`stdio_core`/`malloc`/`exit`/…); **`libc.c` deleted**; build scripts repointed off it. `puts`-only hello **72,068 → 10,784 (−85%)** — no longer drags `printf`/`malloc`/`qsort`/`strto*`; CP/M `.68K` ~−35 KB. Lockstep **9/9** both OSes; self-host `CC.PRG` 473,772 → 456,004; smoke byte-identical. |
+| 2026-07-21 | Phase 5 | **`malloc` on `libheap` (real `free`) is the default allocator.** `malloc`/`free`/`realloc`/`calloc` shims over the SOA heap ([malloc.c](../libc/core/malloc.c)); machine heap created **lazily** on first `malloc` over the seam's `sbrk` arena via new `_sys_heapavail` accessor (both seams; 1 PIE reloc, bare `.PRG` +32 B). The self-host compiler works on the real allocator: its arena `__heap_mark`/`__heap_release` open a scratch heap with `HeapCreate` (sized via `HeapCompact`) and `HeapDestroy` it wholesale, kept in its own object ([heap_arena.c](../libc/core/heap_arena.c)) so plain `malloc` users don't link it. Edge cases (`realloc(NULL,·)`, `realloc(·,0)`, `calloc` overflow) handled. New [memtest.c](../tests/lockstep/memtest.c) in lockstep. Gallery 6/6, lockstep **10/10 both OSes**, self-host `CC.PRG` 467,372 byte-identical. |
+| 2026-07-22 | Phase 5+ | **Removed the bump allocator entirely** (`C68K_MALLOC` switch, `-DC68K_MALLOC_BUMP` path, and the conditional `libheap.a` link dropped from [build-libc.ps1](../tools/build-libc.ps1) + the 4 program/self-host link scripts) — the conforming heap allocator is the only one shipped. Strengthened [memtest.c](../tests/lockstep/memtest.c) to **15 checks** (16 MB malloc/free churn + interleaved free/refill coalescing stress); the stress surfaced a heap bug (stale `SLAB`/`AREN` magic on released slab/arena memory mis-read as a live cell after block reuse), fixed upstream and re-vendored (`clr.l` magic on release in [HeapArena.a68](../lib/heap/HeapArena.a68)/[HeapSlab.a68](../lib/heap/HeapSlab.a68)). Gallery 6/6, lockstep **10/10 both OSes** (`MEM PASS 15/15`), self-host `CC.PRG` 467,372 byte-identical. |

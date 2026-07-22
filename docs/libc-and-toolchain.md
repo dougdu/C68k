@@ -65,9 +65,9 @@ targets.
   `atoi`/`strtol`/`qsort`/`bsearch`/`abs`/`div`, `rand`), **`<errno.h>`**, **`<assert.h>`**,
   **`<stdarg.h>`** glue, **`<limits.h>`**/**`<stdint.h>`**/**`<stddef.h>`** (ILP32 values),
   **`<time.h>`** formatting (clock source is a seam call).
-- **`malloc`** is a simple **bump allocator** over `_sbrk` (`free` is a no-op; only the most-recent
-  block is reclaimable, via `realloc`/arena release); the OS difference (how the heap grows) is
-  entirely inside `_sbrk` in the seam.
+- **`malloc`** is backed by the vendored **libheap** allocator, so **`free` really
+  reclaims** (like any real-world C library); the OS difference (how the heap grows) is entirely
+  inside `_sbrk` in the seam.
 
 ## 3. The syscall seam
 

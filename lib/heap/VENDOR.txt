@@ -1,6 +1,6 @@
 vendored library : libheap
 upstream source  : C:\git\worm68k\68kTools\libraries\heap
-synced (UTC)     : 2026-07-21 20:26:51Z
+synced (UTC)     : 2026-07-22 00:20:36Z
 file count       : 32
 
 files (sha256, path):
@@ -8,7 +8,7 @@ files (sha256, path):
   3DF3374F93B3A799  GetMachineHeaps.a68
   F5C7F9497F68535C  heap.inc
   56FE77E5142ED540  HeapAlloc.a68
-  4686CC70F581F082  HeapArena.a68
+  9B5A588A4730B9B6  HeapArena.a68
   72076240FEC8AA89  HeapAutoValidateFlagCheck.a68
   EE3EA772A5B68D7F  HeapCoalesce.a68
   8E6D994E64AF7376  HeapCompact.a68
@@ -22,7 +22,7 @@ files (sha256, path):
   A1CFD44975B4DDA8  HeapInvalidateBlockHeader.a68
   4C83054CAD726116  HeapReAlloc.a68
   508CF5ED225E733B  HeapSize.a68
-  A21A5793692CF0AA  HeapSlab.a68
+  0F1761283F9DD0C3  HeapSlab.a68
   374CCED1D6CDB073  HeapSmallAlloc.a68
   67589B230D95AFAC  HeapSmallCompact.a68
   F41083BB3FA93CD7  HeapSmallCtl.a68

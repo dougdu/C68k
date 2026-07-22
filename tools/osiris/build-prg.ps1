@@ -88,7 +88,12 @@ Invoke-Step 'asm runtime'   { & $Asm /Cx /elf /c /nologo "/Fo$rtO"  $rtA }
 $buildLibc = Join-Path (Split-Path $PSScriptRoot -Parent) 'build-libc.ps1'
 & $buildLibc -Cc $Cc -OutDir $OutDir -CcArgs ($asArgs + $optArgs) | Out-Null
 Invoke-Step 'cc program'    { & $Cc @asArgs @optArgs @gArgs -c $Src   -o $progO "-I$inc" }
-Invoke-Step 'link .PRG'     { & $Ld -pie --no-dynamic-linker -z max-page-size=0x20 @stripArgs -T $LdScript "-Map=$([IO.Path]::ChangeExtension($prg,'.map'))" $sysO $progO "-L$OutDir" -lc $rtO $FloatLib -o $prg }
+# libheap backs malloc/free/realloc; link it (a non-allocating program
+# dead-strips it entirely).  Build it on demand if missing.
+$heapLib = Join-Path $repo 'lib\heap\libheap.a'
+if (-not (Test-Path $heapLib)) { & (Join-Path (Split-Path $PSScriptRoot -Parent) 'build-libheap.ps1') | Out-Null }
+$heapArgs = @($heapLib)
+Invoke-Step 'link .PRG'     { & $Ld -pie --no-dynamic-linker -z max-page-size=0x20 @stripArgs -T $LdScript "-Map=$([IO.Path]::ChangeExtension($prg,'.map'))" $sysO $progO "-L$OutDir" -lc $rtO $FloatLib @heapArgs -o $prg }
 
 Write-Host "build-prg: $prg" -ForegroundColor Green
 $prg

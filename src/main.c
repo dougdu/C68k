@@ -878,7 +878,8 @@ static FileType get_file_type(char *filename) {
 }
 
 #ifdef C68K_SELFHOST
-// Bump-heap arena mark/release (libc/core/libc.c), used to reclaim the
+// Compile arena mark/release (libc/core/heap_arena.c): opens a private scratch
+// heap for a single cc1 run and destroys it wholesale, reclaiming the
 // front-end between cc1 and the integrated assembler on tiny heaps.
 void *__heap_mark(void);
 void __heap_release(void *mark);

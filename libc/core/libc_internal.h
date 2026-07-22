@@ -21,6 +21,16 @@ extern long sys_seek(int fd, long off, int whence);
 extern int sys_unlink(const char *path);
 extern void sys_exit(int code);
 extern void *sys_sbrk(int delta);
+extern int sys_heapavail(void); /* bytes from the break to the arena top (libheap malloc) */
+
+/* ---- libheap allocator scratch-arena state -----------------------------
+ * Shared between malloc.c (defines them, routes malloc/free/realloc) and
+ * heap_arena.c (opens/destroys the arena in __heap_mark/__heap_release). */
+extern void *_heap_machine;  /* the machine heap, once created */
+extern void *_heap_arena;    /* open scratch arena, or NULL */
+extern char *_heap_arena_lo; /* arena block address range: [lo, hi) */
+extern char *_heap_arena_hi;
+void *_heap_machine_get(void); /* lazily create/return the machine heap */
 
 /* soft-float runtime helpers (libm / libieee754d), used by %f/%e/%g and strtod. */
 extern long fpdtol(double);

@@ -73,7 +73,12 @@ if ($LASTEXITCODE -ne 0) { throw 'asm rt68k failed' }
 $elf = Join-Path $OutDir 'CC.elf'
 $out68 = Join-Path $OutDir 'CC.68K'
 Write-Host 'ld   -> CC.elf' -ForegroundColor Cyan
-& $Ld -T $LdScript -Ttext 0x500 -o $elf $sysO @objs $seamO "-L$OutDir" -lc $rtO $FloatLib
+# libheap backs malloc/free/realloc; link it (a non-allocating program
+# dead-strips it entirely).  Build it on demand if missing.
+$heapLib = Join-Path $repo 'lib\heap\libheap.a'
+if (-not (Test-Path $heapLib)) { & (Join-Path (Split-Path $PSScriptRoot -Parent) 'build-libheap.ps1') | Out-Null }
+$heapArgs = @($heapLib)
+& $Ld -T $LdScript -Ttext 0x500 -o $elf $sysO @objs $seamO "-L$OutDir" -lc $rtO $FloatLib @heapArgs
 if ($LASTEXITCODE -ne 0) { throw "link CC.elf failed (rc=$LASTEXITCODE)" }
 Write-Host 'mkdri -> CC.68K' -ForegroundColor Cyan
 & $Mkdri -b500 -y -o $out68 $elf | Out-Null

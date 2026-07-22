@@ -87,7 +87,12 @@ Invoke-Step 'cc seam'       { & $Cc @asArgs @optArgs -c $seamC -o $seamO "-I$inc
 $buildLibc = Join-Path (Split-Path $PSScriptRoot -Parent) 'build-libc.ps1'
 & $buildLibc -Cc $Cc -OutDir $OutDir -CcArgs ($asArgs + $optArgs) | Out-Null
 Invoke-Step 'cc program'    { & $Cc @asArgs @optArgs -c $Src   -o $progO "-I$inc" }
-Invoke-Step 'link elf'      { & $Ld -T $LdScript -Ttext 0x500 "-Map=$([IO.Path]::ChangeExtension($elf,'.map'))" $sysO $progO $seamO "-L$OutDir" -lc $rtO $FloatLib -o $elf }
+# libheap backs malloc/free/realloc; link it (a non-allocating program
+# dead-strips it entirely).  Build it on demand if missing.
+$heapLib = Join-Path $repo 'lib\heap\libheap.a'
+if (-not (Test-Path $heapLib)) { & (Join-Path (Split-Path $PSScriptRoot -Parent) 'build-libheap.ps1') | Out-Null }
+$heapArgs = @($heapLib)
+Invoke-Step 'link elf'      { & $Ld -T $LdScript -Ttext 0x500 "-Map=$([IO.Path]::ChangeExtension($elf,'.map'))" $sysO $progO $seamO "-L$OutDir" -lc $rtO $FloatLib @heapArgs -o $elf }
 Invoke-Step 'mkdri .68K'    { & $Mkdri -b500 -y -o $out68 $elf }
 
 Write-Host "build-68k: $out68" -ForegroundColor Green
