@@ -8,7 +8,7 @@
   Proves the native Osiris toolchain chain consumes c68k's own objects:
 
       c68k -fintegrated-as -c foo.c   ->  FOO.O   (integrated ELF emitter, P8)
-      LINK -o FOO.PRG SYS.O FOO.O LIBC.O RT68K.O FLOAT.A   (on Osiris)
+      LINK -o FOO.PRG SYS.O FOO.O RT68K.O LIBC68K.A  (on Osiris)
       FOO                                                   (run it)
 
   crt0/seam (osiris_sys.a68) and the integer runtime (rt68k.a68) are still
@@ -33,10 +33,13 @@ param(
   [string]$LinkPrg = 'C:\git\osiris\build\LINK.PRG',
   [string]$LibPrg = 'C:\git\osiris\build\LIB.PRG',
   [string]$FloatLib = (Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'lib\libm\libm.a'),
-  [switch]$UseLib,          # archive libc.o into LIBC.A with LIB.PRG, link that
+  [string]$HeapLib = (Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'lib\heap\libheap.a'),
+  [string]$Ar = 'C:\git\osiris\toolchain\binutils\m68k-elf-ar.exe',
+  [string]$Ranlib = 'C:\git\osiris\toolchain\binutils\m68k-elf-ranlib.exe',
+  [switch]$UseLib,          # archive extra TUs into EXTRA.A with LIB.PRG, link that
   [switch]$NoIntegrated,    # compile C via asm68K (isolate integrated-emitter issues)
-  [switch]$Bare,            # link crt0/seam + program + runtime only (no libc/float)
-  [switch]$NoFloat,         # link libc.o but not the float archive (isolate FLOAT.A)
+  [switch]$Bare,            # link crt0/seam + program + runtime only (no archives)
+  [switch]$NoFloat,         # link libc.a/libheap.a but not libm.a (isolate the float archive)
   [string]$Cpu = '',        # sim68k --cpu (e.g. 68000 for the full 24-bit/16MB model)
   [string]$Mem = '',        # sim68k --mem (e.g. MAX)
   [int]$BootWait = 5,
@@ -134,24 +137,36 @@ function Stop-AllSim {
 # ---- ensure simenv ----
 if (-not (Test-Path (Join-Path $simenv 'c68k-sim68k.exe'))) { & (Join-Path $repo 'tools\bootstrap-simenv.ps1') }
 $sim=Join-Path $simenv 'c68k-sim68k.exe'; $rom=Join-Path $simenv 'bootrom.bin'; $baseImg=Join-Path $simenv 'osiris-boot-144.img'
-foreach($p in @($sim,$rom,$baseImg,$LinkPrg,$FloatLib)){ if(-not (Test-Path $p)){ throw "run-native-link: missing '$p'" } }
+foreach($p in @($sim,$rom,$baseImg,$LinkPrg)){ if(-not (Test-Path $p)){ throw "run-native-link: missing '$p'" } }
 
 # ---- build the objects (crt0/rt via asm68K; C via c68k integrated emitter) ----
 $work=Join-Path ([System.IO.Path]::GetTempPath()) 'c68k-native-link'
 New-Item -ItemType Directory -Force -Path $work | Out-Null
 $inc=Join-Path $repo 'libc\include'
-$sysO=Join-Path $work 'SYS.O'; $rtO=Join-Path $work 'RT68K.O'; $libcO=Join-Path $work 'LIBC.O'; $progO=Join-Path $work "$Run.O"
+$sysO=Join-Path $work 'SYS.O'; $rtO=Join-Path $work 'RT68K.O'; $libcA=Join-Path $work 'libc.a'; $progO=Join-Path $work "$Run.O"
 $sysA=Join-Path $repo 'libc\osiris\osiris_sys.a68'; $rtA=Join-Path $repo 'lib\runtime\rt68k.a68'
 $ccArgs=@(); if (-not $NoIntegrated) { $ccArgs += '-fintegrated-as' }
 function Chk($desc){ if($LASTEXITCODE -ne 0){ throw "$desc failed (rc=$LASTEXITCODE)" } }
 & $Asm /Cx /elf /c /nologo "/Fo$sysO" $sysA  2>&1 | Out-Null; Chk 'asm crt0'
 & $Asm /Cx /elf /c /nologo "/Fo$rtO"  $rtA   2>&1 | Out-Null; Chk 'asm runtime'
-# libc is now the split archive; build it and combine every member into one
-# relocatable LIBC.O so the on-target native LINK can stage a single object.
-# (Phase 6 will switch this to on-target archive member selection.)
+# Phase 6: the native Osiris LINK member-selects per object from the c68k
+# archives -- the same dead-stripping the cross ld does, no whole-archive
+# LIBC.O blob. The native LINK.PRG keeps a SINGLE archive context per link (it
+# searches only the last archive on the command line; multi-archive is a linker
+# enhancement), so merge libc.a + libm.a + libheap.a into one combined archive
+# with ar's MRI 'addlib' -- member selection still strips per object. Build
+# libc.a here; libm.a/libheap.a come from the tree (built on demand if missing).
+$combA = Join-Path $work 'LIBC68K.A'
 if (-not $Bare) {
   & (Join-Path $repo 'tools\build-libc.ps1') -OutDir $work | Out-Null; Chk 'build libc.a'
-  & 'C:\git\osiris\toolchain\binutils\m68k-elf-ld.exe' -r --whole-archive (Join-Path $work 'libc.a') -o $libcO 2>&1 | Out-Null; Chk 'ld -r libc.a -> LIBC.O'
+  if (-not (Test-Path $FloatLib)) { & (Join-Path $repo 'tools\build-libm.ps1')   | Out-Null; Chk 'build libm.a' }
+  if (-not (Test-Path $HeapLib))  { & (Join-Path $repo 'tools\build-libheap.ps1') | Out-Null; Chk 'build libheap.a' }
+  $mri  = "create $($combA -replace '\\','/')`naddlib $($libcA -replace '\\','/')`n"
+  if (-not $NoFloat) { $mri += "addlib $($FloatLib -replace '\\','/')`n" }
+  $mri += "addlib $($HeapLib -replace '\\','/')`nsave`nend`n"
+  Remove-Item $combA -Force -EA SilentlyContinue
+  $mri | & $Ar -M 2>&1 | Out-Null; Chk 'ar -M combine archives'
+  & $Ranlib $combA 2>&1 | Out-Null; Chk 'ranlib combined archive'
 }
 & $Cc @ccArgs -c $Src   -o $progO "-I$inc"    2>&1 | Out-Null; Chk 'cc program'
 
@@ -174,10 +189,7 @@ $stage=@(
   @{ N="$Run.O";   F=$progO }
 )
 foreach($eo in $extraObjs){ $stage += $eo }
-if (-not $Bare) {
-  $stage += @{ N='LIBC.O';   F=$libcO }
-  if (-not $NoFloat) { $stage += @{ N='FLOAT.A';  F=$FloatLib } }
-}
+if (-not $Bare) { $stage += @{ N='LIBC68K.A'; F=$combA } }
 if ($UseLib) { $stage += @{ N='LIB.PRG'; F=$LibPrg } }
 foreach($s in $stage){ $n=Name11 $s.N; Remove-Fat12File $bz $n; Add-Fat12File $bz $n ([IO.File]::ReadAllBytes($s.F)) }
 [IO.File]::WriteAllBytes($img,$bz)
@@ -196,13 +208,13 @@ $psi.RedirectStandardInput=$true; $psi.UseShellExecute=$false
 $p=[System.Diagnostics.Process]::Start($psi)
 function _send($proc,[string]$s){ $b=[Text.Encoding]::ASCII.GetBytes($s); $proc.StandardInput.BaseStream.Write($b,0,$b.Length); $proc.StandardInput.BaseStream.Flush() }
 
-# object list for LINK: crt0, program, extras (or their archive), runtime, [libc, float]
+# object list for LINK: crt0, program, extras (or their archive), runtime, [combined c68k archive]
 $linkObjs = @('SYS.O', "$Run.O")
 $useArchive = ($UseLib -and $extraObjs.Count -gt 0)
 if ($useArchive) { $linkObjs += 'EXTRA.A' }
 else { foreach($eo in $extraObjs){ $linkObjs += $eo.N } }
 $linkObjs += 'RT68K.O'
-if (-not $Bare) { $linkObjs += 'LIBC.O'; if (-not $NoFloat) { $linkObjs += 'FLOAT.A' } }
+if (-not $Bare) { $linkObjs += 'LIBC68K.A' }
 $linkCmd = "LINK -o $Run.PRG " + ($linkObjs -join ' ')
 try {
   Start-Sleep -Seconds $BootWait

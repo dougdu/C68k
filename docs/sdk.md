@@ -209,4 +209,8 @@ The whole standalone `samples/` gallery can be built for both OSes (a build-cove
   on both OSes should either round its own data to 128-byte records (as `samples/hexdump.c` does for
   its self-test) or treat `0x1A` as end-of-text for CP/M text files.
 - The compiler does not link; linking is a separate `m68k-elf-ld` (+ `mkdri` for CP/M) step, or the
-  on-target `LINK.PRG` / `LINK.68K`.
+  on-target `LINK.PRG` / `LINK.68K`. The standard library ships as **dead-strippable archives**
+  (`libc.a`/`libm.a`/`libheap.a`), so a program links only the objects it references — a `puts`-only
+  program is ~10 KB, not the ~88 KB of the old whole-`libc` link. The native Osiris `LINK.PRG`
+  member-selects these archives too (non-heap programs; see
+  [libc-and-toolchain.md](libc-and-toolchain.md) §7.2).

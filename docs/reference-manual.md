@@ -402,6 +402,12 @@ through these helpers. The compiler's `-O1` strength reduction removes many of t
 **Linker scripts:** `osiris-prg.ld` (Osiris static-PIE `.PRG` layout) and `cpm68k.ld` (CP/M TPA
 layout at `0x500`, then `mkdri`).
 
+**Archives & dead-stripping:** `libc`/`libm`/`libheap` are `.a` archives of one object per function,
+so a program links only what it references — a `puts`-only program is ~10 KB, versus ~88 KB when the
+whole `libc` was one object. Both `m68k-elf-ld` and the native Osiris `LINK.PRG` member-select the
+archives (the native `LINK.PRG` takes one archive per link, so the three are merged for that path;
+heap programs use the cross `ld` pending a native `.bss`-zeroing fix).
+
 ## 11. Platform reference: Osiris vs CP/M-68K
 
 | Aspect | **Osiris DOS (OS/68K)** | **CP/M-68K** |
