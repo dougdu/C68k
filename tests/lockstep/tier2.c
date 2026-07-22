@@ -24,6 +24,14 @@ static int nearv(double a, double b) {
 }
 #define NEAR(a, b) CHECK(nearv((a), (b)))
 
+/* absolute tolerance compare (for ~1e-7 erf/erfc approximation) */
+static int neart(double a, double b, double tol) {
+  double d = a - b;
+  if (d < 0.0)
+    d = -d;
+  return d <= tol;
+}
+
 int main(void) {
   /* classification */
   CHECK(isnan(NAN));
@@ -145,6 +153,36 @@ int main(void) {
   CHECK(isinf(atanh(1.0)) && errno == ERANGE);
   errno = 0;
   CHECK(isnan(log2(-1.0)) && errno == EDOM);
+
+  /* ---- negative-arg / result<1 regression (libm exp bug worked around) ---- */
+  NEAR(exp(-1.0), 0.36787944117144233);
+  NEAR(exp2(-2.0), 0.25);
+  NEAR(expm1(-1.0), -0.6321205588285577);
+  NEAR(pow(0.5, 2.0), 0.25);
+  NEAR(pow(2.0, -3.0), 0.125);
+  NEAR(cbrt(0.125), 0.5);
+
+  /* ---- Phase 2c: erf / gamma ---- */
+  CHECK(neart(erf(0.0), 0.0, 2e-7));
+  CHECK(neart(erf(1.0), 0.8427007929497149, 2e-7));
+  CHECK(neart(erf(-1.0), -0.8427007929497149, 2e-7));
+  CHECK(neart(erf(2.0), 0.9953222650189527, 2e-7));
+  CHECK(neart(erfc(0.0), 1.0, 2e-7));
+  CHECK(neart(erfc(1.0), 0.15729920705028513, 2e-7));
+  CHECK(erf(0.7) + erfc(0.7) == 1.0);
+  NEAR(tgamma(1.0), 1.0);
+  NEAR(tgamma(5.0), 24.0);
+  NEAR(tgamma(6.0), 120.0);
+  NEAR(tgamma(0.5), 1.7724538509055159);
+  NEAR(tgamma(-0.5), -3.5449077018110318);
+  NEAR(lgamma(1.0), 0.0);
+  NEAR(lgamma(5.0), 3.1780538303479458);
+  NEAR(lgamma(0.5), 0.5723649429247001);
+  NEAR(lgamma(100.0), 359.1342053695754);
+  errno = 0;
+  CHECK(isnan(tgamma(-1.0)) && errno == EDOM);
+  errno = 0;
+  CHECK(isinf(lgamma(0.0)) && errno == ERANGE);
 
   printf("TIER2 %s %d/%d\n", pass == total ? "PASS" : "FAIL", pass, total);
   return pass == total ? 0 : 1;

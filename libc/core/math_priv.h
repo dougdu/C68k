@@ -39,6 +39,7 @@ extern double expd(double);
 extern double logd(double);
 extern double powd(double, double);
 extern double fmodd(double, double);
+extern double sind(double);
 
 /* Internal helpers / cross-references within the math layer. */
 extern double __huge_val(void);
@@ -52,5 +53,7 @@ extern double rint(double);
 extern double nextafter(double, double);
 extern double expm1(double);
 extern double log1p(double);
+extern double erfc(double);
+extern double __mexp(double); /* exp() that is correct for negative x (libm bug) */
 
 #endif /* MATH_PRIV_H */

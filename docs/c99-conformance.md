@@ -72,7 +72,7 @@ OS): `<float.h>`, `<iso646.h>`, `<limits.h>`, `<stdarg.h>`, `<stdbool.h>`,
 | `<iso646.h>` | Alternative operator spellings | ✅ | `libc/include/iso646.h` | Complete. |
 | `<limits.h>` | Integer‑type limits | ✅ | `include/limits.h`, `libc/include/limits.h` | Complete for ILP32. |
 | `<locale.h>` | Localization | ❌ | — | Only the "C" locale is implied; `setlocale`/`localeconv` absent. |
-| `<math.h>` | Mathematics | ⚠️ | `libc/include/math.h`, `libc/core/*.c` → **libm** | Base transcendentals inline (double‑only); C99 classification/constants/IEEE‑754 utilities/rounding + hyperbolic/`exp2`/`log2`/`expm1`/`log1p`/`cbrt`/`hypot`/`remainder` all added (Tier 2 Phase 2a/2b, with `EDOM`/`ERANGE`). Pending: `erf`/gamma (Phase 2c); no `f`/`l` variants. |
+| `<math.h>` | Mathematics | ⚠️ | `libc/include/math.h`, `libc/core/*.c` → **libm** | Base transcendentals inline (double‑only); the full C99 function set + classification/constants added in C (Tier 2 2a/2b/2c, with `EDOM`/`ERANGE`). Pending only: `f`/`l` variants. Works around a libm negative‑arg `exp`/`pow` defect. |
 | `<setjmp.h>` | Non‑local jumps | ❌ | — | `setjmp`/`longjmp` not implemented. |
 | `<signal.h>` | Signal handling | ⚠️ | `libc/include/signal.h`, `libc/core/signal.c` | Synchronous only — no async delivery on these OSes; `raise` calls handlers inline. |
 | `<stdarg.h>` | Variable arguments | ✅ | `include/stdarg.h` | m68k `va_list`. Conforming. |
@@ -171,17 +171,19 @@ wrappers** in the header over libm's `d`‑suffixed primitives.
 
 The **base transcendentals** stay `static` inline (their C names would collide
 with libm's internal single‑precision `_sqrt`/`_exp`/… symbols, so extern
-linkage needs a vendored‑libm fork).  The **C99 additions** (Tier 2) are real
-extern functions in `libc/core/*.c` over the same kernels, plus the standard
-macros: `HUGE_VAL`/`INFINITY`/`NAN`, `FP_*`, and the classification
-(`fpclassify`, `isnan`, `isinf`, `isfinite`, `isnormal`, `signbit`) and
-comparison (`isgreater`, …) macros.  Phase 2a (IEEE‑754 utilities + rounding)
-and Phase 2b (hyperbolic, `exp2`/`expm1`, `log2`/`log1p`, `cbrt`, `hypot`,
-`remainder`/`remquo`, with `EDOM`/`ERANGE`) are done; only `erf`/`erfc`/
-`lgamma`/`tgamma` (Phase 2c) remain.  Still pending overall: the `f`/`l`
-variants, and `errno` on the inline base functions.  `fma` is a double‑rounded
-`x*y+z`; and because the soft‑float adder truncates, `rint`/`nearbyint` use a
-floor‑based ties‑to‑even.
+linkage needs a vendored‑libm fork).  All **C99 additions** (Tier 2 Phase
+2a/2b/2c) are now present as real extern functions in `libc/core/*.c` over the
+same kernels, plus the standard macros (`HUGE_VAL`/`INFINITY`/`NAN`, `FP_*`,
+classification, comparison).  Remaining gaps: the `f`/`l` variants, and `errno`
+on the inline base functions.
+
+Notes: `fma` is a double‑rounded `x*y+z`; the soft‑float adder truncates, so
+`rint`/`nearbyint` use a floor‑based ties‑to‑even; `erf`/`erfc` are a compact
+rational approximation (~1e‑7).  **Known libm defect:** the vendored double
+`exp` returns exactly 2× the correct value for negative arguments (and `pow`
+likewise for results < 1).  The C math layer works around it via the identity
+`exp(x)=1/exp(-x)` (`__mexp`, plus reciprocal forms in the inline `exp`/`pow`
+and in `cbrt`); a proper fix belongs upstream in worm68k's `dpmath.a68`.
 
 | Function | Purpose | Status | Library / File | Notes |
 |---|---|:--:|---|---|
@@ -209,7 +211,8 @@ floor‑based ties‑to‑even.
 | `logb` `ilogb` | exponent extract | ✅ | libc / `logb.c`,`ilogb.c` | |
 | `frexp` `ldexp` `scalbn` `scalbln` | exponent manipulation | ✅ | libc / `frexp.c`,`ldexp.c`,`scalbn.c`,`scalbln.c` | |
 | `cbrt` `hypot` | cube root, hypotenuse | ✅ | libc / `cbrt.c`,`hypot.c` | `cbrt` Newton‑refined; `hypot` scaled. |
-| `erf` `erfc` `lgamma` `tgamma` | error/gamma | ❌ | — | Phase 2c. |
+| `erf` `erfc` | error function | ✅ | libc / `erf.c`,`erfc.c` | compact rational approx (~1e‑7). |
+| `lgamma` `tgamma` | gamma functions | ✅ | libc / `lgamma.c`,`tgamma.c` | Lanczos; `EDOM`/`ERANGE` at poles. |
 | `trunc` `round` `nearbyint` `rint` | rounding | ✅ | libc / `trunc.c`,`round.c`,`nearbyint.c`,`rint.c` | `rint`/`nearbyint` ties‑to‑even. |
 | `lround` `llround` `lrint` `llrint` | round‑to‑integer | ✅ | libc / `lround.c`,`llround.c`,`lrint.c`,`llrint.c` | |
 | `remainder` `remquo` | IEEE remainder | ✅ | libc / `remainder.c`,`remquo.c` | via `rint`; `EDOM` on `y==0`. |
@@ -428,7 +431,11 @@ string and stream entry points). Remaining scanf gaps — the `%[` scanset and
      `atanh`, `exp2`/`expm1`, `log2`/`log1p`, `cbrt`, `hypot`, `remainder`/
      `remquo`, with `errno` (`EDOM`/`ERANGE`). `tests/lockstep/tier2.c` 90/90
      on both OSes.
-   - Phase 2c (pending): `erf`/`erfc`/`lgamma`/`tgamma`.
+   - Phase 2c ✅ DONE (2026‑07‑22): `erf`/`erfc` (rational ~1e‑7),
+     `lgamma`/`tgamma` (Lanczos). `tests/lockstep/tier2.c` 114/114 both OSes.
+     Uncovered & worked around a vendored‑libm defect (double `exp`/`pow` wrong
+     for negative args / results < 1) — the proper fix is upstream in worm68k.
+   - **Tier 2 `<math.h>` is complete** except the `f`/`l` type variants.
    - The 12 **base** transcendentals stay `static` inline — their C names
      collide with libm's single‑precision `_sqrt`/`_exp`/… so extern linkage
      would need a vendored‑libm fork; `f`/`l` variants also pending.

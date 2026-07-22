@@ -40,11 +40,17 @@ static double sin(double x) { return sind(x); }
 static double cos(double x) { return cosd(x); }
 static double tan(double x) { return sind(x) / cosd(x); }
 static double atan(double x) { return atand(x); }
-static double exp(double x) { return expd(x); }
+static double exp(double x) { return x < 0.0 ? 1.0 / expd(-x) : expd(x); }
 static double log(double x) { return logd(x); }
 static double log10(double x) { return logd(x) / M_LN10; }
 static double sqrt(double x) { return sqrtd(x); }
-static double pow(double b, double e) { return powd(b, e); }
+static double pow(double b, double e) {
+  /* Work around libm's exp bug: powd is wrong when the result is < 1, so
+     compute b^e = 1 / b^(-e) in that case (the reciprocal has result > 1). */
+  if (b > 0.0 && ((b > 1.0 && e < 0.0) || (b < 1.0 && e > 0.0)))
+    return 1.0 / powd(b, -e);
+  return powd(b, e);
+}
 static double floor(double x) { return floord(x); }
 static double ceil(double x) { return ceild(x); }
 static double fabs(double x) { return fabsd(x); }
@@ -148,5 +154,11 @@ extern double acosh(double);
 extern double atanh(double);
 extern double remainder(double, double);
 extern double remquo(double, double, int *);
+
+/* Error and gamma functions (Phase 2c, libc/core). */
+extern double erf(double);
+extern double erfc(double);
+extern double tgamma(double);
+extern double lgamma(double);
 
 #endif /* _MATH_H */
