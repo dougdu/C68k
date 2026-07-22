@@ -33,15 +33,24 @@ typedef union {
 /* libm double kernels used by the C math layer. */
 extern double floord(double);
 extern double ceild(double);
+extern double fabsd(double);
+extern double sqrtd(double);
+extern double expd(double);
+extern double logd(double);
+extern double powd(double, double);
+extern double fmodd(double, double);
 
 /* Internal helpers / cross-references within the math layer. */
 extern double __huge_val(void);
 extern double __nan_val(void);
 extern int __isnan(double);
+extern int __isinf(double);
 extern int __signbit(double);
 extern double scalbn(double, int);
 extern double round(double);
 extern double rint(double);
 extern double nextafter(double, double);
+extern double expm1(double);
+extern double log1p(double);
 
 #endif /* MATH_PRIV_H */

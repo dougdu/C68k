@@ -26,6 +26,15 @@ extern double modfd(double, double *);
 #define M_E 2.71828182845904523536
 #define M_LN2 0.69314718055994530942
 #define M_LN10 2.30258509299404568402
+#define M_LOG2E 1.44269504088896340736
+#define M_LOG10E 0.43429448190325182765
+#define M_PI_2 1.57079632679489661923
+#define M_PI_4 0.78539816339744830962
+#define M_1_PI 0.31830988618379067154
+#define M_2_PI 0.63661977236758134308
+#define M_2_SQRTPI 1.12837916709551257390
+#define M_SQRT2 1.41421356237309504880
+#define M_SQRT1_2 0.70710678118654752440
 
 static double sin(double x) { return sind(x); }
 static double cos(double x) { return cosd(x); }
@@ -123,5 +132,21 @@ extern long long llround(double);
 extern long lrint(double);
 extern long long llrint(double);
 extern double fma(double, double, double);
+
+/* Exponential, logarithmic, power, and hyperbolic (Phase 2b, libc/core). */
+extern double exp2(double);
+extern double expm1(double);
+extern double log2(double);
+extern double log1p(double);
+extern double cbrt(double);
+extern double hypot(double, double);
+extern double sinh(double);
+extern double cosh(double);
+extern double tanh(double);
+extern double asinh(double);
+extern double acosh(double);
+extern double atanh(double);
+extern double remainder(double, double);
+extern double remquo(double, double, int *);
 
 #endif /* _MATH_H */

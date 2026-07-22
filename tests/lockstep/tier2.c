@@ -2,6 +2,7 @@
  * Prints "TIER2 PASS n/n" when every check holds. */
 #include <stdio.h>
 #include <math.h>
+#include <errno.h>
 
 static int pass, total;
 #define CHECK(c)                                                               \
@@ -12,6 +13,16 @@ static int pass, total;
     else                                                                       \
       printf("FAIL line %d\n", __LINE__);                                      \
   } while (0)
+
+/* relative tolerance compare for transcendental results */
+static int nearv(double a, double b) {
+  double d = a - b;
+  if (d < 0.0)
+    d = -d;
+  double m = b < 0.0 ? -b : b;
+  return d <= 1e-7 * (1.0 + m);
+}
+#define NEAR(a, b) CHECK(nearv((a), (b)))
 
 int main(void) {
   /* classification */
@@ -84,6 +95,56 @@ int main(void) {
 
   /* fma */
   CHECK(fma(2.0, 3.0, 4.0) == 10.0);
+
+  /* ---- Phase 2b: exp / log family ---- */
+  NEAR(exp2(10.0), 1024.0);
+  NEAR(exp2(0.5), 1.4142135623730951);
+  NEAR(exp2(log2(7.0)), 7.0);
+  NEAR(expm1(0.0), 0.0);
+  NEAR(expm1(1.0), 1.718281828459045);
+  NEAR(expm1(1e-10), 1e-10);
+  NEAR(log2(1024.0), 10.0);
+  NEAR(log2(8.0), 3.0);
+  NEAR(log1p(0.0), 0.0);
+  NEAR(log1p(1e-10), 1e-10);
+
+  /* ---- hyperbolic ---- */
+  NEAR(sinh(0.0), 0.0);
+  NEAR(sinh(1.0), 1.1752011936438014);
+  NEAR(sinh(-1.0), -1.1752011936438014);
+  NEAR(cosh(0.0), 1.0);
+  NEAR(cosh(1.0), 1.5430806348152437);
+  NEAR(tanh(0.0), 0.0);
+  NEAR(tanh(1.0), 0.7615941559557649);
+  NEAR(tanh(100.0), 1.0);
+  NEAR(asinh(0.0), 0.0);
+  NEAR(sinh(asinh(2.0)), 2.0);
+  NEAR(acosh(1.0), 0.0);
+  NEAR(cosh(acosh(3.0)), 3.0);
+  NEAR(atanh(0.5), 0.5493061443340548);
+  NEAR(tanh(atanh(0.3)), 0.3);
+
+  /* ---- power / remainder ---- */
+  NEAR(cbrt(27.0), 3.0);
+  NEAR(cbrt(-8.0), -2.0);
+  NEAR(cbrt(0.0), 0.0);
+  NEAR(hypot(3.0, 4.0), 5.0);
+  NEAR(hypot(5.0, 12.0), 13.0);
+  NEAR(remainder(5.0, 3.0), -1.0);
+  NEAR(remainder(7.0, 3.0), 1.0);
+  int q = 0;
+  NEAR(remquo(7.0, 3.0, &q), 1.0);
+  CHECK(q == 2);
+
+  /* ---- errno domain / range ---- */
+  errno = 0;
+  CHECK(isnan(acosh(0.5)) && errno == EDOM);
+  errno = 0;
+  CHECK(isnan(atanh(2.0)) && errno == EDOM);
+  errno = 0;
+  CHECK(isinf(atanh(1.0)) && errno == ERANGE);
+  errno = 0;
+  CHECK(isnan(log2(-1.0)) && errno == EDOM);
 
   printf("TIER2 %s %d/%d\n", pass == total ? "PASS" : "FAIL", pass, total);
   return pass == total ? 0 : 1;
