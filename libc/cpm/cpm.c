@@ -22,6 +22,7 @@ extern long cpm_bdos(int func, long param);
 #define F_READ 20
 #define F_WRITE 21
 #define F_MAKE 22
+#define F_RENAME 23
 #define F_DMAOFF 26
 #define T_GET 105 /* Worm CP/M-68K BDOS clock extension (BDOSEXT) */
 
@@ -198,6 +199,20 @@ int sys_unlink(const char *path) {
   unsigned char fcb[FCB_SIZE];
   parse_fcb(fcb, path);
   return ((cpm_bdos(F_DELETE, (long)fcb) & 0xFF) == 0xFF) ? -1 : 0;
+}
+
+/* CP/M rename FCB: old name in bytes 0..11, new name in bytes 16..27 (a
+   second FCB whose drive byte lives at offset 16). BDOS 23 returns 0xFF if
+   the old file is absent. */
+int sys_rename(const char *oldp, const char *newp) {
+  unsigned char fcb[FCB_SIZE];
+  unsigned char nf[FCB_SIZE];
+  parse_fcb(fcb, oldp);
+  parse_fcb(nf, newp);
+  for (int i = 0; i < 12; i++)
+    fcb[16 + i] = nf[i]; /* new drive(16), name(17..24), type(25..27) */
+  fcb[16] = fcb[0];      /* CP/M renames within a single drive */
+  return ((cpm_bdos(F_RENAME, (long)fcb) & 0xFF) == 0xFF) ? -1 : 0;
 }
 
 /* ---- <time.h> clock seam --------------------------------------------

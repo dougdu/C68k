@@ -99,6 +99,25 @@ int main(void) {
     remove("TIER1.TMP");
   }
 
+  /* rename: create, rename, confirm old gone / new holds the content */
+  f = fopen("TIER1A.TMP", "w");
+  if (f) {
+    fputc('Z', f);
+    fclose(f);
+    CHECK(rename("TIER1A.TMP", "TIER1B.TMP") == 0);
+    FILE *g = fopen("TIER1A.TMP", "r");
+    CHECK(g == NULL); /* old name no longer resolves */
+    if (g)
+      fclose(g);
+    g = fopen("TIER1B.TMP", "r");
+    CHECK(g != NULL); /* new name holds the file */
+    if (g) {
+      CHECK(fgetc(g) == 'Z');
+      fclose(g);
+    }
+    remove("TIER1B.TMP");
+  }
+
   printf("TIER1 %s %d/%d\n", pass == total ? "PASS" : "FAIL", pass, total);
   return pass == total ? 0 : 1;
 }

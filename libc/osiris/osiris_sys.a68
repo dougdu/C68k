@@ -15,7 +15,7 @@
 
         PUBLIC  _start
         PUBLIC  _sys_write,_sys_read,_sys_open,_sys_creat,_sys_close
-        PUBLIC  _sys_seek,_sys_unlink,_sys_exit,_sys_sbrk,_sys_heapavail
+        PUBLIC  _sys_seek,_sys_unlink,_sys_rename,_sys_exit,_sys_sbrk,_sys_heapavail
         PUBLIC  _sys_time
         EXTERN  _main
 
@@ -27,6 +27,7 @@ DOSF_CLOSE   equ  $3E00
 DOSF_READ    equ  $3F00
 DOSF_WRITE   equ  $4000
 DOSF_UNLINK  equ  $4100
+DOSF_RENAME  equ  $5600
 DOSF_LSEEK   equ  $4200
 DOSF_ALLOC   equ  $4800
 DOSF_GETDATE equ  $2A00
@@ -332,6 +333,25 @@ _sys_unlink:
         unlk    a6
         rts
 su_err:
+        moveq   #-1,d0
+        unlk    a6
+        rts
+
+**********************************************************
+* int _sys_rename(const char *oldp, const char *newp) -> 0, or -1.
+* DOS 56h: A0 = old path, A1 = new path; carry set on error.
+**********************************************************
+_sys_rename:
+        link    a6,#0
+        movea.l 8(a6),a0            ; old path
+        movea.l 12(a6),a1           ; new path
+        move.w  #DOSF_RENAME,d0
+        trap    #1
+        bcs     sre_err
+        moveq   #0,d0
+        unlk    a6
+        rts
+sre_err:
         moveq   #-1,d0
         unlk    a6
         rts

@@ -19,6 +19,7 @@ extern int sys_creat(const char *path, int attr);
 extern int sys_close(int fd);
 extern long sys_seek(int fd, long off, int whence);
 extern int sys_unlink(const char *path);
+extern int sys_rename(const char *oldp, const char *newp);
 extern void sys_exit(int code);
 extern void *sys_sbrk(int delta);
 extern int sys_heapavail(void); /* bytes from the break to the arena top (libheap malloc) */

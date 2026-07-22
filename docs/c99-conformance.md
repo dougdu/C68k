@@ -10,8 +10,9 @@ It is a working reference for driving the library toward conformance. Rows
 marked ⚠️ or ❌ are the actionable gaps.
 
 **Status (2026‑07‑22):** the Tier 1 gaps in the roadmap below are now
-implemented and verified — `tests/lockstep/tier1.c` passes 27/27 on both Osiris
-and CP/M‑68K. The tables reflect that work.
+implemented and verified — `tests/lockstep/tier1.c` passes 31/31 on both Osiris
+and CP/M‑68K, including a real `rename` (Osiris DOS 56h / CP/M BDOS 23). The
+tables reflect that work.
 
 ## Target model
 
@@ -77,7 +78,7 @@ OS): `<float.h>`, `<iso646.h>`, `<limits.h>`, `<stdarg.h>`, `<stdbool.h>`,
 | `<stdbool.h>` | Boolean type/values | ✅ | `include/stdbool.h`, `libc/include/stdbool.h` | Complete. |
 | `<stddef.h>` | Common definitions | ✅ | `include/stddef.h` | `size_t`, `ptrdiff_t`, `wchar_t`, `NULL`, `offsetof`. |
 | `<stdint.h>` | Fixed‑width integers | ✅ | `include/stdint.h` | Complete (exact/least/fast/ptr/max + limits + `*_C` macros). |
-| `<stdio.h>` | Input/output | ⚠️ | `libc/include/stdio.h`, `libc/core/*.c` | Added `scanf`/`fscanf`/`vscanf`/`vfscanf`/`vprintf`/`vsprintf`/`ungetc`/`rewind`/`clearerr`/`perror`/`remove`. Still no `freopen`/`setvbuf`/`tmp*`/`fgetpos`/wide; `rename` is a failing stub; `scanf`/`fscanf` read a line at a time. See §stdio. |
+| `<stdio.h>` | Input/output | ⚠️ | `libc/include/stdio.h`, `libc/core/*.c` | Added `scanf`/`fscanf`/`vscanf`/`vfscanf`/`vprintf`/`vsprintf`/`ungetc`/`rewind`/`clearerr`/`perror`/`remove`/`rename`. Still no `freopen`/`setvbuf`/`tmp*`/`fgetpos`/wide; `scanf`/`fscanf` read a line at a time. See §stdio. |
 | `<stdlib.h>` | General utilities | ⚠️ | `libc/include/stdlib.h`, `libc/core/*.c` | Added `atoll`/`llabs`/`lldiv`/`strtof`/`_Exit`/`getenv`/`system`. Only the multibyte functions (`mblen`/`mbtowc`/…) remain absent (no wide‑char support). |
 | `<string.h>` | String handling | ⚠️ | `libc/include/string.h`, `libc/core/str*.c`, **rt** | Added `strspn`/`strcspn`/`strpbrk`. Only `strcoll`/`strxfrm` remain absent (no locale). |
 | `<tgmath.h>` | Type‑generic math | ❌ | — | Requires `<complex.h>` + `<math.h>` generic macros. |
@@ -248,7 +249,7 @@ integer set with limits and `INT*_C`/`UINT*_C` constructors. ✅
 | `freopen` | Reassign stream | ❌ | — | |
 | `setbuf` / `setvbuf` | Buffering control | ❌ | — | Buffering fixed at `BUFSIZ`. |
 | `remove` | Delete file | ✅ | libc / `remove.c` | wraps `sys_unlink`. |
-| `rename` | Rename file | ⚠️ | libc / `rename.c` | Failing stub — no rename seam yet; sets `errno=EINVAL`. |
+| `rename` | Rename file | ✅ | libc / `rename.c` + seam | `sys_rename`: Osiris DOS 56h (A0=old, A1=new); CP/M BDOS 23 (combined FCB). |
 | `tmpfile` / `tmpnam` | Temp files | ❌ | — | |
 | `printf` | Formatted stdout | ⚠️ | libc / `printf.c`,`vformat.c` | Int/str/char, `%f/%e/%g`, width/prec/flags; no `%a`, `%n`, wide. |
 | `fprintf` | Formatted to stream | ⚠️ | libc / `fprintf.c` | as `printf`. |
@@ -400,8 +401,7 @@ Implemented as pure header/libc additions and verified by
 6. ✅ **`<inttypes.h>`**: `imaxabs`, `imaxdiv`, `strtoimax`, `strtoumax`, and the
    complete `PRI*`/`SCN*` macro set.
 
-Residual Tier 1 follow‑ups (need OS‑seam or engine work, deferred):
-- `rename` is a failing stub — promote when the syscall seam gains a rename.
+Residual Tier 1 follow‑ups (deferred):
 - `scanf`/`fscanf` are line‑buffered (input past the parsed fields is dropped
   with the rest of the line); a char‑streaming scanner would remove this limit.
 
