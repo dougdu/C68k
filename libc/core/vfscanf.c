@@ -1,28 +1,14 @@
 #include <stdio.h>
 #include <stdarg.h>
+#include "libc_internal.h"
 
-/*
- * fscanf-family core.  The string scanner (vsscanf) is reused by reading one
- * line from the stream into a buffer and parsing that.
- *
- * LIMITATION: input the format string does not consume is discarded together
- * with the remainder of the line (see docs/c99-conformance.md).  Programs that
- * read one item per line behave as expected.
- */
+/* Stream scanf: the shared character-streaming engine (vsscanf.c) reads
+ * straight from the FILE via fgetc/ungetc, so conversions consume exactly
+ * what they match and leave the rest in the stream for the next call. */
 int vfscanf(FILE *fp, const char *fmt, va_list ap) {
-  char line[512];
-  int i = 0, c, got = 0;
-  while (i < (int)sizeof(line) - 1) {
-    c = fgetc(fp);
-    if (c == EOF)
-      break;
-    got = 1;
-    if (c == '\n')
-      break; /* consume the newline, leave it out of the buffer */
-    line[i++] = (char)c;
-  }
-  line[i] = '\0';
-  if (!got)
-    return EOF; /* input failure before any character was read */
-  return vsscanf(line, fmt, ap);
+  _scan z;
+  z.fp = fp;
+  z.s = NULL;
+  z.nread = 0;
+  return _vscan(&z, fmt, ap);
 }

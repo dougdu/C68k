@@ -58,4 +58,16 @@ typedef struct {
 } _psink;
 int _vformat(_psink *s, const char *fmt, va_list ap);
 
+/* ---- scanf/fscanf/sscanf core (vsscanf.c) -------------------------------
+ * The scanner runs over a _scan source that is either a FILE stream
+ * (scanf/fscanf) or a NUL-terminated string (sscanf), reading one character
+ * at a time with a single character of pushback so each conversion consumes
+ * exactly what it matches and leaves the rest for the next read. */
+typedef struct {
+  FILE *fp;      /* stream source, or NULL for a string */
+  const char *s; /* string cursor, or NULL for a stream */
+  long nread;    /* characters consumed (for %n and EOF detection) */
+} _scan;
+int _vscan(_scan *z, const char *fmt, va_list ap);
+
 #endif /* LIBC_INTERNAL_H */

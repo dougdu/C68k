@@ -204,10 +204,14 @@ The whole standalone `samples/` gallery can be built for both OSes (a build-cove
 - `long double` is `double` (64-bit IEEE).
 - The 68008 Osiris board and CP/M-68K are ≤ 1 MB machines; large programs should mind the heap.
 - **CP/M record granularity.** CP/M-68K files are stored in 128-byte records with no exact byte
-  length; a short file reads back **padded to the next 128-byte boundary with `0x1A`** (Ctrl-Z, the
-  CP/M soft-EOF). Osiris FAT12 stores the exact length instead. A tool that must behave identically
-  on both OSes should either round its own data to 128-byte records (as `samples/hexdump.c` does for
-  its self-test) or treat `0x1A` as end-of-text for CP/M text files.
+  length; a short file is written back **padded to the next 128-byte boundary with `0x1A`** (Ctrl-Z,
+  the CP/M soft-EOF), whereas Osiris FAT12 stores the exact length. The c68k libc handles this the
+  standard C way, keyed on the `fopen` mode: a **text** stream (`"r"`) stops at the first `0x1A`, so a
+  short text file reads back at its logical length on both OSes; a **binary** stream (`"rb"`) delivers
+  every byte, padding included. So read text with `"r"` and binary with `"rb"`. For a binary payload
+  that must be byte-identical on both OSes, use `"rb"` and either size your own data (e.g. round to a
+  128-byte record, as `samples/hexdump.c` does) or embed a length/header rather than relying on the
+  file's physical size.
 - The compiler does not link; linking is a separate `m68k-elf-ld` (+ `mkdri` for CP/M) step, or the
   on-target `LINK.PRG` / `LINK.68K`. The standard library ships as **dead-strippable archives**
   (`libc.a`/`libm.a`/`libheap.a`), so a program links only the objects it references — a `puts`-only

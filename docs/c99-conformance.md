@@ -10,9 +10,10 @@ It is a working reference for driving the library toward conformance. Rows
 marked ⚠️ or ❌ are the actionable gaps.
 
 **Status (2026‑07‑22):** the Tier 1 gaps in the roadmap below are now
-implemented and verified — `tests/lockstep/tier1.c` passes 31/31 on both Osiris
-and CP/M‑68K, including a real `rename` (Osiris DOS 56h / CP/M BDOS 23). The
-tables reflect that work.
+implemented and verified — `tests/lockstep/tier1.c` passes 42/42 on both Osiris
+and CP/M‑68K. This includes a real `rename` (Osiris DOS 56h / CP/M BDOS 23), a
+true character‑streaming `scanf`/`fscanf`/`sscanf` engine, and text/binary
+`fopen` modes with Ctrl‑Z text‑EOF on CP/M. The tables reflect that work.
 
 ## Target model
 
@@ -78,7 +79,7 @@ OS): `<float.h>`, `<iso646.h>`, `<limits.h>`, `<stdarg.h>`, `<stdbool.h>`,
 | `<stdbool.h>` | Boolean type/values | ✅ | `include/stdbool.h`, `libc/include/stdbool.h` | Complete. |
 | `<stddef.h>` | Common definitions | ✅ | `include/stddef.h` | `size_t`, `ptrdiff_t`, `wchar_t`, `NULL`, `offsetof`. |
 | `<stdint.h>` | Fixed‑width integers | ✅ | `include/stdint.h` | Complete (exact/least/fast/ptr/max + limits + `*_C` macros). |
-| `<stdio.h>` | Input/output | ⚠️ | `libc/include/stdio.h`, `libc/core/*.c` | Added `scanf`/`fscanf`/`vscanf`/`vfscanf`/`vprintf`/`vsprintf`/`ungetc`/`rewind`/`clearerr`/`perror`/`remove`/`rename`. Still no `freopen`/`setvbuf`/`tmp*`/`fgetpos`/wide; `scanf`/`fscanf` read a line at a time. See §stdio. |
+| `<stdio.h>` | Input/output | ⚠️ | `libc/include/stdio.h`, `libc/core/*.c` | Added `scanf`/`fscanf`/`vscanf`/`vfscanf`/`vprintf`/`vsprintf`/`ungetc`/`rewind`/`clearerr`/`perror`/`remove`/`rename`. Still no `freopen`/`setvbuf`/`tmp*`/`fgetpos`/wide. See §stdio. |
 | `<stdlib.h>` | General utilities | ⚠️ | `libc/include/stdlib.h`, `libc/core/*.c` | Added `atoll`/`llabs`/`lldiv`/`strtof`/`_Exit`/`getenv`/`system`. Only the multibyte functions (`mblen`/`mbtowc`/…) remain absent (no wide‑char support). |
 | `<string.h>` | String handling | ⚠️ | `libc/include/string.h`, `libc/core/str*.c`, **rt** | Added `strspn`/`strcspn`/`strpbrk`. Only `strcoll`/`strxfrm` remain absent (no locale). |
 | `<tgmath.h>` | Type‑generic math | ❌ | — | Requires `<complex.h>` + `<math.h>` generic macros. |
@@ -243,7 +244,7 @@ integer set with limits and `INT*_C`/`UINT*_C` constructors. ✅
 
 | Function | Purpose | Status | Library / File | Notes |
 |---|---|:--:|---|---|
-| `fopen` | Open stream | ⚠️ | libc / `fopen.c` | Mode subset. |
+| `fopen` | Open stream | ⚠️ | libc / `fopen.c` | Modes `r`/`w`/`a` (+`b`); no `+`/update. Text streams honor a Ctrl‑Z (`0x1A`) EOF; binary (`b`) reads raw — this is what makes CP/M's record‑padded files read back at their logical length. |
 | `fclose` | Close stream | ✅ | libc / `fclose.c` | |
 | `fflush` | Flush buffer | ✅ | libc / `fflush.c` | |
 | `freopen` | Reassign stream | ❌ | — | |
@@ -258,9 +259,9 @@ integer set with limits and `INT*_C`/`UINT*_C` constructors. ✅
 | `vfprintf` | va_list to stream | ✅ | libc / `vfprintf.c` | |
 | `vsnprintf` | va_list, bounded | ✅ | libc / `vsnprintf.c` | |
 | `vprintf` `vsprintf` | va_list print variants | ✅ | libc / `vprintf.c`,`vsprintf.c` | |
-| `vscanf` `vfscanf` | va_list scan variants | ✅ | libc / `vscanf.c`,`vfscanf.c` | Line‑buffered (see `scanf`). |
-| `scanf` `fscanf` | Formatted input | ⚠️ | libc / `scanf.c`,`fscanf.c`,`vfscanf.c` | Layered on `vsscanf`: read a line, then parse. Input the format does not consume is dropped with the rest of the line. |
-| `sscanf` | Parse from string | ⚠️ | libc / `sscanf.c`,`vsscanf.c` | `d/i/u/o/x/X/p`, `f/e/g`, `s/c/%`, width, `*`, `hh/h/l/ll`. |
+| `vscanf` `vfscanf` | va_list scan variants | ✅ | libc / `vscanf.c`,`vfscanf.c` | Share the streaming engine. |
+| `scanf` `fscanf` | Formatted input | ⚠️ | libc / `scanf.c`,`fscanf.c`,`vsscanf.c` | True char-streaming scanner (`_vscan`): consumes exactly what it matches and leaves the rest in the stream. No `%[` scanset or `%a`. |
+| `sscanf` | Parse from string | ⚠️ | libc / `sscanf.c`,`vsscanf.c` | `d/i/u/o/x/X/p`, `f/e/g`, `s/c/n/%`, width, `*`, `hh/h/l/ll`. No `%[`/`%a`. |
 | `vsscanf` | va_list parse | ✅ | libc / `vsscanf.c` | |
 | `fgetc` `getc` `getchar` | Read char | ✅ | libc / `fgetc.c`,`getc.c`,`getchar.c` | |
 | `fgets` | Read line | ✅ | libc / `fgets.c` | |
@@ -401,9 +402,10 @@ Implemented as pure header/libc additions and verified by
 6. ✅ **`<inttypes.h>`**: `imaxabs`, `imaxdiv`, `strtoimax`, `strtoumax`, and the
    complete `PRI*`/`SCN*` macro set.
 
-Residual Tier 1 follow‑ups (deferred):
-- `scanf`/`fscanf` are line‑buffered (input past the parsed fields is dropped
-  with the rest of the line); a char‑streaming scanner would remove this limit.
+All Tier 1 items are complete, including a true character‑streaming
+`scanf`/`fscanf`/`sscanf` engine (`_vscan` in `libc/core/vsscanf.c`, shared by the
+string and stream entry points). Remaining scanf gaps — the `%[` scanset and
+`%a` hex‑float — are minor and tracked with the broader conversion‑coverage work.
 
 ### Tier 2 — moderate
 7. **`<math.h>` correctness**: give the functions **external** linkage (real

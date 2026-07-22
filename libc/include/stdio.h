@@ -18,6 +18,7 @@
 #define _SF_ERR 0x08
 #define _SF_USED 0x10
 #define _SF_MEM 0x20
+#define _SF_BIN 0x40 /* opened with "...b": no Ctrl-Z text-EOF translation */
 
 typedef struct _FILE {
   int fd;      /* Osiris file handle */

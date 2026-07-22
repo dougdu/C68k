@@ -70,6 +70,12 @@ int main(void) {
   sscanf("200", "%hhd", &sc);
   CHECK(sc == (signed char)200);
 
+  /* scanf width, %n position, %i auto-base, and EOF-on-empty */
+  int wv = 0, np = 0;
+  CHECK(sscanf("12345", "%3d%n", &wv, &np) == 1 && wv == 123 && np == 3);
+  CHECK(sscanf("  0x2A rest", "%i", &wv) == 1 && wv == 42);
+  CHECK(sscanf("", "%d", &wv) == EOF);
+
   /* file-backed ungetc + remove + fscanf */
   FILE *f = fopen("TIER1.TMP", "w");
   if (f) {
@@ -86,14 +92,23 @@ int main(void) {
     }
     CHECK(remove("TIER1.TMP") == 0);
   }
+  /* streaming fscanf: two ints share one line, a third is on the next line.
+     The char-streaming scanner must leave the unparsed remainder in the
+     stream so all three succeed across separate calls (the old line-buffered
+     scanner dropped "20" with the rest of the first line). */
   f = fopen("TIER1.TMP", "w");
   if (f) {
-    fputs("42\n", f);
+    fputs("10 20\n30\n", f);
     fclose(f);
     f = fopen("TIER1.TMP", "r");
     if (f) {
-      int v = 0;
-      CHECK(fscanf(f, "%d", &v) == 1 && v == 42);
+      int p = 0, q = 0, r = 0;
+      CHECK(fscanf(f, "%d", &p) == 1 && p == 10);
+      CHECK(fscanf(f, "%d", &q) == 1 && q == 20); /* same line, kept */
+      CHECK(fscanf(f, "%d", &r) == 1 && r == 30); /* next line */
+      /* No 4th integer: clean EOF on both OSes -- text reads stop at the CP/M
+         ^Z record padding just as they hit true EOF on Osiris. */
+      CHECK(fscanf(f, "%d", &r) == EOF);
       fclose(f);
     }
     remove("TIER1.TMP");
@@ -116,6 +131,30 @@ int main(void) {
       fclose(g);
     }
     remove("TIER1B.TMP");
+  }
+
+  /* text vs binary mode: an embedded 0x1A (Ctrl-Z) ends a text read but is an
+     ordinary byte for a binary read. */
+  f = fopen("TIER1C.TMP", "wb");
+  if (f) {
+    static const unsigned char bin[3] = {'A', 0x1A, 'B'};
+    fwrite(bin, 1, 3, f);
+    fclose(f);
+    f = fopen("TIER1C.TMP", "rb"); /* binary: reads straight through 0x1A */
+    if (f) {
+      unsigned char b[3] = {0, 0, 0};
+      CHECK(fread(b, 1, 3, f) == 3);
+      CHECK(b[0] == 'A' && b[1] == 0x1A && b[2] == 'B');
+      fclose(f);
+    }
+    f = fopen("TIER1C.TMP", "r"); /* text: 0x1A is logical EOF */
+    if (f) {
+      CHECK(fgetc(f) == 'A');
+      CHECK(fgetc(f) == EOF);
+      CHECK(feof(f));
+      fclose(f);
+    }
+    remove("TIER1C.TMP");
   }
 
   printf("TIER1 %s %d/%d\n", pass == total ? "PASS" : "FAIL", pass, total);

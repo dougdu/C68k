@@ -32,6 +32,11 @@ FILE *fopen(const char *path, const char *mode) {
     errno = EINVAL;
     return NULL;
   }
+  /* A 'b' anywhere in the mode selects binary: on CP/M (and by the DOS text
+     convention) a text stream stops at a Ctrl-Z (0x1A); binary reads it raw. */
+  for (const char *m = mode; *m; m++)
+    if (*m == 'b')
+      flags |= _SF_BIN;
   if (fd < 0) {
     errno = ENOENT;
     return NULL;
