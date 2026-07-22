@@ -38,14 +38,23 @@ _expf:
 
 	; Handle zero
 	move.l	d2,d0
-	andi.l	#$7FFFFFFF,d0
+	andi.l	#$7FFFFFFF,d0		; d0 = |x| (magnitude bit pattern)
 	beq	_exp_return_one		; exp(0) = 1
 
-	; Check overflow/underflow
-	cmpi.l	#$42B17218,d2		; ~88.72 (ln(FLT_MAX))
+	; Range check on the MAGNITUDE.  The raw IEEE pattern is NOT monotonic as a
+	; signed integer for negative x (a small |x| such as -1.0 = $BF800000
+	; compares "less than" the -103 threshold), so the old signed cmp/blt
+	; wrongly underflowed EVERY negative x to 0.  Branch on the sign bit and
+	; compare |x| instead.
+	tst.l	d2
+	bmi.s	_exp_neg
+	cmpi.l	#$42B17218,d0		; x > +88.72 (ln FLT_MAX)  -> overflow
 	bgt	_exp_overflow
-	cmpi.l	#$C2CE8ED0,d2		; ~-103.28
-	blt	_exp_underflow
+	bra.s	_exp_range_ok
+_exp_neg:
+	cmpi.l	#$42CE8ED0,d0		; x < -103.28 (ln FLT_MIN) -> underflow
+	bgt	_exp_underflow
+_exp_range_ok:
 
 	; --- n = round(x / ln(2)) ---
 	move.l	_exp_inv_ln2(pc),-(sp)

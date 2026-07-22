@@ -6,7 +6,7 @@ double erfc(double x) {
   double z = __signbit(x) ? -x : x;
   double t = 1.0 / (1.0 + 0.5 * z);
   double ans =
-      t * __mexp(-z * z - 1.26551223 +
+      t * expd(-z * z - 1.26551223 +
                t * (1.00002368 +
                     t * (0.37409196 +
                          t * (0.09678418 +

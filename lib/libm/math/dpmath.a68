@@ -389,10 +389,14 @@ _expd:
 	jsr	_fpaddd
 	lea	16(sp),sp
 
-	; Scale by 2^n
-	move.l	-4(a6),d2
-	swap	d2
-	lsl.l	#4,d2
+	; Scale by 2^n: add n to the exponent field (bit 52 = bit 20 of the high
+	; longword).  Use arithmetic left shifts so a NEGATIVE n shifts correctly;
+	; the old `swap`+`lsl #4` added an extra 2^20 (one exponent unit) for
+	; negative n, doubling exp(x) for x < 0 (and pow for results < 1).
+	move.l	-4(a6),d2		; n (signed)
+	asl.l	#8,d2			; n << 8
+	asl.l	#8,d2			; n << 16
+	asl.l	#4,d2			; n << 20
 	add.l	d2,d0
 _expd_ret:
 	movem.l	(sp)+,d2-d5

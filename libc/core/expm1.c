@@ -3,7 +3,7 @@
 /* e^x - 1, conditioned so small x keeps full precision (Kahan's method:
    correct the exp(x)-1 cancellation by scaling with x/log(exp(x))). */
 double expm1(double x) {
-  double u = __mexp(x);
+  double u = expd(x);
   if (u == 1.0)
     return x; /* x tiny */
   double um1 = u - 1.0;

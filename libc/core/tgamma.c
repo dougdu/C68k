@@ -22,5 +22,5 @@ double tgamma(double x) {
              1.5056327351493116e-7 / (z + 8.0);
   double t = z + 7.5;
   /* sqrt(2*pi) * t^(z+0.5) * e^-t * a */
-  return 2.5066282746310002 * powd(t, z + 0.5) * __mexp(-t) * a;
+  return 2.5066282746310002 * powd(t, z + 0.5) * expd(-t) * a;
 }

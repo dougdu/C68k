@@ -4,6 +4,10 @@
 #include <math.h>
 #include <errno.h>
 
+/* single-precision libm kernels (_expf/_powf); not surfaced in <math.h> */
+extern float expf(float);
+extern float powf(float, float);
+
 static int pass, total;
 #define CHECK(c)                                                               \
   do {                                                                         \
@@ -154,13 +158,30 @@ int main(void) {
   errno = 0;
   CHECK(isnan(log2(-1.0)) && errno == EDOM);
 
-  /* ---- negative-arg / result<1 regression (libm exp bug worked around) ---- */
+  /* ---- double exp/pow for negative args & results < 1 (libm _expd fix) ---- */
   NEAR(exp(-1.0), 0.36787944117144233);
+  NEAR(exp(-7.5), 0.0005530843701478336);
+  NEAR(exp(-0.5), 0.6065306597126334);
   NEAR(exp2(-2.0), 0.25);
   NEAR(expm1(-1.0), -0.6321205588285577);
   NEAR(pow(0.5, 2.0), 0.25);
   NEAR(pow(2.0, -3.0), 0.125);
+  NEAR(pow(10.0, -2.0), 0.01);
+  NEAR(pow(0.25, 0.5), 0.5);
   NEAR(cbrt(0.125), 0.5);
+  /* positive args must still be correct (no over-correction) */
+  NEAR(exp(1.0), 2.718281828459045);
+  NEAR(pow(2.0, 10.0), 1024.0);
+
+  /* ---- single-precision exp/pow (libm _expf/_powf) ---- */
+  CHECK(neart((double)expf(1.0f), 2.718281828, 1e-4));
+  CHECK(neart((double)expf(-1.0f), 0.367879441, 1e-5));
+  CHECK(neart((double)expf(-7.5f), 0.000553084, 1e-6));
+  CHECK(neart((double)expf(0.5f), 1.648721271, 1e-5));
+  CHECK(neart((double)powf(2.0f, 3.0f), 8.0, 1e-3));
+  CHECK(neart((double)powf(0.5f, 2.0f), 0.25, 1e-4));
+  CHECK(neart((double)powf(2.0f, -3.0f), 0.125, 1e-4));
+  CHECK(neart((double)powf(10.0f, -2.0f), 0.01, 1e-5));
 
   /* ---- Phase 2c: erf / gamma ---- */
   CHECK(neart(erf(0.0), 0.0, 2e-7));

@@ -179,11 +179,16 @@ on the inline base functions.
 
 Notes: `fma` is a double‑rounded `x*y+z`; the soft‑float adder truncates, so
 `rint`/`nearbyint` use a floor‑based ties‑to‑even; `erf`/`erfc` are a compact
-rational approximation (~1e‑7).  **Known libm defect:** the vendored double
-`exp` returns exactly 2× the correct value for negative arguments (and `pow`
-likewise for results < 1).  The C math layer works around it via the identity
-`exp(x)=1/exp(-x)` (`__mexp`, plus reciprocal forms in the inline `exp`/`pow`
-and in `cbrt`); a proper fix belongs upstream in worm68k's `dpmath.a68`.
+rational approximation (~1e‑7).  **Fixed libm defects (2026‑07):** the vendored
+double `exp` (`_expd`) used to return exactly 2× the correct value for negative
+arguments — its `2^n` scaling did `swap`+`lsl #4`, which mis‑sign‑extends a
+negative `n` — and the single `exp` (`_exp`) underflowed *every* negative
+argument to `0` because its range check compared the raw IEEE bit pattern as a
+*signed* integer.  Both were corrected at the source in worm68k's
+`math/dpmath.a68` and `math/exp.a68` (arithmetic‑shift scaling; sign‑aware
+magnitude range check), so `pow` is now correct for results < 1 and no C‑layer
+workaround is needed.  Verified single + double, negative args and results < 1,
+on both Osiris and CP/M (`tests/lockstep/tier2.c`).
 
 | Function | Purpose | Status | Library / File | Notes |
 |---|---|:--:|---|---|
