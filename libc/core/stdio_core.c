@@ -9,9 +9,9 @@
  * drag fopen/fread/etc. into the link.
  * ===================================================================== */
 FILE _streams[NSTREAM] = {
-    {0, _SF_READ | _SF_USED, 0, 0, {0}},  /* stdin  */
-    {1, _SF_WRITE | _SF_USED, 0, 0, {0}}, /* stdout */
-    {2, _SF_WRITE | _SF_USED, 0, 0, {0}}, /* stderr */
+    {0, _SF_READ | _SF_USED, 0, 0, {0}},                  /* stdin  */
+    {1, _SF_WRITE | _SF_WRITING | _SF_USED, 0, 0, {0}},   /* stdout */
+    {2, _SF_WRITE | _SF_WRITING | _SF_USED, 0, 0, {0}},   /* stderr */
 };
 FILE *stdin = &_streams[0];
 FILE *stdout = &_streams[1];

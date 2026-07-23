@@ -9,5 +9,5 @@ long ftell(FILE *fp) {
   long pos = sys_seek(fp->fd, 0, SEEK_CUR);
   if (pos < 0)
     return -1;
-  return (fp->flags & _SF_WRITE) ? pos + fp->cnt : pos - fp->cnt;
+  return (fp->flags & _SF_WRITING) ? pos + fp->cnt : pos - fp->cnt;
 }

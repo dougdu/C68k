@@ -25,6 +25,7 @@ extern long cpm_bdos(int func, long param);
 #define F_RENAME 23
 #define F_DMAOFF 26
 #define F_READRAND 33
+#define F_WRITERAND 34
 #define F_SIZE 35
 #define T_GET 105 /* Worm CP/M-68K BDOS clock extension (BDOSEXT) */
 
@@ -218,6 +219,19 @@ long sys_seek(int fd, long off, int whence) {
     target = off; /* SEEK_SET */
   if (target < 0)
     return -1;
+  /* Persist a buffered partial write record before seeking away from it, so a
+     write-then-rewind-then-read (update / tmpfile) does not lose it. */
+  if (f->writing && f->recpos > 0) {
+    long crec = (f->pos - f->recpos) / RECSZ;
+    for (int i = f->recpos; i < RECSZ; i++)
+      f->rec[i] = 0x1A; /* pad the tail (text ^Z; harmless past the data here) */
+    f->fcb[33] = (unsigned char)(crec & 0xFF);
+    f->fcb[34] = (unsigned char)((crec >> 8) & 0xFF);
+    f->fcb[35] = (unsigned char)((crec >> 16) & 0xFF);
+    cpm_bdos(F_DMAOFF, (long)f->rec);
+    cpm_bdos(F_WRITERAND, (long)f->fcb);
+    f->recpos = 0;
+  }
   if (target != f->pos) {
     long rec = target / RECSZ;
     f->fcb[33] = (unsigned char)(rec & 0xFF);

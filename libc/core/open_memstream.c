@@ -45,7 +45,7 @@ FILE *open_memstream(char **ptr, size_t *sizeloc) {
     return NULL;
   }
   fp->fd = -1;
-  fp->flags = _SF_WRITE | _SF_MEM | _SF_USED;
+  fp->flags = _SF_WRITE | _SF_WRITING | _SF_MEM | _SF_USED;
   fp->drain = _memstream_append; /* stdio core drains memstreams via this hook */
   fp->cnt = 0;
   fp->p = fp->buf;

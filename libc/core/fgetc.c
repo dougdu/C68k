@@ -19,6 +19,14 @@ int fgetc(FILE *fp) {
     fp->flags |= _SF_ERR;
     return EOF;
   }
+  /* Update stream turning around from writing: flush pending output first;
+     reading then continues from the resulting file position. */
+  if (fp->flags & _SF_WRITING) {
+    fflush(fp);
+    fp->flags &= ~_SF_WRITING;
+    fp->cnt = 0;
+    fp->p = fp->buf;
+  }
   if (fp->flags & _SF_EOF) /* sticky: stay at EOF until clearerr/rewind/seek */
     return EOF;
   if (fp->cnt == 0 && _fill(fp) == EOF)

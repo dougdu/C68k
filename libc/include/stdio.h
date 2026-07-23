@@ -32,6 +32,8 @@ typedef long fpos_t;
 #define _SF_MEM 0x20
 #define _SF_BIN 0x40 /* opened with "...b": no Ctrl-Z text-EOF translation */
 #define _SF_NBF 0x80 /* setvbuf(_IONBF): flush after every write */
+#define _SF_WRITING 0x100 /* buffer currently holds pending output (orientation) */
+#define _SF_TMP 0x200 /* tmpfile(): unlink tmpname on close */
 
 typedef struct _FILE {
   int fd;      /* Osiris file handle */
@@ -49,6 +51,7 @@ typedef struct _FILE {
    * Non-NULL only for open_memstream() streams, so fflush/fclose (stdio core)
    * never name _memstream_append/realloc unless the program uses memstreams. */
   int (*drain)(struct _FILE *fp, const void *data, int n);
+  char tmpname[L_tmpnam]; /* tmpfile() auto-remove name (empty otherwise) */
 } FILE;
 
 extern FILE *stdin;
@@ -90,6 +93,7 @@ FILE *freopen(const char *path, const char *mode, FILE *fp);
 void setbuf(FILE *fp, char *buf);
 int setvbuf(FILE *fp, char *buf, int mode, size_t size);
 char *tmpnam(char *s);
+FILE *tmpfile(void);
 
 int printf(const char *fmt, ...);
 int fprintf(FILE *fp, const char *fmt, ...);

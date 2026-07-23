@@ -62,6 +62,32 @@ int main(void) {
   CHECK(!strcmp(b, "hello"));
   CHECK(fclose(fp) == 0);
 
+  /* update mode ("wb+"): write, rewind within the same stream, read back */
+  {
+    FILE *u = fopen(name, "wb+");
+    CHECK(u != NULL);
+    CHECK(fwrite("update!", 1, 7, u) == 7);
+    rewind(u);
+    char ub[8];
+    CHECK(fread(ub, 1, 7, u) == 7);
+    ub[7] = 0;
+    CHECK(!strcmp(ub, "update!"));
+    CHECK(fclose(u) == 0);
+  }
+
+  /* tmpfile: write, rewind, read back; removed automatically on close */
+  {
+    FILE *t = tmpfile();
+    CHECK(t != NULL);
+    CHECK(fwrite("hi!", 1, 3, t) == 3);
+    rewind(t);
+    char tb[4];
+    CHECK(fread(tb, 1, 3, t) == 3);
+    tb[3] = 0;
+    CHECK(!strcmp(tb, "hi!"));
+    CHECK(fclose(t) == 0);
+  }
+
   remove(name);
   remove(name2);
 

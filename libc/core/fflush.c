@@ -8,7 +8,7 @@ int fflush(FILE *fp) {
         fflush(&_streams[i]);
     return 0;
   }
-  if ((fp->flags & _SF_WRITE) && fp->cnt > 0) {
+  if ((fp->flags & _SF_WRITING) && fp->cnt > 0) {
     if (fp->drain) {
       if (fp->drain(fp, fp->buf, fp->cnt) != 0) {
         fp->flags |= _SF_ERR;

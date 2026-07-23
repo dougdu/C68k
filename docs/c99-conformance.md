@@ -79,7 +79,7 @@ OS): `<float.h>`, `<iso646.h>`, `<limits.h>`, `<stdarg.h>`, `<stdbool.h>`,
 | `<stdbool.h>` | Boolean type/values | ✅ | `include/stdbool.h`, `libc/include/stdbool.h` | Complete. |
 | `<stddef.h>` | Common definitions | ✅ | `include/stddef.h` | `size_t`, `ptrdiff_t`, `wchar_t`, `NULL`, `offsetof`. |
 | `<stdint.h>` | Fixed‑width integers | ✅ | `include/stdint.h` | Complete (exact/least/fast/ptr/max + limits + `*_C` macros). |
-| `<stdio.h>` | Input/output | ⚠️ | `libc/include/stdio.h`, `libc/core/*.c` | Streaming scanf family, the `v*` variants, `ungetc`/`rewind`/`clearerr`/`perror`/`remove`/`rename`, and now `freopen`/`setbuf`/`setvbuf`/`fgetpos`/`fsetpos`/`tmpnam` + buffer‑aware `ftell` and byte‑level `fseek` on both OSes. Remaining: `tmpfile` / `+` update modes, wide. See §stdio. |
+| `<stdio.h>` | Input/output | ⚠️ | `libc/include/stdio.h`, `libc/core/*.c` | Streaming scanf family, the `v*` variants, `ungetc`/`rewind`/`clearerr`/`perror`/`remove`/`rename`, `freopen`/`setbuf`/`setvbuf`/`fgetpos`/`fsetpos`/`tmpnam`/`tmpfile`, buffer‑aware `ftell`, byte‑level `fseek`, and `+` update modes (orientation‑tracked) on both OSes. Remaining: wide. See §stdio. |
 | `<stdlib.h>` | General utilities | ⚠️ | `libc/include/stdlib.h`, `libc/core/*.c` | Added `atoll`/`llabs`/`lldiv`/`strtof`/`_Exit`/`getenv`/`system`. Only the multibyte functions (`mblen`/`mbtowc`/…) remain absent (no wide‑char support). |
 | `<string.h>` | String handling | ⚠️ | `libc/include/string.h`, `libc/core/str*.c`, **rt** | Added `strspn`/`strcspn`/`strpbrk`. Only `strcoll`/`strxfrm` remain absent (no locale). |
 | `<tgmath.h>` | Type‑generic math | ❌ | — | Requires `<complex.h>` + `<math.h>` generic macros. |
@@ -284,7 +284,7 @@ integer set with limits and `INT*_C`/`UINT*_C` constructors. ✅
 
 | Function | Purpose | Status | Library / File | Notes |
 |---|---|:--:|---|---|
-| `fopen` | Open stream | ⚠️ | libc / `fopen.c` | Modes `r`/`w`/`a` (+`b`); no `+`/update. Text streams honor a Ctrl‑Z (`0x1A`) EOF; binary (`b`) reads raw — this is what makes CP/M's record‑padded files read back at their logical length. |
+| `fopen` | Open stream | ✅ | libc / `fopen.c` | Modes `r`/`w`/`a` and `r+`/`w+`/`a+` update (+`b`). Update streams track read/write *orientation*: a read↔write switch flushes/repositions the buffer per C99 §7.19.5.3. Text streams honor a Ctrl‑Z (`0x1A`) EOF; binary (`b`) reads raw — this is what makes CP/M's record‑padded files read back at their logical length. On CP/M, in‑place random *modify* (write after read without an intervening `fseek`) is best‑effort on the 128‑byte record model; the tested update pattern is write→rewind→read. |
 | `fclose` | Close stream | ✅ | libc / `fclose.c` | |
 | `fflush` | Flush buffer | ✅ | libc / `fflush.c` | |
 | `freopen` | Reassign stream | ✅ | libc / `freopen.c` | Flush+close then reopen, reusing the FILE (so `freopen("f","w",stdout)` redirects); NULL path (mode change) unsupported. |
@@ -292,7 +292,7 @@ integer set with limits and `INT*_C`/`UINT*_C` constructors. ✅
 | `remove` | Delete file | ✅ | libc / `remove.c` | wraps `sys_unlink`. |
 | `rename` | Rename file | ✅ | libc / `rename.c` + seam | `sys_rename`: Osiris DOS 56h (A0=old, A1=new); CP/M BDOS 23 (combined FCB). |
 | `tmpnam` | Temp name | ✅ | libc / `tmpnam.c` | 8.3‑friendly `TMPnnnnn`, probed for non‑existence. |
-| `tmpfile` | Temp file | ❌ | — | Needs a read+write (`+`) stream. |
+| `tmpfile` | Temp file | ✅ | libc / `tmpfile.c` | `tmpnam` + `fopen(name,"wb+")`; the FILE carries `_SF_TMP` so `fclose` auto‑unlinks. |
 | `printf` | Formatted stdout | ⚠️ | libc / `printf.c`,`vformat.c` | Int/str/char, `%f/%e/%g`, width/prec/flags; no `%a`, `%n`, wide. |
 | `fprintf` | Formatted to stream | ⚠️ | libc / `fprintf.c` | as `printf`. |
 | `sprintf` | Formatted to buffer | ⚠️ | libc / `sprintf.c` | as `printf`. |
@@ -321,7 +321,7 @@ integer set with limits and `INT*_C`/`UINT*_C` constructors. ✅
 
 Macros: `EOF`, `BUFSIZ`, `SEEK_SET/CUR/END`, `stdin/stdout/stderr`,
 `FOPEN_MAX`, `FILENAME_MAX`, `TMP_MAX`, `L_tmpnam`, `_IOFBF/_IOLBF/_IONBF`,
-and the `fpos_t` type are present.  Missing: `+` update modes, `tmpfile`, wide.
+and the `fpos_t` type are present.  Missing: wide‑character I/O (`<wchar.h>`).
 
 ### `<stdlib.h>` — general utilities
 

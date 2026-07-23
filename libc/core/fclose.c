@@ -15,6 +15,8 @@ int fclose(FILE *fp) {
       *fp->memusize = fp->memlen;
   } else {
     r = sys_close(fp->fd);
+    if (fp->flags & _SF_TMP) /* tmpfile: remove the backing file on close */
+      sys_unlink(fp->tmpname);
   }
   fp->flags = 0;
   fp->drain = 0; /* release the slot's memstream hook, if any */
