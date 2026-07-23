@@ -74,7 +74,7 @@ OS): `<float.h>`, `<iso646.h>`, `<limits.h>`, `<stdarg.h>`, `<stdbool.h>`,
 | `<iso646.h>` | Alternative operator spellings | ✅ | `libc/include/iso646.h` | Complete. |
 | `<limits.h>` | Integer‑type limits | ✅ | `include/limits.h`, `libc/include/limits.h` | Complete for ILP32. |
 | `<locale.h>` | Localization | ❌ | — | Only the "C" locale is implied; `setlocale`/`localeconv` absent. |
-| `<math.h>` | Mathematics | ⚠️ | `libc/include/math.h`, `libc/core/*.c` → **libm** | Base transcendentals inline (double); the full C99 function set + classification/constants added in C (Tier 2 2a/2b/2c, with `EDOM`/`ERANGE`), plus the `f`/`l` type variants. Earlier libm negative‑arg `exp`/`pow` defects fixed at source. Deviation: soft‑float fixed rounding, no `_Complex`. |
+| `<math.h>` | Mathematics | ⚠️ | `libc/include/math.h`, `libc/core/*.c` → **libm** | Base transcendentals inline (double); the full C99 function set + classification/constants added in C (Tier 2 2a/2b/2c, with `EDOM`/`ERANGE`), the `f`/`l` type variants, and native `asin`/`acos`. Underlying libm passed its initial defect sweep (29/30 resolved); `sqrt`/`atan`/`asin`/`acos` ~1–2 ULP double. Deviation: soft‑float fixed rounding (double transcendentals not correctly‑rounded), no `_Complex`. |
 | `<setjmp.h>` | Non‑local jumps | ✅ | `lib/runtime/rt68k.a68` + hdr | `setjmp`/`longjmp` asm shim; codegen spills temporaries across the `returns_twice` call so longjmp re‑entry is safe. |
 | `<signal.h>` | Signal handling | ⚠️ | `libc/include/signal.h`, `libc/core/signal.c` | Synchronous only — no async delivery on these OSes; `raise` calls handlers inline. |
 | `<stdarg.h>` | Variable arguments | ✅ | `include/stdarg.h` | m68k `va_list`. Conforming. |
@@ -179,43 +179,45 @@ same kernels, plus the standard macros (`HUGE_VAL`/`INFINITY`/`NAN`, `FP_*`,
 classification, comparison), and the `f`/`l` type variants.  Remaining gap:
 `errno` is not set by the inline base functions.
 
-Notes: `fma` is a double‑rounded `x*y+z`; the soft‑float adder truncates, so
-`rint`/`nearbyint` use a floor‑based ties‑to‑even; `erf`/`erfc` are a compact
-rational approximation (~1e‑7).  **Fixed libm defects (2026‑07):** several
-soft‑float kernel bugs were root‑caused and corrected at the source (worm68k)
-and vendor‑synced:
-- double `exp` (`_expd`) returned exactly 2× for negative arguments — its `2^n`
-  scaling used `swap`+`lsl #4`, mis‑sign‑extending a negative `n` (fixed with
-  arithmetic shifts);
-- single `exp` (`_exp`) underflowed *every* negative argument to `0` — its range
-  check compared the raw IEEE pattern as a *signed* integer (fixed with a
-  sign‑aware magnitude compare);
-- single `modff` swapped its `(value, ptr)` arguments (wild‑pointer write);
-- single `_fpcmp` reported "equal" for `x >= 0.0f` when `x < 0` (a `tst.l` of a
-  `+0` operand set `Z`), breaking every float `>=`/`<=`/`==` against a zero
-  literal on the left;
-- double `atan` (`_atand`) read the `(x+1)` divisor of its mid‑range reduction
-  from the wrong stack slot, so `atan`/`asin`/`acos`/`atan2` were wrong for
-  `|x| > tan(π/8)` except exactly 1 (only `x==1`, where `x−1==0`, masked it).
+Notes: `fma` is a double‑rounded `x*y+z` (no hardware FMA); `rint`/`nearbyint`
+use a floor‑based ties‑to‑even; `erf`/`erfc` are a compact rational
+approximation (~1e‑7).
 
-`pow` is now correct for results < 1 with no C‑layer workaround.  Verified
-single, double, and `long double`, negative args and results < 1, on both Osiris
-and CP/M (`tests/lockstep/tier2.c`, `tests/lockstep/tier2f.c`).
+**libm float‑library pass (2026‑07‑23).**  The vendored soft‑float library
+([`lib/libm`](../lib/libm), synced from worm68k) completed its initial full
+test pass: of 30 filed defects, 29 are resolved and 1 is a documented
+subnormal‑flush conformance delta.  The core operations (`fpadd`/`fpsub`/
+`fpmul`/`fpdiv` and the double `dpadd`/`dpmul`/`dpdiv`) are now
+round‑to‑nearest‑even / bit‑exact and `fmod` uses an exact binary‑scaling
+remainder; the double transcendentals were raised toward double grade
+(extended‑order polynomials + Cody‑Waite reduction, `atand` via an fdlibm
+minimax) and `sqrtd` covers the full range with `inf`/`NaN`.  Earlier
+downstream‑visible defects — double `exp` (2× for negatives), single `exp`
+(underflow of every negative), single `modff` (swapped args), single `_fpcmp`
+(`x >= 0.0f` mis‑compare), and double `atand` (mid‑range reduction) — are all
+fixed, so `pow` is correct for results < 1 with no C‑layer workaround.
+
+**Accuracy (measured dense on target).**  `sqrtd`, `atand`, `asind`, `acosd`
+are ~1–2 ULP.  The other double kernels are far better than the previous
+single‑grade (~1e‑7) but are **not** correctly‑rounded binary64:
+`expd` ≈ 481, `sind` ≈ 957, `cosd` ≈ 4733, `logd` ≈ 3966, `powd` ≈ 37 000 ULP
+(≈ 11–14 good decimal digits).  Verified single, double, and `long double` on
+both Osiris and CP/M (`tests/lockstep/tier2.c` 133/133, `tier2f.c` 56/56).
 
 **`float` / `long double` variants:** the C99 `f`‑suffixed base functions
-(`sqrtf`/`expf`/`logf`/`sinf`/`cosf`/`atanf`/`powf`/`fmodf`/`floorf`/`ceilf`/
-`fabsf`/`modff`, plus derived `tanf`/`asinf`/`acosf`/`log10f`/`atan2f`) bind to
-libm's real single‑precision kernels, so `float` math runs 32‑bit soft‑float
-instead of promoting to double.  The `l`‑suffixed variants are thin wrappers
-over the double versions (`long double` == `double` on this target).
+(`sqrtf`/`expf`/`logf`/`sinf`/`cosf`/`atanf`/`asinf`/`acosf`/`powf`/`fmodf`/
+`floorf`/`ceilf`/`fabsf`/`modff`) bind to libm's real single‑precision kernels,
+so `float` math runs 32‑bit soft‑float instead of promoting to double; only
+`tanf`/`log10f`/`atan2f` are composed in the header.  The `l`‑suffixed variants
+are thin wrappers over the double versions (`long double` == `double`).
 
 | Function | Purpose | Status | Library / File | Notes |
 |---|---|:--:|---|---|
 | `sin` | sine | ✅ | libm / `math/sincos.a68` | via `sind`; `sinf` real single, `sinl`=double. |
 | `cos` | cosine | ✅ | libm / `math/sincos.a68` | via `cosd`; `cosf`/`cosl`. |
 | `tan` | tangent | ✅ | libc header + libm | `sin/cos`; `tanf`/`tanl`. |
-| `asin` | arcsine | ⚠️ | libc header + libm | Derived via `atan`; reduced accuracy near ±1. `asinf`/`asinl`. |
-| `acos` | arccosine | ⚠️ | libc header + libm | Derived via `asin`; reduced accuracy near ±1. `acosf`/`acosl`. |
+| `asin` | arcsine | ✅ | libm / `math/asincos*.a68` | Native kernel (`asind`/`asinf`), cancellation‑safe near ±1; ~1 ULP double / ~12 ULP single. `asinl`=double. |
+| `acos` | arccosine | ✅ | libm / `math/asincos*.a68` | Native kernel (`acosd`/`acosf`), quadrant‑based; ~2 ULP double / ~12 ULP single. `acosl`=double. |
 | `atan` | arctangent | ✅ | libm / `math/atan.a68` | `atanf`/`atanl`. |
 | `atan2` | arctangent of y/x | ✅ | libc header + libm | Quadrant logic in header; `atan2f`/`atan2l`. |
 | `exp` | e^x | ✅ | libm / `math/exp.a68` | `expf`/`expl`. |
