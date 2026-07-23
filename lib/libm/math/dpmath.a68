@@ -906,12 +906,14 @@ _atand_mid:
 	move.l	d2,-(sp)
 	jsr	_fpsubd
 	lea	16(sp),sp
-	; d0:d1=x-1, (x+1) hi:lo on stack at 8(sp):12(sp)
-	; Rearrange for fpdivd: dividend then divisor
-	move.l	12(sp),-(sp)		; x+1 lo
-	move.l	12(sp),-(sp)		; x+1 hi (at former 8(sp), now offset by 4)
-	move.l	d1,-(sp)
-	move.l	d0,-(sp)
+	; d0:d1 = x-1; the divisor (x+1) was saved at 0(sp):4(sp) as lo:hi.
+	; Re-push it as the fpdivd divisor.  The old 12(sp)/12(sp) offsets read junk
+	; ABOVE the frame -- only x==1 (where x-1==0) masked the bug, so atand was
+	; wrong for every |x| > tan(pi/8) except exactly 1.
+	move.l	0(sp),-(sp)		; x+1 lo  (0(sp))
+	move.l	8(sp),-(sp)		; x+1 hi  (was 4(sp), now 8(sp) after the push)
+	move.l	d1,-(sp)		; x-1 lo
+	move.l	d0,-(sp)		; x-1 hi
 	jsr	_fpdivd
 	lea	16(sp),sp
 	addq.l	#8,sp

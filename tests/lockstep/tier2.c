@@ -4,10 +4,6 @@
 #include <math.h>
 #include <errno.h>
 
-/* single-precision libm kernels (_expf/_powf); not surfaced in <math.h> */
-extern float expf(float);
-extern float powf(float, float);
-
 static int pass, total;
 #define CHECK(c)                                                               \
   do {                                                                         \

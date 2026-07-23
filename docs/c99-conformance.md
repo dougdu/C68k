@@ -179,35 +179,52 @@ on the inline base functions.
 
 Notes: `fma` is a double‑rounded `x*y+z`; the soft‑float adder truncates, so
 `rint`/`nearbyint` use a floor‑based ties‑to‑even; `erf`/`erfc` are a compact
-rational approximation (~1e‑7).  **Fixed libm defects (2026‑07):** the vendored
-double `exp` (`_expd`) used to return exactly 2× the correct value for negative
-arguments — its `2^n` scaling did `swap`+`lsl #4`, which mis‑sign‑extends a
-negative `n` — and the single `exp` (`_exp`) underflowed *every* negative
-argument to `0` because its range check compared the raw IEEE bit pattern as a
-*signed* integer.  Both were corrected at the source in worm68k's
-`math/dpmath.a68` and `math/exp.a68` (arithmetic‑shift scaling; sign‑aware
-magnitude range check), so `pow` is now correct for results < 1 and no C‑layer
-workaround is needed.  Verified single + double, negative args and results < 1,
-on both Osiris and CP/M (`tests/lockstep/tier2.c`).
+rational approximation (~1e‑7).  **Fixed libm defects (2026‑07):** several
+soft‑float kernel bugs were root‑caused and corrected at the source (worm68k)
+and vendor‑synced:
+- double `exp` (`_expd`) returned exactly 2× for negative arguments — its `2^n`
+  scaling used `swap`+`lsl #4`, mis‑sign‑extending a negative `n` (fixed with
+  arithmetic shifts);
+- single `exp` (`_exp`) underflowed *every* negative argument to `0` — its range
+  check compared the raw IEEE pattern as a *signed* integer (fixed with a
+  sign‑aware magnitude compare);
+- single `modff` swapped its `(value, ptr)` arguments (wild‑pointer write);
+- single `_fpcmp` reported "equal" for `x >= 0.0f` when `x < 0` (a `tst.l` of a
+  `+0` operand set `Z`), breaking every float `>=`/`<=`/`==` against a zero
+  literal on the left;
+- double `atan` (`_atand`) read the `(x+1)` divisor of its mid‑range reduction
+  from the wrong stack slot, so `atan`/`asin`/`acos`/`atan2` were wrong for
+  `|x| > tan(π/8)` except exactly 1 (only `x==1`, where `x−1==0`, masked it).
+
+`pow` is now correct for results < 1 with no C‑layer workaround.  Verified
+single, double, and `long double`, negative args and results < 1, on both Osiris
+and CP/M (`tests/lockstep/tier2.c`, `tests/lockstep/tier2f.c`).
+
+**`float` / `long double` variants:** the C99 `f`‑suffixed base functions
+(`sqrtf`/`expf`/`logf`/`sinf`/`cosf`/`atanf`/`powf`/`fmodf`/`floorf`/`ceilf`/
+`fabsf`/`modff`, plus derived `tanf`/`asinf`/`acosf`/`log10f`/`atan2f`) bind to
+libm's real single‑precision kernels, so `float` math runs 32‑bit soft‑float
+instead of promoting to double.  The `l`‑suffixed variants are thin wrappers
+over the double versions (`long double` == `double` on this target).
 
 | Function | Purpose | Status | Library / File | Notes |
 |---|---|:--:|---|---|
-| `sin` | sine | ✅ | libm / `math/sincos.a68` | via `sind`. |
-| `cos` | cosine | ✅ | libm / `math/sincos.a68` | via `cosd`. |
-| `tan` | tangent | ⚠️ | libm | Computed as `sin/cos` (no dedicated routine). |
-| `asin` | arcsine | ⚠️ | libm | Derived via `atan`; reduced accuracy. |
-| `acos` | arccosine | ⚠️ | libm | Derived via `asin`. |
-| `atan` | arctangent | ✅ | libm / `math/atan.a68` | |
-| `atan2` | arctangent of y/x | ✅ | libc header + libm | Quadrant logic in header. |
-| `exp` | e^x | ✅ | libm / `math/exp.a68` | |
-| `log` | natural log | ✅ | libm / `math/log.a68` | |
-| `log10` | base‑10 log | ⚠️ | libm | `log(x)/M_LN10`. |
-| `pow` | x^y | ✅ | libm / `core/fppwr.a68`,`math/…` | |
-| `sqrt` | square root | ✅ | libm / `math/sqrt.a68` | |
-| `ceil` | ceiling | ✅ | libm / `math/floor.a68` | |
-| `floor` | floor | ✅ | libm / `math/floor.a68` | |
-| `fabs` | absolute value | ✅ | libm / `core/fabs.a68` | |
-| `fmod` | floating remainder | ✅ | libm / `core/fmod.a68` | |
+| `sin` | sine | ✅ | libm / `math/sincos.a68` | via `sind`; `sinf` real single, `sinl`=double. |
+| `cos` | cosine | ✅ | libm / `math/sincos.a68` | via `cosd`; `cosf`/`cosl`. |
+| `tan` | tangent | ✅ | libc header + libm | `sin/cos`; `tanf`/`tanl`. |
+| `asin` | arcsine | ⚠️ | libc header + libm | Derived via `atan`; reduced accuracy near ±1. `asinf`/`asinl`. |
+| `acos` | arccosine | ⚠️ | libc header + libm | Derived via `asin`; reduced accuracy near ±1. `acosf`/`acosl`. |
+| `atan` | arctangent | ✅ | libm / `math/atan.a68` | `atanf`/`atanl`. |
+| `atan2` | arctangent of y/x | ✅ | libc header + libm | Quadrant logic in header; `atan2f`/`atan2l`. |
+| `exp` | e^x | ✅ | libm / `math/exp.a68` | `expf`/`expl`. |
+| `log` | natural log | ✅ | libm / `math/log.a68` | `logf`/`logl`. |
+| `log10` | base‑10 log | ✅ | libc header + libm | `log(x)/M_LN10`; `log10f`/`log10l`. |
+| `pow` | x^y | ✅ | libm / `core/fppwr.a68`,`math/…` | `powf`/`powl`. |
+| `sqrt` | square root | ✅ | libm / `math/sqrt.a68` | `sqrtf`/`sqrtl`. |
+| `ceil` | ceiling | ✅ | libm / `math/floor.a68` | `ceilf`/`ceill`. |
+| `floor` | floor | ✅ | libm / `math/floor.a68` | `floorf`/`floorl`. |
+| `fabs` | absolute value | ✅ | libm / `core/fabs.a68` | `fabsf`/`fabsl`. |
+| `fmod` | floating remainder | ✅ | libm / `core/fmod.a68` | `fmodf`/`fmodl`. |
 | `modf` | split int/frac | ✅ | libm / `math/dpmath.a68` | |
 | `sinh` `cosh` `tanh` | hyperbolic | ✅ | libc / `sinh.c`,`cosh.c`,`tanh.c` | via `exp`/`expm1` (conditioned). |
 | `asinh` `acosh` `atanh` | inverse hyperbolic | ✅ | libc / `asinh.c`,`acosh.c`,`atanh.c` | via `log`/`sqrt`; `EDOM`/`ERANGE` set. |

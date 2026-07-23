@@ -64,9 +64,18 @@ _cmp_both_neg:
 	rts
 
 _cmp_diff_sign:
-	; Different signs: the negative one is less
-	movem.l	(sp)+,d2-d3
-	tst.l	d0			; N set if dest is negative (dest < src)
+	; Different signs (and not both zero) => the operands are UNEQUAL, so Z must
+	; be 0; the negative one is the smaller.  The old `tst.l d0` set Z=1 whenever
+	; dest was +0 (e.g. `0.0f <= x`, which is how `x >= 0.0f` compiles), wrongly
+	; reporting "equal" and breaking every `>=`/`<=`/`==` of a float against a
+	; zero literal on the left.  Set N (dest<src) from dest's sign, Z always 0.
+	movem.l	(sp)+,d2-d3		; (movem does not affect CCR)
+	btst.l	#31,d0			; is dest the negative (smaller) operand?
+	bne.s	_cmp_ds_dest_neg
+	moveq	#1,d0			; dest >= +0 > src  => dest > src  (N=0, Z=0)
+	rts
+_cmp_ds_dest_neg:
+	moveq	#-1,d0			; dest < 0 <= src   => dest < src  (N=1, Z=0)
 	rts
 
 	end

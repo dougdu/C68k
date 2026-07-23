@@ -63,6 +63,72 @@ static double asin(double x) { return atand(x / sqrtd(1.0 - x * x)); }
 static double acos(double x) { return M_PI / 2.0 - asin(x); }
 
 /* ------------------------------------------------------------------------
+ * C99 `float` variants.  These bind directly to libm's real single-precision
+ * kernels (`_sqrtf`/`_expf`/...), so `float` math runs 32-bit soft-float
+ * instead of promoting to double.  Unlike the unsuffixed names, the `f`
+ * names do NOT collide with libm's internal single symbols, so they are
+ * plain externs (pulled from libm only when referenced).  tan/asin/acos/
+ * log10/atan2 have no dedicated kernel and are composed, mirroring the
+ * double versions above.
+ * ------------------------------------------------------------------------ */
+extern float sqrtf(float);
+extern float expf(float);
+extern float logf(float);
+extern float sinf(float);
+extern float cosf(float);
+extern float atanf(float);
+extern float powf(float, float);
+extern float fmodf(float, float);
+extern float floorf(float);
+extern float ceilf(float);
+extern float fabsf(float);
+extern float modff(float, float *);
+
+static float tanf(float x) { return sinf(x) / cosf(x); }
+static float log10f(float x) { return logf(x) / (float)M_LN10; }
+static float asinf(float x) { return atanf(x / sqrtf(1.0f - x * x)); }
+static float acosf(float x) { return (float)M_PI_2 - asinf(x); }
+static float atan2f(float y, float x) {
+  if (x > 0.0f)
+    return atanf(y / x);
+  if (x < 0.0f)
+    return atanf(y / x) + (y >= 0.0f ? (float)M_PI : -(float)M_PI);
+  return y > 0.0f ? (float)M_PI_2 : (y < 0.0f ? -(float)M_PI_2 : 0.0f);
+}
+
+/* ------------------------------------------------------------------------
+ * C99 `long double` variants.  `long double` == `double` on this target, so
+ * each is a thin wrapper over the double version above.
+ * ------------------------------------------------------------------------ */
+static long double sinl(long double x) { return sin((double)x); }
+static long double cosl(long double x) { return cos((double)x); }
+static long double tanl(long double x) { return tan((double)x); }
+static long double asinl(long double x) { return asin((double)x); }
+static long double acosl(long double x) { return acos((double)x); }
+static long double atanl(long double x) { return atan((double)x); }
+static long double atan2l(long double y, long double x) {
+  return atan2((double)y, (double)x);
+}
+static long double expl(long double x) { return exp((double)x); }
+static long double logl(long double x) { return log((double)x); }
+static long double log10l(long double x) { return log10((double)x); }
+static long double sqrtl(long double x) { return sqrt((double)x); }
+static long double powl(long double b, long double e) {
+  return pow((double)b, (double)e);
+}
+static long double floorl(long double x) { return floor((double)x); }
+static long double ceill(long double x) { return ceil((double)x); }
+static long double fabsl(long double x) { return fabs((double)x); }
+static long double fmodl(long double a, long double b) {
+  return fmod((double)a, (double)b);
+}
+static long double modfl(long double x, long double *ip) {
+  double i, r = modf((double)x, &i);
+  *ip = i;
+  return r;
+}
+
+/* ------------------------------------------------------------------------
  * C99 additions.  The base transcendentals above stay `static` inline over
  * the soft-float kernels (their C names would collide with libm's internal
  * single-precision `_sqrt`/`_exp`/... symbols); everything below is a real

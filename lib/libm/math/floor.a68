@@ -97,16 +97,15 @@ _ceilf:
 ;  _modf — split x into integer and fractional parts
 ;  float _modf(float x, float *ipart)
 ;  Returns fractional part in D0, stores integer part via pointer.
-;  Note: caller pushes x first, then &ipart, so after LINK:
-;    8(a6) = &ipart (pushed last), 12(a6) = x (pushed first)
+;  C ABI (args pushed right-to-left): 8(a6) = x (arg1), 12(a6) = &ipart (arg2).
 ; ============================================================
 _modf:
 _modff:
 	link	a6,#0
 	movem.l	d2/a0,-(sp)
 
-	movea.l	8(a6),a0		; a0 = pointer to ipart (pushed last)
-	move.l	12(a6),d2		; d2 = x (pushed first)
+	move.l	8(a6),d2		; d2 = x (arg1)
+	movea.l	12(a6),a0		; a0 = pointer to ipart (arg2)
 
 	; Get integer part via truncation
 	move.l	d2,-(sp)
