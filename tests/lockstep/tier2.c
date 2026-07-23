@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <math.h>
 #include <errno.h>
+#include <string.h>
 
 static int pass, total;
 #define CHECK(c)                                                               \
@@ -200,6 +201,22 @@ int main(void) {
   CHECK(isnan(tgamma(-1.0)) && errno == EDOM);
   errno = 0;
   CHECK(isinf(lgamma(0.0)) && errno == ERANGE);
+
+  /* ---- printf of non-finite values: must emit inf/nan, never spin (the
+     %e/%g normalize loop `while (v>=10) v/=10` used to hang on +inf) ---- */
+  {
+    char b[32];
+    sprintf(b, "%f", INFINITY);
+    CHECK(!strcmp(b, "inf"));
+    sprintf(b, "%e", -INFINITY);
+    CHECK(!strcmp(b, "-inf"));
+    sprintf(b, "%g", NAN);
+    CHECK(!strcmp(b, "nan"));
+    sprintf(b, "%.2f", INFINITY);
+    CHECK(!strcmp(b, "inf"));
+    sprintf(b, "%G", NAN);
+    CHECK(!strcmp(b, "NAN"));
+  }
 
   printf("TIER2 %s %d/%d\n", pass == total ? "PASS" : "FAIL", pass, total);
   return pass == total ? 0 : 1;

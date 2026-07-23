@@ -206,6 +206,33 @@ int _vformat(_psink *s, const char *fmt, va_list ap) {
     case 'G': {
       double dv = va_arg(ap, double);
       int p = (prec < 0) ? 6 : prec;
+      /* Non-finite (inf/NaN) must be caught from the raw IEEE bits BEFORE the
+         numeric path: the %e/%g normalization loop `while (v >= 10.0) v /= 10`
+         never terminates for +inf (inf/10 == inf), and the soft-float compares
+         misbehave on NaN.  Emit inf/nan (upper-case for the F/E/G spellings). */
+      {
+        union {
+          double d;
+          struct {
+            unsigned long hi, lo;
+          } w;
+        } u;
+        u.d = dv;
+        if (((u.w.hi >> 20) & 0x7FF) == 0x7FF) {
+          int is_nan = ((u.w.hi & 0xFFFFF) | u.w.lo) != 0;
+          int up = (*fmt == 'F' || *fmt == 'E' || *fmt == 'G');
+          const char *w = is_nan ? (up ? "NAN" : "nan") : (up ? "INF" : "inf");
+          numbuf[0] = w[0];
+          numbuf[1] = w[1];
+          numbuf[2] = w[2];
+          numbuf[3] = 0;
+          slen = 3;
+          sign = is_nan
+                     ? 0
+                     : ((u.w.hi >> 31) ? '-' : (plus ? '+' : (space ? ' ' : 0)));
+          break;
+        }
+      }
       if (dv < 0.0) {
         sign = '-';
         dv = -dv;
