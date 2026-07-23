@@ -21,6 +21,8 @@ extern double ceild(double);
 extern double fabsd(double);
 extern double fmodd(double, double);
 extern double modfd(double, double *);
+extern double asind(double);
+extern double acosd(double);
 
 #define M_PI 3.14159265358979323846
 #define M_E 2.71828182845904523536
@@ -59,17 +61,21 @@ static double atan2(double y, double x) {
   return y > 0.0 ? M_PI / 2.0 : (y < 0.0 ? -M_PI / 2.0 : 0.0);
 }
 
-static double asin(double x) { return atand(x / sqrtd(1.0 - x * x)); }
-static double acos(double x) { return M_PI / 2.0 - asin(x); }
+/* asin/acos bind to libm's native double kernels (cancellation-safe
+   s = sqrt((1-|x|)(1+|x|)); ~1-2 ULP).  They stay `static` because libm's plain
+   `_asin` is the SINGLE-precision arcsine, so a C double `asin` must route to
+   the d-suffixed `_asind`/`_acosd` instead of colliding with it. */
+static double asin(double x) { return asind(x); }
+static double acos(double x) { return acosd(x); }
 
 /* ------------------------------------------------------------------------
  * C99 `float` variants.  These bind directly to libm's real single-precision
  * kernels (`_sqrtf`/`_expf`/...), so `float` math runs 32-bit soft-float
  * instead of promoting to double.  Unlike the unsuffixed names, the `f`
  * names do NOT collide with libm's internal single symbols, so they are
- * plain externs (pulled from libm only when referenced).  tan/asin/acos/
- * log10/atan2 have no dedicated kernel and are composed, mirroring the
- * double versions above.
+ * plain externs (pulled from libm only when referenced).  tan/log10/atan2
+ * have no dedicated kernel and are composed, mirroring the double versions
+ * above.
  * ------------------------------------------------------------------------ */
 extern float sqrtf(float);
 extern float expf(float);
@@ -83,11 +89,11 @@ extern float floorf(float);
 extern float ceilf(float);
 extern float fabsf(float);
 extern float modff(float, float *);
+extern float asinf(float);
+extern float acosf(float);
 
 static float tanf(float x) { return sinf(x) / cosf(x); }
 static float log10f(float x) { return logf(x) / (float)M_LN10; }
-static float asinf(float x) { return atanf(x / sqrtf(1.0f - x * x)); }
-static float acosf(float x) { return (float)M_PI_2 - asinf(x); }
 static float atan2f(float y, float x) {
   if (x > 0.0f)
     return atanf(y / x);

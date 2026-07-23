@@ -1,8 +1,9 @@
 #include "math_priv.h"
 
-/* Round to nearest integer, ties to even.  Implemented with floor rather than
-   the (x + 2^52) - 2^52 trick because this soft-float adder truncates, which
-   would make that trick round toward zero. */
+/* Round to nearest integer, ties to even.  Uses floor + explicit tie handling
+   rather than the (x + 2^52) - 2^52 trick: this form is exact and self-evidently
+   ties-to-even, needing no assumption about the soft-float adder's rounding mode
+   (which since the libm RNE fix would in fact make the trick viable too). */
 double rint(double x) {
   __dbl b;
   b.d = x;
