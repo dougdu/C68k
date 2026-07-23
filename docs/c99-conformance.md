@@ -73,7 +73,7 @@ OS): `<float.h>`, `<iso646.h>`, `<limits.h>`, `<stdarg.h>`, `<stdbool.h>`,
 | `<limits.h>` | Integer‑type limits | ✅ | `include/limits.h`, `libc/include/limits.h` | Complete for ILP32. |
 | `<locale.h>` | Localization | ❌ | — | Only the "C" locale is implied; `setlocale`/`localeconv` absent. |
 | `<math.h>` | Mathematics | ⚠️ | `libc/include/math.h`, `libc/core/*.c` → **libm** | Base transcendentals inline (double‑only); the full C99 function set + classification/constants added in C (Tier 2 2a/2b/2c, with `EDOM`/`ERANGE`). Pending only: `f`/`l` variants. Works around a libm negative‑arg `exp`/`pow` defect. |
-| `<setjmp.h>` | Non‑local jumps | ❌ | — | `setjmp`/`longjmp` not implemented. |
+| `<setjmp.h>` | Non‑local jumps | ✅ | `lib/runtime/rt68k.a68` + hdr | `setjmp`/`longjmp` asm shim; codegen spills temporaries across the `returns_twice` call so longjmp re‑entry is safe. |
 | `<signal.h>` | Signal handling | ⚠️ | `libc/include/signal.h`, `libc/core/signal.c` | Synchronous only — no async delivery on these OSes; `raise` calls handlers inline. |
 | `<stdarg.h>` | Variable arguments | ✅ | `include/stdarg.h` | m68k `va_list`. Conforming. |
 | `<stdbool.h>` | Boolean type/values | ✅ | `include/stdbool.h`, `libc/include/stdbool.h` | Complete. |
@@ -245,8 +245,14 @@ over the double versions (`long double` == `double` on this target).
 
 ### `<setjmp.h>` — non‑local jumps
 
-Header absent. `setjmp` ❌, `longjmp` ❌ (both need a small asm shim to
-save/restore `d2‑d7/a2‑a7/pc`).
+`setjmp` ✅, `longjmp` ✅.  The asm shim (`lib/runtime/rt68k.a68`) saves and
+restores the return PC, SP, and the callee‑saved set `d2‑d7/a2‑a6`; `jmp_buf`
+uses 13 longwords (16 reserved).  Because c68k evaluates expressions on the SP
+stack, a `returns_twice` codegen pass spills the pending temporaries to frame
+(A6‑relative) slots around a `setjmp` call and reloads them immediately after —
+so they survive longjmp re‑entry, including multi‑longjmp retry loops and the
+common `x = setjmp(env)` idiom.  Verified on Osiris and CP/M
+(`tests/lockstep/setjmp.c`, 6/6, in the lockstep gate).
 
 ### `<signal.h>` — signal handling
 
@@ -461,8 +467,9 @@ string and stream entry points). Remaining scanf gaps — the `%[` scanset and
    - The 12 **base** transcendentals stay `static` inline — their C names
      collide with libm's single‑precision `_sqrt`/`_exp`/… so extern linkage
      would need a vendored‑libm fork; `f`/`l` variants also pending.
-8. **`<setjmp.h>`**: `setjmp`/`longjmp` via a small asm shim (save/restore
-   `d2‑d7`, `a2‑a7`, PC).
+8. **`<setjmp.h>`**: ✅ done — `setjmp`/`longjmp` asm shim plus a
+   `returns_twice` codegen pass that spills SP‑stack temporaries to frame slots
+   around the call so longjmp re‑entry (retry loops) is safe.
 9. **`<locale.h>`**: minimal "C"‑only `setlocale`/`localeconv`.
 
 ### Tier 3 — large or blocked

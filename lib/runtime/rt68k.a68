@@ -18,6 +18,7 @@
         PUBLIC  __muldi3,__divdi3,__moddi3,__udivdi3,__umoddi3
         PUBLIC  __ashldi3,__ashrdi3,__lshrdi3,__cmpdi2,__ucmpdi2
         PUBLIC  _memcpy,_memset,_memmove
+        PUBLIC  _setjmp,_longjmp
 
 * D0 = D0 * D1  (low 32 bits), shift-and-add.
 __mulsi3:
@@ -431,5 +432,39 @@ mmv_fwd:
         bne     mmv_fwd
 mmv_done:
         rts
+
+*======================================================================
+* setjmp / longjmp --- non-local jump (C99 <setjmp.h>).
+*
+*   int  setjmp(jmp_buf env)           -- save context, return 0
+*   void longjmp(jmp_buf env, int v)   -- restore context; setjmp returns
+*                                         v  (or 1 when v == 0)
+*
+* jmp_buf (>=13 longwords):
+*   [0]     return PC   (resume point in setjmp's caller)
+*   [1]     SP          (value once setjmp returns = entry SP + 4)
+*   [2..12] D2-D7 / A2-A6   (the callee-saved set, 11 longwords)
+* D0/D1/A0/A1 are caller-saved scratch and are NOT saved.
+*======================================================================
+_setjmp:
+        move.l  4(sp),a0            ; a0 = env (arg1); A0 is scratch
+        move.l  (sp),(a0)+          ; [0] = return PC (top of stack)
+        lea     4(sp),a1            ; SP as it will be after rts pops the PC
+        move.l  a1,(a0)+            ; [1] = caller SP
+        movem.l d2-d7/a2-a6,(a0)    ; [2..12] = callee-saved registers
+        moveq   #0,d0               ; direct call returns 0
+        rts
+
+_longjmp:
+        move.l  4(sp),a0            ; a0 = env
+        move.l  8(sp),d0            ; d0 = value (setjmp's new return value)
+        bne.s   lj_val
+        moveq   #1,d0               ; longjmp(env,0) must yield 1
+lj_val:
+        move.l  (a0)+,a1            ; a1 = saved return PC
+        move.l  (a0)+,d1            ; d1 = saved SP (held in scratch)
+        movem.l (a0),d2-d7/a2-a6    ; restore callee-saved registers
+        move.l  d1,sp               ; restore SP last (buffer read complete)
+        jmp     (a1)                ; resume in setjmp's caller (D0 = value)
 
         END

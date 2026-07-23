@@ -157,6 +157,7 @@ struct Obj {
   Obj *va_area;
   Obj *alloca_bottom;
   int stack_size;
+  bool uses_returns_twice; // body contains a setjmp() call (needs spill slots)
 
   // Static inline function
   bool is_live;

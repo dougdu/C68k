@@ -33,6 +33,36 @@ static StringArray outbuf;
 static void gen_expr(Node *node);
 static void gen_stmt(Node *node);
 
+// A `returns_twice` callee (setjmp) is re-entered by longjmp, which restores SP
+// to the value saved at the setjmp call.  Any operand the surrounding
+// expression pushed onto the SP eval-stack *before* the call is therefore lost
+// on the second return.  Around such a call we spill the pending temporaries to
+// frame slots (A6-relative -- A6 is saved/restored by setjmp/longjmp) and
+// reload them right after the call (exactly where longjmp lands), so they
+// survive re-entry.  SETJMP_SPILL_SLOTS longwords are reserved for this in the
+// frame of every setjmp-using function.
+#define SETJMP_SPILL_SLOTS 16
+
+static bool node_is_setjmp_call(Node *n) {
+  return n && n->kind == ND_FUNCALL && n->lhs && n->lhs->kind == ND_VAR &&
+         n->lhs->var && !strcmp(n->lhs->var->name, "setjmp");
+}
+
+// Does this subtree contain a call to a returns_twice function (setjmp)?
+static bool calls_returns_twice(Node *n) {
+  for (; n; n = n->next) {
+    if (node_is_setjmp_call(n))
+      return true;
+    if (calls_returns_twice(n->lhs) || calls_returns_twice(n->rhs) ||
+        calls_returns_twice(n->cond) || calls_returns_twice(n->then) ||
+        calls_returns_twice(n->els) || calls_returns_twice(n->init) ||
+        calls_returns_twice(n->inc) || calls_returns_twice(n->body) ||
+        calls_returns_twice(n->args))
+      return true;
+  }
+  return false;
+}
+
 __attribute__((format(printf, 1, 2)))
 static void println(char *fmt, ...) {
   va_list ap;
@@ -878,6 +908,20 @@ static void gen_expr(Node *node) {
     return;
   }
   case ND_FUNCALL: {
+    // A returns_twice call (setjmp) is re-entered by longjmp, which restores SP
+    // and loses any temporary the surrounding expression left on the SP stack.
+    // Spill those pending temporaries to frame slots (A6-relative, so they
+    // survive the longjmp) and reload them right after the call.
+    int spilled = 0;
+    if (node_is_setjmp_call(node) && depth > 0) {
+      spilled = depth;
+      if (spilled > SETJMP_SPILL_SLOTS)
+        error_tok(node->tok, "setjmp expression nests too deeply");
+      for (int i = 0; i < spilled; i++)
+        println("  move.l %d(sp),%d(a6)", i * 4,
+                -current_fn->stack_size + i * 4);
+    }
+
     int bytes = push_args(node->args);
 
     // Struct/union return: pass the address of the caller-allocated result
@@ -902,6 +946,11 @@ static void gen_expr(Node *node) {
     if (bytes)
       println("  adda.w #%d,sp", bytes);
     depth -= bytes / 4; // the pushed argument slots are gone now
+
+    // Reload the spilled temporaries.  This runs on the direct return and,
+    // crucially, when longjmp re-enters here after restoring SP.
+    for (int i = 0; i < spilled; i++)
+      println("  move.l %d(a6),%d(sp)", -current_fn->stack_size + i * 4, i * 4);
 
     // Narrow return values are already delivered sign/zero-extended in D0 by
     // the callee's epilogue convention; nothing to fix up here.
@@ -1139,6 +1188,13 @@ static void assign_lvar_offsets(Obj *prog) {
       var->offset = -bottom;
     }
     fn->stack_size = align_to(bottom, 2);
+
+    // Reserve frame slots to spill SP-stack temporaries around setjmp calls
+    // (see SETJMP_SPILL_SLOTS).  They sit at the bottom of the frame, so the
+    // codegen addresses spill slot i as (-stack_size + i*4)(a6).
+    fn->uses_returns_twice = calls_returns_twice(fn->body);
+    if (fn->uses_returns_twice)
+      fn->stack_size = align_to(fn->stack_size + SETJMP_SPILL_SLOTS * 4, 2);
   }
 }
 
