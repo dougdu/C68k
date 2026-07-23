@@ -45,6 +45,7 @@ extern double atod(const char *s);
  * function is its own dead-strippable object yet shares the one table. */
 #define NSTREAM 11
 extern FILE _streams[NSTREAM];
+FILE *_fopen_fp(FILE *fp, const char *path, const char *mode); /* fopen/freopen core */
 
 /* ---- printf/scanf formatting core (vformat.c) ---------------------------
  * Every printf-family entry point builds a _psink (either a FILE sink or a

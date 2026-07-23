@@ -79,7 +79,7 @@ OS): `<float.h>`, `<iso646.h>`, `<limits.h>`, `<stdarg.h>`, `<stdbool.h>`,
 | `<stdbool.h>` | Boolean type/values | ✅ | `include/stdbool.h`, `libc/include/stdbool.h` | Complete. |
 | `<stddef.h>` | Common definitions | ✅ | `include/stddef.h` | `size_t`, `ptrdiff_t`, `wchar_t`, `NULL`, `offsetof`. |
 | `<stdint.h>` | Fixed‑width integers | ✅ | `include/stdint.h` | Complete (exact/least/fast/ptr/max + limits + `*_C` macros). |
-| `<stdio.h>` | Input/output | ⚠️ | `libc/include/stdio.h`, `libc/core/*.c` | Added `scanf`/`fscanf`/`vscanf`/`vfscanf`/`vprintf`/`vsprintf`/`ungetc`/`rewind`/`clearerr`/`perror`/`remove`/`rename`. Still no `freopen`/`setvbuf`/`tmp*`/`fgetpos`/wide. See §stdio. |
+| `<stdio.h>` | Input/output | ⚠️ | `libc/include/stdio.h`, `libc/core/*.c` | Streaming scanf family, the `v*` variants, `ungetc`/`rewind`/`clearerr`/`perror`/`remove`/`rename`, and now `freopen`/`setbuf`/`setvbuf`/`fgetpos`/`fsetpos`/`tmpnam` + buffer‑aware `ftell` and byte‑level `fseek` on both OSes. Remaining: `tmpfile` / `+` update modes, wide. See §stdio. |
 | `<stdlib.h>` | General utilities | ⚠️ | `libc/include/stdlib.h`, `libc/core/*.c` | Added `atoll`/`llabs`/`lldiv`/`strtof`/`_Exit`/`getenv`/`system`. Only the multibyte functions (`mblen`/`mbtowc`/…) remain absent (no wide‑char support). |
 | `<string.h>` | String handling | ⚠️ | `libc/include/string.h`, `libc/core/str*.c`, **rt** | Added `strspn`/`strcspn`/`strpbrk`. Only `strcoll`/`strxfrm` remain absent (no locale). |
 | `<tgmath.h>` | Type‑generic math | ❌ | — | Requires `<complex.h>` + `<math.h>` generic macros. |
@@ -287,11 +287,12 @@ integer set with limits and `INT*_C`/`UINT*_C` constructors. ✅
 | `fopen` | Open stream | ⚠️ | libc / `fopen.c` | Modes `r`/`w`/`a` (+`b`); no `+`/update. Text streams honor a Ctrl‑Z (`0x1A`) EOF; binary (`b`) reads raw — this is what makes CP/M's record‑padded files read back at their logical length. |
 | `fclose` | Close stream | ✅ | libc / `fclose.c` | |
 | `fflush` | Flush buffer | ✅ | libc / `fflush.c` | |
-| `freopen` | Reassign stream | ❌ | — | |
-| `setbuf` / `setvbuf` | Buffering control | ❌ | — | Buffering fixed at `BUFSIZ`. |
+| `freopen` | Reassign stream | ✅ | libc / `freopen.c` | Flush+close then reopen, reusing the FILE (so `freopen("f","w",stdout)` redirects); NULL path (mode change) unsupported. |
+| `setbuf` / `setvbuf` | Buffering control | ✅ | libc / `setvbuf.c` | Honors the mode (`_IONBF` flushes per write); the built‑in `BUFSIZ` buffer is always used, so a caller‑supplied buffer is accepted but ignored. |
 | `remove` | Delete file | ✅ | libc / `remove.c` | wraps `sys_unlink`. |
 | `rename` | Rename file | ✅ | libc / `rename.c` + seam | `sys_rename`: Osiris DOS 56h (A0=old, A1=new); CP/M BDOS 23 (combined FCB). |
-| `tmpfile` / `tmpnam` | Temp files | ❌ | — | |
+| `tmpnam` | Temp name | ✅ | libc / `tmpnam.c` | 8.3‑friendly `TMPnnnnn`, probed for non‑existence. |
+| `tmpfile` | Temp file | ❌ | — | Needs a read+write (`+`) stream. |
 | `printf` | Formatted stdout | ⚠️ | libc / `printf.c`,`vformat.c` | Int/str/char, `%f/%e/%g`, width/prec/flags; no `%a`, `%n`, wide. |
 | `fprintf` | Formatted to stream | ⚠️ | libc / `fprintf.c` | as `printf`. |
 | `sprintf` | Formatted to buffer | ⚠️ | libc / `sprintf.c` | as `printf`. |
@@ -310,17 +311,17 @@ integer set with limits and `INT*_C`/`UINT*_C` constructors. ✅
 | `fputs` `puts` | Write string | ✅ | libc / `fputs.c`,`puts.c` | |
 | `gets` | Read line (unsafe) | ❌ | — | Intentionally omitted (removed in C11). |
 | `fread` `fwrite` | Binary I/O | ✅ | libc / `fread.c`,`fwrite.c` | |
-| `fseek` | Set position | ⚠️ | libc / `fseek.c` | `SEEK_*`; backend seek support varies. |
-| `ftell` | Get position | ✅ | libc / `ftell.c` | |
+| `fseek` | Set position | ✅ | libc / `fseek.c` + seam | `SEEK_SET/CUR/END`; Osiris DOS seek and CP/M random‑record seek. On CP/M `SEEK_END` is record‑granular (CP/M stores no exact byte length). |
+| `ftell` | Get position | ✅ | libc / `ftell.c` | Buffer‑aware: adjusts the fd position by the unread/unwritten buffered bytes. |
 | `rewind` | Reset position | ✅ | libc / `rewind.c` | `fseek(...,SEEK_SET)` + clears EOF/err. |
-| `fgetpos` `fsetpos` | `fpos_t` position | ❌ | — | |
+| `fgetpos` `fsetpos` | `fpos_t` position | ✅ | libc / `fgetpos.c` | `fpos_t` is a byte offset; thin wrappers over `ftell`/`fseek`. |
 | `feof` `ferror` | Stream status | ✅ | libc / `feof.c`,`ferror.c` | |
 | `clearerr` | Clear status | ✅ | libc / `clearerr.c` | |
 | `perror` | Print error message | ✅ | libc / `perror.c` | Uses `strerror(errno)`. |
 
-Macros: `EOF`, `BUFSIZ`, `SEEK_SET/CUR/END`, `stdin/stdout/stderr` present.
-Missing: `FOPEN_MAX`, `FILENAME_MAX`, `TMP_MAX`, `L_tmpnam`,
-`_IOFBF/_IOLBF/_IONBF`, `fpos_t`.
+Macros: `EOF`, `BUFSIZ`, `SEEK_SET/CUR/END`, `stdin/stdout/stderr`,
+`FOPEN_MAX`, `FILENAME_MAX`, `TMP_MAX`, `L_tmpnam`, `_IOFBF/_IOLBF/_IONBF`,
+and the `fpos_t` type are present.  Missing: `+` update modes, `tmpfile`, wide.
 
 ### `<stdlib.h>` — general utilities
 

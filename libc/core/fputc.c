@@ -6,7 +6,7 @@ int fputc(int c, FILE *fp) {
     return EOF;
   }
   fp->buf[fp->cnt++] = (unsigned char)c;
-  if (fp->cnt == BUFSIZ || c == '\n')
+  if (fp->cnt == BUFSIZ || c == '\n' || (fp->flags & _SF_NBF))
     if (fflush(fp) == EOF)
       return EOF;
   return (unsigned char)c;

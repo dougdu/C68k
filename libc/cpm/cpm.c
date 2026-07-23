@@ -24,6 +24,8 @@ extern long cpm_bdos(int func, long param);
 #define F_MAKE 22
 #define F_RENAME 23
 #define F_DMAOFF 26
+#define F_READRAND 33
+#define F_SIZE 35
 #define T_GET 105 /* Worm CP/M-68K BDOS clock extension (BDOSEXT) */
 
 /* FCB field offsets. */
@@ -42,6 +44,7 @@ typedef struct {
   int eof;
   int recpos; /* read: next byte in rec; write: bytes buffered */
   int reccnt; /* read: valid bytes in rec */
+  long pos;   /* absolute byte offset of the next sys_read/sys_write byte */
   unsigned char fcb[FCB_SIZE];
   unsigned char rec[RECSZ];
 } CpmFile;
@@ -100,6 +103,7 @@ int sys_open(const char *path, int mode) {
   f->eof = 0;
   f->recpos = 0;
   f->reccnt = 0;
+  f->pos = 0;
   return 3 + i;
 }
 
@@ -120,6 +124,7 @@ int sys_creat(const char *path, int attr) {
   f->eof = 0;
   f->recpos = 0;
   f->reccnt = 0;
+  f->pos = 0;
   return 3 + i;
 }
 
@@ -135,11 +140,14 @@ int sys_write(int fd, const void *buf, int n) {
     f->rec[f->recpos++] = p[i];
     if (f->recpos == RECSZ) {
       cpm_bdos(F_DMAOFF, (long)f->rec);
-      if (cpm_bdos(F_WRITE, (long)f->fcb) != 0)
+      if (cpm_bdos(F_WRITE, (long)f->fcb) != 0) {
+        f->pos += i;
         return i;
+      }
       f->recpos = 0;
     }
   }
+  f->pos += n;
   return n;
 }
 
@@ -166,6 +174,7 @@ int sys_read(int fd, void *buf, int n) {
     }
     p[got] = f->rec[f->recpos++];
   }
+  f->pos += got;
   return got;
 }
 
@@ -187,12 +196,45 @@ int sys_close(int fd) {
   return 0;
 }
 
-/* Byte-granular seek is not yet supported (record/DMA only). */
+/* Byte-granular seek over CP/M's record files: track an absolute byte position
+ * and reposition with the random-record BDOS calls.  whence is SEEK_SET(0),
+ * SEEK_CUR(1), SEEK_END(2).  SEEK_END is record-granular (CP/M stores no exact
+ * byte length).  Repositioning loads the target record via F_READRAND; reads
+ * within that 128-byte record then work, and the stdio layer's own buffer
+ * absorbs the rest. */
 long sys_seek(int fd, long off, int whence) {
-  (void)fd;
-  (void)off;
-  (void)whence;
-  return -1;
+  if (fd < 3)
+    return -1;
+  CpmFile *f = &_cpmf[fd - 3];
+  long target;
+  if (whence == 1)
+    target = f->pos + off; /* SEEK_CUR */
+  else if (whence == 2) { /* SEEK_END (record-granular) */
+    f->fcb[FCB_CR] = 0;
+    cpm_bdos(F_SIZE, (long)f->fcb);
+    long recs = (long)f->fcb[33] | ((long)f->fcb[34] << 8) | ((long)f->fcb[35] << 16);
+    target = recs * RECSZ + off;
+  } else
+    target = off; /* SEEK_SET */
+  if (target < 0)
+    return -1;
+  if (target != f->pos) {
+    long rec = target / RECSZ;
+    f->fcb[33] = (unsigned char)(rec & 0xFF);
+    f->fcb[34] = (unsigned char)((rec >> 8) & 0xFF);
+    f->fcb[35] = (unsigned char)((rec >> 16) & 0xFF);
+    cpm_bdos(F_DMAOFF, (long)f->rec);
+    if (cpm_bdos(F_READRAND, (long)f->fcb) == 0) {
+      f->reccnt = RECSZ;
+      f->recpos = (int)(target % RECSZ);
+    } else {
+      f->reccnt = 0; /* at/after EOF -> next read yields EOF */
+      f->recpos = 0;
+    }
+    f->eof = 0;
+    f->pos = target;
+  }
+  return f->pos;
 }
 
 int sys_unlink(const char *path) {

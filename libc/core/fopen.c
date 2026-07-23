@@ -2,18 +2,7 @@
 #include <errno.h>
 #include "libc_internal.h"
 
-FILE *fopen(const char *path, const char *mode) {
-  FILE *fp = NULL;
-  for (int i = 3; i < NSTREAM; i++)
-    if (!(_streams[i].flags & _SF_USED)) {
-      fp = &_streams[i];
-      break;
-    }
-  if (!fp) {
-    errno = EMFILE;
-    return NULL;
-  }
-
+FILE *_fopen_fp(FILE *fp, const char *path, const char *mode) {
   int fd, flags;
   if (mode[0] == 'r') {
     fd = sys_open(path, 0);
@@ -48,4 +37,18 @@ FILE *fopen(const char *path, const char *mode) {
   fp->cnt = 0;
   fp->p = fp->buf;
   return fp;
+}
+
+FILE *fopen(const char *path, const char *mode) {
+  FILE *fp = NULL;
+  for (int i = 3; i < NSTREAM; i++)
+    if (!(_streams[i].flags & _SF_USED)) {
+      fp = &_streams[i];
+      break;
+    }
+  if (!fp) {
+    errno = EMFILE;
+    return NULL;
+  }
+  return _fopen_fp(fp, path, mode);
 }

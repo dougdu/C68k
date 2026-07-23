@@ -11,6 +11,18 @@
 #define SEEK_CUR 1
 #define SEEK_END 2
 
+/* setvbuf() buffering modes. */
+#define _IOFBF 0
+#define _IOLBF 1
+#define _IONBF 2
+
+#define FOPEN_MAX 8
+#define FILENAME_MAX 128
+#define TMP_MAX 32767
+#define L_tmpnam 16
+
+typedef long fpos_t;
+
 /* Stream flags. */
 #define _SF_READ 0x01
 #define _SF_WRITE 0x02
@@ -19,6 +31,7 @@
 #define _SF_USED 0x10
 #define _SF_MEM 0x20
 #define _SF_BIN 0x40 /* opened with "...b": no Ctrl-Z text-EOF translation */
+#define _SF_NBF 0x80 /* setvbuf(_IONBF): flush after every write */
 
 typedef struct _FILE {
   int fd;      /* Osiris file handle */
@@ -64,12 +77,19 @@ int puts(const char *s);
 int fseek(FILE *fp, long off, int whence);
 long ftell(FILE *fp);
 void rewind(FILE *fp);
+int fgetpos(FILE *fp, fpos_t *pos);
+int fsetpos(FILE *fp, const fpos_t *pos);
 int feof(FILE *fp);
 int ferror(FILE *fp);
 void clearerr(FILE *fp);
 void perror(const char *s);
 int remove(const char *path);
 int rename(const char *oldp, const char *newp);
+
+FILE *freopen(const char *path, const char *mode, FILE *fp);
+void setbuf(FILE *fp, char *buf);
+int setvbuf(FILE *fp, char *buf, int mode, size_t size);
+char *tmpnam(char *s);
 
 int printf(const char *fmt, ...);
 int fprintf(FILE *fp, const char *fmt, ...);
