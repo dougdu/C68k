@@ -295,7 +295,7 @@ integer set with limits and `INT*_C`/`UINT*_C` constructors. ✅
 | `rename` | Rename file | ✅ | libc / `rename.c` + seam | `sys_rename`: Osiris DOS 56h (A0=old, A1=new); CP/M BDOS 23 (combined FCB). |
 | `tmpnam` | Temp name | ✅ | libc / `tmpnam.c` | 8.3‑friendly `TMPnnnnn`, probed for non‑existence. |
 | `tmpfile` | Temp file | ✅ | libc / `tmpfile.c` | `tmpnam` + `fopen(name,"wb+")`; the FILE carries `_SF_TMP` so `fclose` auto‑unlinks. |
-| `printf` | Formatted stdout | ⚠️ | libc / `printf.c`,`vformat.c` | Int/str/char, `%f/%e/%g`, width/prec/flags; no `%a`, `%n`, wide. |
+| `printf` | Formatted stdout | ⚠️ | libc / `printf.c`,`vformat.c` | Int/str/char, `%f/%e/%g/%a` (`%a`/`%A` hex float, exact by default), width/prec/flags; no `%n`, wide. |
 | `fprintf` | Formatted to stream | ⚠️ | libc / `fprintf.c` | as `printf`. |
 | `sprintf` | Formatted to buffer | ⚠️ | libc / `sprintf.c` | as `printf`. |
 | `snprintf` | Bounded to buffer | ✅ | libc / `snprintf.c` | |
@@ -449,8 +449,9 @@ Implemented as pure header/libc additions and verified by
 All Tier 1 items are complete, including a true character‑streaming
 `scanf`/`fscanf`/`sscanf` engine (`_vscan` in `libc/core/vsscanf.c`, shared by the
 string and stream entry points), the `%[`/`%[^]` scanset, and `%a` hexadecimal‑
-float input.  The scanf family is now conversion‑complete (`%a` on input parses
-both hex and decimal floats; the sole printf‑side gap is `%a` *output*).
+float input.  Both the scanf and printf families are now conversion‑complete for
+floats: `%a` parses hex or decimal on input and emits exact hex floats on output
+(`printf`/`scanf` round‑trip).  The remaining printf gap is `%n` (and wide).
 
 ### Tier 2 — moderate
 7. **`<math.h>`** — Phase 2a ✅ DONE (2026‑07‑22): added `HUGE_VAL`/`INFINITY`/

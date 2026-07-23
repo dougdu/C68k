@@ -97,6 +97,20 @@ int main(void) {
   CHECK(sscanf("0x10p0", "%lf", &da) == 1 && da == 16.0);
   CHECK(sscanf("2.5", "%la", &da) == 1 && da == 2.5);
 
+  /* printf %a/%A hex-float output (the inverse of scanf %a) */
+  char ab[40];
+  sprintf(ab, "%a", 1.5);
+  CHECK(strcmp(ab, "0x1.8p+0") == 0);
+  sprintf(ab, "%a", 0.0);
+  CHECK(strcmp(ab, "0x0p+0") == 0);
+  sprintf(ab, "%a", -0.5);
+  CHECK(strcmp(ab, "-0x1p-1") == 0);
+  sprintf(ab, "%A", 256.0);
+  CHECK(strcmp(ab, "0X1P+8") == 0);
+  double rt = 0; /* round-trip: scanf recovers what printf emitted */
+  sprintf(ab, "%a", 3.14159);
+  CHECK(sscanf(ab, "%la", &rt) == 1 && rt == 3.14159);
+
   /* file-backed ungetc + remove + fscanf */
   FILE *f = fopen("TIER1.TMP", "w");
   if (f) {

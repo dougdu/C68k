@@ -110,6 +110,118 @@ static int fmt_gen(double v, int prec, char *buf) {
   return fmt_fixed(v, fp > 0 ? fp : 0, buf);
 }
 
+/* Hexadecimal float (%a): v >= 0 formatted as "0xH.HHHHp±D", the exact inverse
+   of scanf's %a.  Works purely on the IEEE-754 bit pattern (no soft-float): the
+   double is 1|11|52 = sign|exp|fraction, so the fraction is 13 hex nibbles and
+   the leading digit is 1 (normal) or 0 (zero/subnormal).  prec < 0 emits as many
+   fraction digits as needed (trailing zeros dropped, exact); otherwise exactly
+   prec digits, round-to-nearest-even. */
+static int fmt_hex(double v, int prec, int upper, char *buf) {
+  union {
+    double d;
+    struct {
+      unsigned long hi, lo;
+    } w;
+  } u;
+  u.d = v;
+  unsigned long fhi = u.w.hi & 0xFFFFF; /* top 20 of the 52 fraction bits */
+  unsigned long lo = u.w.lo;            /* low 32 fraction bits */
+  int biased = (int)((u.w.hi >> 20) & 0x7FF);
+  const char *digs = upper ? "0123456789ABCDEF" : "0123456789abcdef";
+
+  int lead, binexp;
+  if (biased == 0 && fhi == 0 && lo == 0) { /* +/-0 */
+    lead = 0;
+    binexp = 0;
+  } else if (biased == 0) { /* subnormal: 0.fraction * 2^-1022 */
+    lead = 0;
+    binexp = -1022;
+  } else { /* normal: 1.fraction * 2^(biased-1023) */
+    lead = 1;
+    binexp = biased - 1023;
+  }
+
+  int nib[13];
+  nib[0] = (int)((fhi >> 16) & 0xF);
+  nib[1] = (int)((fhi >> 12) & 0xF);
+  nib[2] = (int)((fhi >> 8) & 0xF);
+  nib[3] = (int)((fhi >> 4) & 0xF);
+  nib[4] = (int)(fhi & 0xF);
+  for (int i = 0; i < 8; i++)
+    nib[5 + i] = (int)((lo >> (28 - 4 * i)) & 0xF);
+
+  int ndig;
+  if (prec < 0) {
+    ndig = 13; /* exact: drop trailing zero nibbles */
+    while (ndig > 0 && nib[ndig - 1] == 0)
+      ndig--;
+  } else {
+    ndig = prec;
+    if (ndig < 13) { /* round-to-nearest-even at the cut point */
+      int first = nib[ndig], roundup = 0;
+      if (first > 8)
+        roundup = 1;
+      else if (first == 8) {
+        int rest = 0;
+        for (int i = ndig + 1; i < 13; i++)
+          if (nib[i]) {
+            rest = 1;
+            break;
+          }
+        int lastkept = ndig > 0 ? nib[ndig - 1] : lead;
+        roundup = rest || (lastkept & 1);
+      }
+      if (roundup) {
+        int i = ndig - 1, carry = 1;
+        while (i >= 0 && carry) {
+          nib[i] += 1;
+          if (nib[i] >= 16)
+            nib[i] -= 16;
+          else
+            carry = 0;
+          i--;
+        }
+        if (carry) { /* carried out of the fraction into the integer digit */
+          lead += 1;
+          if (lead >= 2) { /* 2.0 == 1.0 * 2^1 -> renormalize */
+            lead = 1;
+            binexp += 1;
+            for (int k = 0; k < ndig; k++)
+              nib[k] = 0;
+          }
+        }
+      }
+    }
+    if (ndig > 50)
+      ndig = 50; /* clamp absurd precision to keep numbuf bounded */
+  }
+
+  int n = 0;
+  buf[n++] = '0';
+  buf[n++] = upper ? 'X' : 'x';
+  buf[n++] = (char)('0' + lead);
+  if (ndig > 0) {
+    buf[n++] = '.';
+    for (int i = 0; i < ndig; i++)
+      buf[n++] = digs[i < 13 ? nib[i] : 0];
+  }
+  buf[n++] = upper ? 'P' : 'p';
+  buf[n++] = (char)(binexp < 0 ? '-' : '+');
+  int ae = binexp < 0 ? -binexp : binexp;
+  char etmp[8];
+  int et = 0;
+  if (ae == 0)
+    etmp[et++] = '0';
+  while (ae > 0) {
+    etmp[et++] = (char)('0' + ae % 10);
+    ae /= 10;
+  }
+  while (et > 0)
+    buf[n++] = etmp[--et];
+  buf[n] = 0;
+  return n;
+}
+
 int _vformat(_psink *s, const char *fmt, va_list ap) {
   for (; *fmt; fmt++) {
     if (*fmt != '%') {
@@ -203,7 +315,9 @@ int _vformat(_psink *s, const char *fmt, va_list ap) {
     case 'e':
     case 'E':
     case 'g':
-    case 'G': {
+    case 'G':
+    case 'a':
+    case 'A': {
       double dv = va_arg(ap, double);
       int p = (prec < 0) ? 6 : prec;
       /* Non-finite (inf/NaN) must be caught from the raw IEEE bits BEFORE the
@@ -220,7 +334,7 @@ int _vformat(_psink *s, const char *fmt, va_list ap) {
         u.d = dv;
         if (((u.w.hi >> 20) & 0x7FF) == 0x7FF) {
           int is_nan = ((u.w.hi & 0xFFFFF) | u.w.lo) != 0;
-          int up = (*fmt == 'F' || *fmt == 'E' || *fmt == 'G');
+          int up = (*fmt == 'F' || *fmt == 'E' || *fmt == 'G' || *fmt == 'A');
           const char *w = is_nan ? (up ? "NAN" : "nan") : (up ? "INF" : "inf");
           numbuf[0] = w[0];
           numbuf[1] = w[1];
@@ -239,7 +353,9 @@ int _vformat(_psink *s, const char *fmt, va_list ap) {
       } else {
         sign = plus ? '+' : (space ? ' ' : 0);
       }
-      if (*fmt == 'e' || *fmt == 'E')
+      if (*fmt == 'a' || *fmt == 'A')
+        slen = fmt_hex(dv, prec, *fmt == 'A', numbuf);
+      else if (*fmt == 'e' || *fmt == 'E')
         slen = fmt_sci(dv, p, numbuf);
       else if (*fmt == 'g' || *fmt == 'G')
         slen = fmt_gen(dv, p, numbuf);
