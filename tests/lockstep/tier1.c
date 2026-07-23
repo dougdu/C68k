@@ -45,7 +45,9 @@ int main(void) {
   lldiv_t q = lldiv(20000000001LL, 7LL);
   CHECK(q.quot == 20000000001LL / 7 && q.rem == 20000000001LL % 7);
   CHECK(strtof("3.5", NULL) == 3.5f);
-  CHECK(getenv("PATH") == NULL);
+  /* getenv: an unset name misses on both OSes (Osiris has a real environment
+     via DOS 64h but this name is never defined; CP/M has no environment). */
+  CHECK(getenv("C68K_NO_SUCH_VAR") == NULL);
   CHECK(system(NULL) == 0);
 
   /* <inttypes.h> */

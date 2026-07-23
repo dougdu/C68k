@@ -20,6 +20,7 @@ extern int sys_close(int fd);
 extern long sys_seek(int fd, long off, int whence);
 extern int sys_unlink(const char *path);
 extern int sys_rename(const char *oldp, const char *newp);
+extern char *sys_getenv(const char *name); /* Osiris DOS 64h; NULL on CP/M (no env) */
 extern void sys_exit(int code);
 extern void *sys_sbrk(int delta);
 extern int sys_heapavail(void); /* bytes from the break to the arena top (libheap malloc) */

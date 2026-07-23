@@ -16,7 +16,7 @@
         PUBLIC  _start
         PUBLIC  _sys_write,_sys_read,_sys_open,_sys_creat,_sys_close
         PUBLIC  _sys_seek,_sys_unlink,_sys_rename,_sys_exit,_sys_sbrk,_sys_heapavail
-        PUBLIC  _sys_time
+        PUBLIC  _sys_time,_sys_getenv
         EXTERN  _main
 
 * DOS TRAP #1 function selectors (AH, high byte of D0.W).
@@ -32,6 +32,7 @@ DOSF_LSEEK   equ  $4200
 DOSF_ALLOC   equ  $4800
 DOSF_GETDATE equ  $2A00
 DOSF_GETTIME equ  $2C00
+DOSF_ENVGET  equ  $6400       ; 64h env access, sub-fn 00 (GET): A0=name -> A0=value/0
 
 STKSIZE      equ  $4000       ; 16 KiB user stack reserved at the arena top
 HEAPSLOP     equ  $100
@@ -427,6 +428,23 @@ _sys_time:
         andi.l  #$FF,d1
         move.l  d1,20(a0)          ; sec = D3 >> 8
         moveq   #0,d0              ; success
+        unlk    a6
+        rts
+
+**********************************************************
+* char *_sys_getenv(const char *name) -> value pointer, or NULL if absent.
+* Osiris 64h GET (D0.W = $6400): A0 = name (ASCIIZ) -> A0 = value / 0.  GET has
+* no error return -- an unknown name comes back as A0 = 0 (carry clear).  The
+* value points into the process's environment block, which lives for the run,
+* so returning it directly satisfies getenv's "must not be modified / may be
+* overwritten by a later call" contract.
+**********************************************************
+_sys_getenv:
+        link    a6,#0
+        movea.l 8(a6),a0            ; name (ASCIIZ)
+        move.w  #DOSF_ENVGET,d0     ; 64h sub-fn 00 = GET
+        trap    #1
+        move.l  a0,d0              ; A0 = value ptr (0 = absent) -> return in D0
         unlk    a6
         rts
 

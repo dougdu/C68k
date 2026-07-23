@@ -347,7 +347,7 @@ and the `fpos_t` type are present.  Missing: wide‑character I/O (`<wchar.h>`).
 | `atexit` | Register exit handler | ✅ | libc / `exit.c` | LIFO table, 32 handlers (meets the C99 minimum). |
 | `exit` | Normal exit | ✅ | libc / `exit.c` | Flushes streams. |
 | `_Exit` | Exit w/o cleanup | ✅ | libc / `_Exit.c` | No `atexit`/flush. |
-| `getenv` | Environment lookup | ⚠️ | libc / `getenv.c` | Always returns `NULL` (no environment on these OSes). |
+| `getenv` | Environment lookup | ⚠️ | libc / `getenv.c` + seam | Osiris: real lookup via DOS `64h` (e.g. `COMSPEC`); returns `NULL` for an unset name. CP/M‑68K has no environment, so every lookup returns `NULL`. Read‑only (no `setenv`/`putenv`; the string is OS‑owned). |
 | `system` | Run command | ⚠️ | libc / `system.c` | `system(NULL)`→0 (no processor); any command→−1. |
 | `mblen` `mbtowc` `wctomb` `mbstowcs` `wcstombs` | Multibyte/wide | ❌ | — | No wide‑char support. |
 

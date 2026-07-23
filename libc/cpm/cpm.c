@@ -271,6 +271,13 @@ int sys_rename(const char *oldp, const char *newp) {
   return ((cpm_bdos(F_RENAME, (long)fcb) & 0xFF) == 0xFF) ? -1 : 0;
 }
 
+/* CP/M-68K has no process environment, so every getenv() lookup misses.
+   (Osiris provides a real environment via DOS 64h in osiris_sys.a68.) */
+char *sys_getenv(const char *name) {
+  (void)name;
+  return 0;
+}
+
 /* ---- <time.h> clock seam --------------------------------------------
  * BDOS 105 (T_GET, Worm BDOSEXT) fills an 8-byte DAT block: a big-endian
  * word of days-since-1-JAN-1978, then byte hour/min/sec. Convert the day
