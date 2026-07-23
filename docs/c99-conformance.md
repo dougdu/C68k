@@ -348,7 +348,7 @@ and the `fpos_t` type are present.  Missing: wide‑character I/O (`<wchar.h>`).
 | `exit` | Normal exit | ✅ | libc / `exit.c` | Flushes streams. |
 | `_Exit` | Exit w/o cleanup | ✅ | libc / `_Exit.c` | No `atexit`/flush. |
 | `getenv` | Environment lookup | ⚠️ | libc / `getenv.c` + seam | Osiris: real lookup via DOS `64h` (e.g. `COMSPEC`); returns `NULL` for an unset name. CP/M‑68K has no environment, so every lookup returns `NULL`. Read‑only (no `setenv`/`putenv`; the string is OS‑owned). |
-| `system` | Run command | ⚠️ | libc / `system.c` | `system(NULL)`→0 (no processor); any command→−1. |
+| `system` | Run command | ⚠️ | libc / `system.c` + seam | Osiris: spawns `COMSPEC` with a `/C <command>` tail (DOS `4Bh` EXEC) and returns the command's exit code; `system(NULL)`→nonzero (processor available). CP/M‑68K has no command processor: `system(NULL)`→0, any command→−1. The crt0 leaves a capped memory reserve so a child can load. |
 | `mblen` `mbtowc` `wctomb` `mbstowcs` `wcstombs` | Multibyte/wide | ❌ | — | No wide‑char support. |
 
 ### `<string.h>` — string handling

@@ -48,7 +48,9 @@ int main(void) {
   /* getenv: an unset name misses on both OSes (Osiris has a real environment
      via DOS 64h but this name is never defined; CP/M has no environment). */
   CHECK(getenv("C68K_NO_SUCH_VAR") == NULL);
-  CHECK(system(NULL) == 0);
+  /* system(NULL) is nonzero iff a command processor is available: Osiris runs
+     commands through COMSPEC (DOS EXEC); CP/M-68K has none. */
+  CHECK((system(NULL) != 0) == (getenv("COMSPEC") != NULL));
 
   /* <inttypes.h> */
   CHECK(imaxabs((intmax_t)-1234567890123LL) == 1234567890123LL);

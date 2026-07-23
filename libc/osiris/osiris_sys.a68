@@ -16,7 +16,7 @@
         PUBLIC  _start
         PUBLIC  _sys_write,_sys_read,_sys_open,_sys_creat,_sys_close
         PUBLIC  _sys_seek,_sys_unlink,_sys_rename,_sys_exit,_sys_sbrk,_sys_heapavail
-        PUBLIC  _sys_time,_sys_getenv
+        PUBLIC  _sys_time,_sys_getenv,_sys_exec
         EXTERN  _main
 
 * DOS TRAP #1 function selectors (AH, high byte of D0.W).
@@ -33,9 +33,12 @@ DOSF_ALLOC   equ  $4800
 DOSF_GETDATE equ  $2A00
 DOSF_GETTIME equ  $2C00
 DOSF_ENVGET  equ  $6400       ; 64h env access, sub-fn 00 (GET): A0=name -> A0=value/0
+DOSF_EXEC    equ  $4B00       ; 4Bh EXEC, mode 00 (load and execute a child to completion)
+DOSF_GETRET  equ  $4D00       ; 4Dh get child return code -> D0 = (cause<<8)|code
 
 STKSIZE      equ  $4000       ; 16 KiB user stack reserved at the arena top
 HEAPSLOP     equ  $100
+EXEC_RESERVE equ  $40000      ; leave up to 256 KiB free in DOS for system()/EXEC children
 CHUNK        equ  32768       ; max bytes per DOS read/write (CX is 16-bit)
 
 * Command-tail (argv) parsing.  The loader leaves the DOS-style tail in the
@@ -58,6 +61,17 @@ _start:
         move.w  #DOSF_ALLOC,d0
         trap    #1                  ; fails -> carry set, D1 = largest free
         move.l  d1,d2
+        ; Leave a capped pool free in DOS so system()/EXEC (4Bh) can load a child
+        ; (the child image + its temp load buffer + stack + PSP).  reserve =
+        ; min(EXEC_RESERVE, largest/4) -- scales down on tiny-memory configs so a
+        ; small machine still runs, just with less room for a spawned command.
+        move.l  d1,d5
+        lsr.l   #2,d5              ; D5 = largest / 4
+        cmpi.l  #EXEC_RESERVE,d5
+        bls     start_resok
+        move.l  #EXEC_RESERVE,d5   ; cap the reserve
+start_resok:
+        sub.l   d5,d2              ; claim (largest - reserve)
         subi.l  #HEAPSLOP,d2
         bls     start_nomem
         move.l  d2,d1
@@ -445,6 +459,32 @@ _sys_getenv:
         move.w  #DOSF_ENVGET,d0     ; 64h sub-fn 00 = GET
         trap    #1
         move.l  a0,d0              ; A0 = value ptr (0 = absent) -> return in D0
+        unlk    a6
+        rts
+
+**********************************************************
+* int _sys_exec(const char *path, void *parmblk) --- run a child to completion.
+* DOS 4Bh mode 00h loads + relocates the .PRG at A0, builds its PSP from the
+* EXEC parameter block at A1 (command tail + inherited environment), and runs it
+* in user mode; control returns here after the child's 4Ch.  4Dh then reads the
+* child's return code (D0 = (cause<<8)|code).  system() passes path = COMSPEC and
+* a "/C <command>" tail.  -> D0 = child exit code (0..255), or -1 if EXEC failed
+* (file not found / out of memory: carry set).
+**********************************************************
+_sys_exec:
+        link    a6,#0
+        movea.l 8(a6),a0            ; path (the command processor, COMSPEC)
+        movea.l 12(a6),a1           ; EXEC parameter block
+        move.w  #DOSF_EXEC,d0       ; 4B00 = load and execute
+        trap    #1
+        bcs     sex_err             ; EXEC itself failed -> -1
+        move.w  #DOSF_GETRET,d0     ; 4D00 = get the child's return code
+        trap    #1
+        andi.l  #$FF,d0            ; low byte = exit code (drop the cause byte)
+        unlk    a6
+        rts
+sex_err:
+        moveq   #-1,d0
         unlk    a6
         rts
 

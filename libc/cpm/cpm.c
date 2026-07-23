@@ -278,6 +278,16 @@ char *sys_getenv(const char *name) {
   return 0;
 }
 
+/* CP/M-68K has no EXEC / child-process facility, so system() can never run a
+   command here.  (system() only reaches this when a command was requested and
+   COMSPEC exists; on CP/M COMSPEC is NULL, so this is effectively unreachable,
+   but it must link.)  Osiris runs COMSPEC via DOS 4Bh in osiris_sys.a68. */
+int sys_exec(const char *path, void *parmblk) {
+  (void)path;
+  (void)parmblk;
+  return -1;
+}
+
 /* ---- <time.h> clock seam --------------------------------------------
  * BDOS 105 (T_GET, Worm BDOSEXT) fills an 8-byte DAT block: a big-endian
  * word of days-since-1-JAN-1978, then byte hour/min/sec. Convert the day
