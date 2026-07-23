@@ -24,8 +24,7 @@ _fpltof:
 	move.l	4(sp),d0		; d0 = integer input
 	beq.s	_ltof_zero		; zero → return 0.0
 
-	move.l	d1,-(sp)		; save d1
-	move.l	d2,-(sp)		; save d2
+	movem.l	d1-d3,-(sp)		; save d1 (scratch) + d2/d3 (callee-saved)
 
 	; Record sign
 	moveq	#0,d2			; d2 = sign (0 = positive)
@@ -48,16 +47,29 @@ _ltof_norm:
 	bra.s	_ltof_norm
 
 _ltof_pack:
-	; d0 has the value with bit 31 as the implied bit
-	; We need mantissa in bits 22-0 (shift right by 8, dropping bit 31)
-	lsr.l	#8,d0			; shift right 8 → implied bit now at bit 23
+	; d0 has the value with bit 31 as the implied bit.  The >>8 drops bits
+	; 7:0; round them to nearest-even (guard = bit 7, sticky = bits 6:0).
+	move.l	d0,d3
+	andi.l	#$FF,d3			; d3 = guard + round bits
+	lsr.l	#8,d0			; implied bit now at bit 23
+	cmpi.l	#$80,d3
+	blo.s	_ltof_finish		; below half -> truncate
+	bhi.s	_ltof_roundup		; above half -> round up
+	btst.l	#0,d0			; exactly half -> round to even
+	beq.s	_ltof_finish
+_ltof_roundup:
+	addq.l	#1,d0			; round up
+	cmpi.l	#$1000000,d0		; mantissa carried out to 2^24?
+	blo.s	_ltof_finish
+	lsr.l	#1,d0			; renormalize
+	addq.l	#1,d1			; bump exponent
+_ltof_finish:
 	andi.l	#IEEE754_SNG_MANT_MASK,d0 ; strip implied bit (bit 23)
 	INSERT_EXP d1
 	or.l	d1,d0			; combine exponent
 	or.l	d2,d0			; combine sign
 
-	move.l	(sp)+,d2
-	move.l	(sp)+,d1
+	movem.l	(sp)+,d1-d3
 	rts
 
 _ltof_zero:

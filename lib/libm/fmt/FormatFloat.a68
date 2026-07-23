@@ -11,7 +11,7 @@ num 	equ 	8
 
 _FormatFloat:
 	link 	a6,#0
-	movem.l d1-d2/a0-a2,-(sp)		; Save registers
+	movem.l d1-d3/a0-a2,-(sp)		; Save registers (D3 is callee-saved)
 	move.l 	num(a6),d0 			; D0 = float to print
 	move.l 	#8,d2 				; D2 = number of digits to use
 	clr.l 	d3 				; No display exponent
@@ -21,6 +21,34 @@ _FormatFloat:
 	beq.s	_ff_Zero
 	cmpi.l	#$80000000,d0			; Is value -0.0?
 	beq.s	_ff_Zero
+
+	; Handle inf / NaN before __ecvt (its modf/divide loop spins on +inf)
+	move.l	d0,d1
+	andi.l	#$7F800000,d1
+	cmpi.l	#$7F800000,d1
+	bne.s	_ff_NotSpecial
+	move.l	d0,d1
+	andi.l	#$007FFFFF,d1
+	bne.s	_ff_SpNan			; mantissa != 0 -> NaN
+	tst.l	d0				; infinity: pick sign
+	bmi.s	_ff_SpNegInf
+	lea	_ff_sInf,a0
+	bra.s	_ff_SpCopy
+_ff_SpNegInf:
+	lea	_ff_sNegInf,a0
+	bra.s	_ff_SpCopy
+_ff_SpNan:
+	lea	_ff_sNan,a0
+_ff_SpCopy:
+	lea	__ff_Buffer,a1
+_ff_SpLoop:
+	move.b	(a0)+,(a1)+
+	bne.s	_ff_SpLoop
+	move.l	#__ff_Buffer,d0
+	movem.l	(sp)+,d1-d3/a0-a2
+	unlk	a6
+	rts
+_ff_NotSpecial:
 
 	move.l 	d0,-(sp)			; Push number to print
 	move.l 	d2,-(sp)			; 8 digits (IN param)
@@ -130,7 +158,7 @@ _ff_EmitExponent:
 _ff_Exit:
 	clr.b 	(a1)				; Null terminate the string
 	move.l 	#__ff_Buffer,d0			; Return internal buffer pointer
-	movem.l (sp)+,d1-d2/a0-a2		; Restore registers
+	movem.l (sp)+,d1-d3/a0-a2		; Restore registers
 	unlk 	a6
 	rts
 
@@ -140,7 +168,7 @@ _ff_Zero:
 	move.b	#'0',(a1)+			; The digit zero
 	clr.b	(a1)				; Null terminate
 	move.l	#__ff_Buffer,d0			; Return buffer pointer
-	movem.l (sp)+,d1-d2/a0-a2		; Restore registers
+	movem.l (sp)+,d1-d3/a0-a2		; Restore registers
 	unlk	a6
 	rts
 
@@ -149,5 +177,10 @@ _ff_Zero:
 __ff_DecimalOffset	ds.l 	1
 __ff_Sign		ds.l 	1
 __ff_Buffer		ds.b 	64
+
+	.data
+_ff_sInf	dc.b	' inf',0
+_ff_sNegInf	dc.b	'-inf',0
+_ff_sNan	dc.b	' nan',0
 
 	end

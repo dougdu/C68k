@@ -38,6 +38,34 @@ _FormatDouble:
 
 	lea	_fd_OutBuf,a2		; A2 = output write pointer
 
+	; === Handle inf / NaN (exponent field all ones) -- MUST come before the
+	;     normalize loop, which would spin forever on +inf (val/10 = val) ===
+	move.l	d2,d0
+	andi.l	#$7FF00000,d0
+	cmpi.l	#$7FF00000,d0
+	bne.s	_fd_NotSpecial
+	move.l	d2,d0
+	andi.l	#$000FFFFF,d0
+	or.l	d3,d0
+	bne.s	_fd_NaN			; mantissa != 0 -> NaN
+	tst.l	d2			; infinity: pick sign
+	bmi.s	_fd_NegInf
+	lea	_fd_sInf,a0
+	bra.s	_fd_CopySpecial
+_fd_NegInf:
+	lea	_fd_sNegInf,a0
+	bra.s	_fd_CopySpecial
+_fd_NaN:
+	lea	_fd_sNan,a0
+_fd_CopySpecial:
+	move.b	(a0)+,(a2)+
+	bne.s	_fd_CopySpecial
+	move.l	#_fd_OutBuf,d0
+	movem.l	(sp)+,d2-d7/a2-a4
+	unlk	a6
+	rts
+_fd_NotSpecial:
+
 	; === Handle zero ===
 	move.l	d2,d0
 	andi.l	#$7FFFFFFF,d0		; strip sign
@@ -322,5 +350,10 @@ _fd_Zero:
 	.bss
 _fd_DigBuf	ds.b	20		; digit extraction buffer (16 + padding)
 _fd_OutBuf	ds.b	32		; formatted output buffer
+
+	.data
+_fd_sInf	dc.b	' inf',0
+_fd_sNegInf	dc.b	'-inf',0
+_fd_sNan	dc.b	' nan',0
 
 	end

@@ -3,8 +3,11 @@
 ;  _fmod / _fmodf — floating-point remainder
 ;
 ;  float _fmod(float x, float y) — returns x mod y in D0
-;  Result has same sign as x.
-;  Uses repeated subtraction (simple, correct for BASIC use).
+;  Result has the sign of x.  EXACT and bounded: instead of O(x/y) repeated
+;  subtraction (which hung on y=0 / x=inf and was pathologically slow for a
+;  large quotient), it doubles |y| up to just below the running remainder and
+;  subtracts once (a Sterbenz-exact step), repeating until |r| < |y|.  This is
+;  O(exp(x)-exp(y)) subtractions, each exact (BUG-0024).
 ; ============================================================
 
 	.model	flat
@@ -18,34 +21,58 @@
 _fmod:
 _fmodf:
 	link	a6,#0
-	movem.l	d5-d7,-(sp)
+	movem.l	d3-d7,-(sp)
 
-	move.l	8(a6),d7		; d7 = x
-	move.l	d7,d6			; d6 = original x (save sign)
-	bclr.l	#IEEE754_SNG_SIGN_BIT,d6 ; d6 = |x|
-	move.l	12(a6),d5		; d5 = y
-	bclr.l	#IEEE754_SNG_SIGN_BIT,d5 ; d5 = |y|
+	move.l	8(a6),d7		; d7 = x (keep sign)
+	move.l	12(a6),d4
+	andi.l	#$7FFFFFFF,d4		; d4 = |y| = b
+	move.l	d7,d6
+	andi.l	#$7FFFFFFF,d6		; d6 = |x| = r (running remainder)
 
-_fmod_loop:
-	; Subtract |y| from running |x|
-	move.l	d5,-(sp)		; push |y|
-	move.l	d6,-(sp)		; push |x|
-	jsr	_fpsub			; d0 = |x| - |y|
+	; --- special values (guarantee termination) ---
+	tst.l	d4
+	beq	_fmod_nan		; fmod(x, 0) = NaN
+	cmpi.l	#SNG_INF,d6
+	bge	_fmod_nan		; x = +/-inf or NaN -> NaN
+	cmpi.l	#SNG_INF,d4
+	blt.s	_fmod_finite
+	bgt	_fmod_nan		; y = NaN -> NaN
+	bra	_fmod_retx		; y = +/-inf -> fmod(x, inf) = x
+_fmod_finite:
+	cmp.l	d4,d6
+	blt	_fmod_retx		; |x| < |y| -> remainder is x (incl x = 0)
+
+	; --- exact reduction: r -= (largest b*2^k <= r) until r < b ---
+_fmod_reduce:
+	move.l	d4,d3			; sb = b
+_fmod_scale:
+	move.l	d3,d0
+	add.l	#$00800000,d0		; sb*2 (exponent field + 1)
+	cmp.l	d6,d0			; sb*2 > r ?
+	bhi.s	_fmod_sub		; yes -> sb is the largest b*2^k <= r
+	move.l	d0,d3			; sb *= 2
+	bra.s	_fmod_scale
+_fmod_sub:
+	move.l	d3,-(sp)		; sb
+	move.l	d6,-(sp)		; r
+	jsr	_fpsub			; r - sb  (Sterbenz-exact: sb <= r < 2*sb)
 	addq.l	#8,sp
-	btst.l	#IEEE754_SNG_SIGN_BIT,d0 ; result negative?
-	bne.s	_fmod_done		; yes → d6 is the remainder
-	move.l	d0,d6			; update running value
-	bra.s	_fmod_loop
+	move.l	d0,d6			; r = r - sb
+	cmp.l	d4,d6
+	bge.s	_fmod_reduce		; r >= b -> keep reducing
 
-_fmod_done:
-	; Apply sign of original x
-	btst.l	#IEEE754_SNG_SIGN_BIT,d7
-	beq.s	_fmod_pos
-	bset.l	#IEEE754_SNG_SIGN_BIT,d6
-
-_fmod_pos:
-	move.l	d6,d0
-	movem.l	(sp)+,d5-d7
+	; r < b -> r (magnitude, in d6) is the remainder; apply sign of x
+	move.l	d7,d0
+	andi.l	#$80000000,d0
+	or.l	d6,d0
+	bra.s	_fmod_ret
+_fmod_retx:
+	move.l	d7,d0			; return x unchanged
+	bra.s	_fmod_ret
+_fmod_nan:
+	move.l	#SNG_QNAN,d0
+_fmod_ret:
+	movem.l	(sp)+,d3-d7
 	unlk	a6
 	rts
 

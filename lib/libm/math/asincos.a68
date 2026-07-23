@@ -1,0 +1,177 @@
+	title	"IEEE 754 single-precision arcsine / arccosine"
+; ============================================================
+;  _asin / _asinf — arcsine
+;  _acos / _acosf — arccosine
+;
+;  float _asin(float x) — returns asin(x) in D0
+;  float _acos(float x) — returns acos(x) in D0
+;
+;  Both are built on the already-accurate _atan and _sqrt.
+;  Using s = sqrt((1-|x|)*(1+|x|)) = sqrt(1-x^2) avoids the
+;  catastrophic cancellation of (1 - x*x) near |x| = 1
+;  because (1 - |x|) is a single exact subtraction there.
+;
+;    asin(x) = atan( x / s )
+;    acos(x) = atan( s / x )        for x > 0
+;              pi - atan( s / |x| )  for x < 0
+;              pi/2                  for x = 0
+;
+;  Domain:  |x| <= 1.  |x| > 1 (and inf / NaN) -> NaN.
+;  Edges:   asin(+/-1) = +/- pi/2;  acos(1) = 0, acos(-1) = pi.
+; ============================================================
+
+	.model	flat
+	include	ieee754.inc
+
+	public	_asin, _asinf, _acos, _acosf
+	extern	_fpadd, _fpsub, _fpmult, _fpdiv
+	extern	_sqrt, _atan
+
+	.code
+
+; ============================================================
+;  _asin / _asinf
+; ============================================================
+_asin:
+_asinf:
+	link	a6,#0
+	movem.l	d2-d4,-(sp)
+	move.l	8(a6),d2		; d2 = x
+	move.l	d2,d3
+	andi.l	#$7FFFFFFF,d3		; d3 = |x| (bit pattern)
+
+	cmpi.l	#SNG_ONE,d3
+	bhi	_asin_nan		; |x| > 1 (or inf / NaN) -> NaN
+	beq	_asin_one		; |x| == 1 -> +/- pi/2
+
+	; --- s = sqrt((1-|x|)*(1+|x|)) ---
+	move.l	d3,-(sp)		; arg2 = |x|
+	move.l	#SNG_ONE,-(sp)		; arg1 = 1.0
+	jsr	_fpsub			; 1 - |x|
+	addq.l	#8,sp
+	move.l	d0,d4			; d4 = 1 - |x|
+
+	move.l	d3,-(sp)		; arg2 = |x|
+	move.l	#SNG_ONE,-(sp)		; arg1 = 1.0
+	jsr	_fpadd			; 1 + |x|
+	addq.l	#8,sp
+
+	move.l	d0,-(sp)		; arg2 = (1+|x|)
+	move.l	d4,-(sp)		; arg1 = (1-|x|)
+	jsr	_fpmult			; (1-|x|)*(1+|x|) = 1 - x^2
+	addq.l	#8,sp
+
+	move.l	d0,-(sp)
+	jsr	_sqrt			; s = sqrt(1 - x^2)
+	addq.l	#4,sp
+
+	; --- q = x / s ---
+	move.l	d0,-(sp)		; arg2 = s
+	move.l	d2,-(sp)		; arg1 = x
+	jsr	_fpdiv			; x / s
+	addq.l	#8,sp
+
+	; --- asin = atan(q) ---
+	move.l	d0,-(sp)
+	jsr	_atan
+	addq.l	#4,sp
+
+_asin_ret:
+	movem.l	(sp)+,d2-d4
+	unlk	a6
+	rts
+
+_asin_one:
+	; |x| == 1 -> +/- pi/2 (sign of x)
+	move.l	#SNG_PI_2,d0
+	move.l	d2,d1
+	andi.l	#$80000000,d1
+	or.l	d1,d0			; apply sign of x
+	bra	_asin_ret
+
+_asin_nan:
+	move.l	#SNG_QNAN,d0
+	bra	_asin_ret
+
+; ============================================================
+;  _acos / _acosf
+; ============================================================
+_acos:
+_acosf:
+	link	a6,#0
+	movem.l	d2-d4,-(sp)
+	move.l	8(a6),d2		; d2 = x
+	move.l	d2,d3
+	andi.l	#$7FFFFFFF,d3		; d3 = |x| (bit pattern)
+
+	cmpi.l	#SNG_ONE,d3
+	bhi	_acos_nan		; |x| > 1 (or inf / NaN) -> NaN
+	beq	_acos_one		; |x| == 1 -> 0 or pi
+	tst.l	d3
+	beq	_acos_zero		; x == 0 -> pi/2
+
+	; --- s = sqrt((1-|x|)*(1+|x|)) ---
+	move.l	d3,-(sp)		; arg2 = |x|
+	move.l	#SNG_ONE,-(sp)		; arg1 = 1.0
+	jsr	_fpsub			; 1 - |x|
+	addq.l	#8,sp
+	move.l	d0,d4			; d4 = 1 - |x|
+
+	move.l	d3,-(sp)		; arg2 = |x|
+	move.l	#SNG_ONE,-(sp)		; arg1 = 1.0
+	jsr	_fpadd			; 1 + |x|
+	addq.l	#8,sp
+
+	move.l	d0,-(sp)		; arg2 = (1+|x|)
+	move.l	d4,-(sp)		; arg1 = (1-|x|)
+	jsr	_fpmult			; 1 - x^2
+	addq.l	#8,sp
+
+	move.l	d0,-(sp)
+	jsr	_sqrt			; s = sqrt(1 - x^2)
+	addq.l	#4,sp
+
+	; --- q = s / |x| ---
+	move.l	d3,-(sp)		; arg2 = |x|
+	move.l	d0,-(sp)		; arg1 = s
+	jsr	_fpdiv			; s / |x|
+	addq.l	#8,sp
+
+	; --- a = atan(s/|x|) ---
+	move.l	d0,-(sp)
+	jsr	_atan
+	addq.l	#4,sp
+
+	; x > 0 -> acos = a ;  x < 0 -> acos = pi - a
+	tst.l	d2
+	bpl	_acos_ret		; x >= 0 (x != 0 here)
+
+	move.l	d0,-(sp)		; arg2 = a
+	move.l	#SNG_PI,-(sp)		; arg1 = pi
+	jsr	_fpsub			; pi - a
+	addq.l	#8,sp
+
+_acos_ret:
+	movem.l	(sp)+,d2-d4
+	unlk	a6
+	rts
+
+_acos_one:
+	; |x| == 1 -> x=1: 0 ; x=-1: pi
+	tst.l	d2
+	bmi	_acos_one_neg
+	moveq	#0,d0			; acos(1) = 0
+	bra	_acos_ret
+_acos_one_neg:
+	move.l	#SNG_PI,d0		; acos(-1) = pi
+	bra	_acos_ret
+
+_acos_zero:
+	move.l	#SNG_PI_2,d0		; acos(0) = pi/2
+	bra	_acos_ret
+
+_acos_nan:
+	move.l	#SNG_QNAN,d0
+	bra	_acos_ret
+
+	end

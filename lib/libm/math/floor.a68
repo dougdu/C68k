@@ -65,6 +65,9 @@ _floor_already_int:
 _floor_small:
 	; |x| < 1
 	move.l	8(a6),d0
+	move.l	d0,d1
+	andi.l	#$7FFFFFFF,d1
+	beq.s	_floor_small_zero	; x = +/-0 -> return x (floor(-0) = -0)
 	tst.l	d0
 	bpl.s	_floor_small_pos
 	; Negative: floor = -1
@@ -75,6 +78,9 @@ _floor_small_pos:
 	; Positive: floor = 0
 	moveq	#0,d0
 	unlk	a6
+	rts
+_floor_small_zero:
+	unlk	a6			; d0 still holds +/-0
 	rts
 
 ; ============================================================
@@ -107,7 +113,15 @@ _modff:
 	move.l	8(a6),d2		; d2 = x (arg1)
 	movea.l	12(a6),a0		; a0 = pointer to ipart (arg2)
 
-	; Get integer part via truncation
+	; BUG-0023: |x| >= 2^23 is already an integer, and the 32-bit _fpftol
+	; overflows for |x| >= 2^31.  Short-circuit the already-integer case.
+	move.l	d2,d1
+	andi.l	#IEEE754_SNG_EXP_MASK,d1
+	EXTRACT_EXP d1
+	cmpi.l	#150,d1			; exponent >= 150 (23+127) -> already integer
+	bge	_modf_already_int
+
+	; Get integer part via truncation (safe: |x| < 2^23 here)
 	move.l	d2,-(sp)
 	jsr	_fpftol			; d0 = int(x)
 	addq.l	#4,sp
@@ -115,7 +129,15 @@ _modff:
 	jsr	_fpltof			; d0 = float(int(x))
 	addq.l	#4,sp
 
-	move.l	d0,(a0)			; store integer part
+	; ipart keeps the sign of x even when its magnitude is 0 (BUG-0025):
+	; ftol/ltof drop the sign of a zero, but C modf gives ipart the sign of x.
+	move.l	d0,d1
+	andi.l	#$7FFFFFFF,d1
+	bne.s	_modf_ip_signed
+	move.l	d2,d0			; |ipart| == 0 -> ipart = 0 with x's sign
+	andi.l	#$80000000,d0
+_modf_ip_signed:
+	move.l	d0,(a0)			; store integer part (signed zero preserved)
 
 	; Fractional part = x - ipart
 	move.l	d0,-(sp)		; push ipart
@@ -123,6 +145,24 @@ _modff:
 	jsr	_fpsub			; d0 = x - ipart
 	addq.l	#8,sp
 
+	; fraction keeps the sign of x even when it is 0 (BUG-0025):
+	; x - ipart of an integer x rounds to +0, but C modf gives frac x's sign.
+	move.l	d0,d1
+	andi.l	#$7FFFFFFF,d1
+	bne.s	_modf_fr_signed
+	move.l	d2,d0
+	andi.l	#$80000000,d0
+_modf_fr_signed:
+
+	movem.l	(sp)+,d2/a0
+	unlk	a6
+	rts
+
+_modf_already_int:
+	; |x| >= 2^23: x is an exact integer -> ipart = x, frac = +/-0 (sign of x)
+	move.l	d2,(a0)			; ipart = x
+	move.l	d2,d0
+	andi.l	#$80000000,d0		; frac = 0 carrying x's sign
 	movem.l	(sp)+,d2/a0
 	unlk	a6
 	rts

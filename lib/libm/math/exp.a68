@@ -40,6 +40,9 @@ _expf:
 	move.l	d2,d0
 	andi.l	#$7FFFFFFF,d0		; d0 = |x| (magnitude bit pattern)
 	beq	_exp_return_one		; exp(0) = 1
+	cmpi.l	#SNG_INF,d0		; exp(NaN) = NaN (BUG-0013); +/-inf fall
+	bhi	_exp_nan		; through to the range guards (+inf->ovf,
+					; -inf->udf), which already do the right thing
 
 	; Range check on the MAGNITUDE.  The raw IEEE pattern is NOT monotonic as a
 	; signed integer for negative x (a small |x| such as -1.0 = $BF800000
@@ -52,7 +55,12 @@ _expf:
 	bgt	_exp_overflow
 	bra.s	_exp_range_ok
 _exp_neg:
-	cmpi.l	#$42CE8ED0,d0		; x < -103.28 (ln FLT_MIN) -> underflow
+	cmpi.l	#$42AEAC50,d0		; |x| > 87.3365 (ln of min-normal) -> result
+					; is subnormal; flush to +0 (FTZ).  The old
+					; -103.28 threshold let the [-103.28,-87.34]
+					; subnormal region reach the 2^n exponent-add,
+					; which wrapped the field below 0 -> garbage
+					; (BUG-0014, e.g. exp(-100) -> 0xF75460FC).
 	bgt	_exp_underflow
 _exp_range_ok:
 
@@ -173,6 +181,10 @@ _exp_overflow:
 
 _exp_underflow:
 	moveq	#0,d0			; exp(very negative) = 0
+	bra.s	_exp_done
+
+_exp_nan:
+	move.l	#SNG_QNAN,d0
 	bra.s	_exp_done
 
 	end

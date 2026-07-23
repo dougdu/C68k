@@ -22,7 +22,9 @@
 ; ============================================================
 _fpftod:
 	move.l	4(sp),d0		; original single
-	beq.s	_ftod_zero
+	move.l	d0,d1
+	andi.l	#$7FFFFFFF,d1
+	beq.s	_ftod_zero		; +/-0 -> signed zero double
 
 	movem.l	d2,-(sp)
 
@@ -32,7 +34,10 @@ _fpftod:
 	move.l	d0,d2
 	andi.l	#IEEE754_SNG_EXP_MASK,d2
 	EXTRACT_EXP d2			; d2 = sng exponent
+	cmpi.l	#255,d2
+	beq.s	_ftod_inf_nan		; inf/NaN -> double exp all-ones
 	addi.l	#896,d2			; dbl exponent = sng_exp + 896
+_ftod_exp_ready:
 	INSERT_DBL_EXP d2		; d2 = positioned double exponent
 	or.l	d1,d2			; d2 = sign | exp (high word so far)
 
@@ -53,8 +58,13 @@ _fpftod:
 	movem.l	(sp)+,d2
 	rts
 
+_ftod_inf_nan:
+	move.l	#2047,d2		; double exponent all-ones
+	bra.s	_ftod_exp_ready
+
 _ftod_zero:
-	moveq	#0,d0
+	move.l	4(sp),d0
+	andi.l	#IEEE754_SNG_SIGN_MASK,d0 ; signed zero (sign in bit 31)
 	moveq	#0,d1
 	rts
 
@@ -107,8 +117,21 @@ _dtof_nonzero:
 	rol.l	#3,d2			; rotate top 3 bits to bottom
 	andi.l	#7,d2
 	or.l	d2,d1			; d1 = 23-bit mantissa
-	or.l	d1,d0			; combine
+	or.l	d1,d0			; combine (d0 = sign|exp|mant, pre-round)
 
+	; --- round to nearest even (BUG-0018) using the 29 dropped low-word bits ---
+	; guard = bit 28 of the low word (d3); sticky = bits 27:0; lsb = mant bit 0.
+	; +1 on the packed single carries mantissa->exponent->inf correctly.
+	btst	#28,d3
+	beq.s	_dtof_rounded		; guard=0 -> truncate (round down)
+	move.l	d3,d1
+	andi.l	#$0FFFFFFF,d1		; sticky = low-word bits 27:0
+	bne.s	_dtof_roundup		; > half -> round up
+	btst	#0,d0			; exactly half -> round to even
+	beq.s	_dtof_rounded		;   mantissa even -> stay
+_dtof_roundup:
+	addq.l	#1,d0			; round up 1 ULP
+_dtof_rounded:
 	movem.l	(sp)+,d2-d3
 	rts
 
@@ -118,6 +141,19 @@ _dtof_underflow:
 	rts
 
 _dtof_overflow:
+	; double exp >= 255 in single terms: NaN -> single NaN, else signed inf
+	move.l	d2,d1
+	andi.l	#IEEE754_DBL_EXP_MASK_HI,d1
+	cmpi.l	#IEEE754_DBL_EXP_MASK_HI,d1
+	bne.s	_dtof_ovf_inf		; finite overflow -> inf
+	move.l	d2,d1
+	andi.l	#IEEE754_DBL_MANT_MASK_HI,d1
+	or.l	d3,d1
+	beq.s	_dtof_ovf_inf		; inf -> single inf
+	move.l	#SNG_QNAN,d0		; NaN -> single qNaN
+	movem.l	(sp)+,d2-d3
+	rts
+_dtof_ovf_inf:
 	move.l	#SNG_INF,d0
 	move.l	d2,d1
 	andi.l	#IEEE754_SNG_SIGN_MASK,d1

@@ -33,16 +33,6 @@ _fpmultd:
 	andi.l	#IEEE754_DBL_SIGN_MASK_HI,d0
 	move.l	d0,a0			; a0 = result sign
 
-	; --- Handle zeros ---
-	move.l	d2,d0
-	andi.l	#$7FFFFFFF,d0
-	or.l	d3,d0
-	beq	_dpmul_zero
-	move.l	d4,d0
-	andi.l	#$7FFFFFFF,d0
-	or.l	d5,d0
-	beq	_dpmul_zero
-
 	; --- Extract exponents ---
 	move.l	d2,d6
 	andi.l	#IEEE754_DBL_EXP_MASK_HI,d6
@@ -52,11 +42,21 @@ _fpmultd:
 	andi.l	#IEEE754_DBL_EXP_MASK_HI,d7
 	EXTRACT_DBL_EXP d7
 
-	; Handle inf/NaN
+	; --- Handle inf/NaN FIRST so 0*inf and inf*0 -> NaN ---
 	cmpi.l	#2047,d6
-	beq	_dpmul_special
+	beq	_dpmul_a_special
 	cmpi.l	#2047,d7
-	beq	_dpmul_special
+	beq	_dpmul_b_special
+
+	; --- Handle zeros (neither operand is inf/NaN) ---
+	move.l	d2,d0
+	andi.l	#$7FFFFFFF,d0
+	or.l	d3,d0
+	beq	_dpmul_zero
+	move.l	d4,d0
+	andi.l	#$7FFFFFFF,d0
+	or.l	d5,d0
+	beq	_dpmul_zero
 
 	; Result exponent = ea + eb - bias
 	add.l	d7,d6
@@ -86,6 +86,9 @@ _dpmul_loop1:
 	lsr.l	#1,d0
 	roxr.l	#1,d1
 	roxr.l	#1,d6
+	bcc.s	_dpmul_l1s
+	ori.l	#1,d6			; sticky: keep a 1 shifted off the bottom
+_dpmul_l1s:
 	; Shift multiplier right, LSB into carry
 	lsr.l	#1,d5
 	bcc.s	_dpmul_noadd1
@@ -102,6 +105,9 @@ _dpmul_loop2:
 	lsr.l	#1,d0
 	roxr.l	#1,d1
 	roxr.l	#1,d6
+	bcc.s	_dpmul_l2s
+	ori.l	#1,d6
+_dpmul_l2s:
 	lsr.l	#1,d4
 	bcc.s	_dpmul_noadd2
 	add.l	d3,d1
@@ -117,10 +123,35 @@ _dpmul_noadd2:
 	; Shift right 1, increment exponent
 	lsr.l	#1,d0
 	roxr.l	#1,d1
-	move.l	a2,d6
-	addq.l	#1,d6
-	move.l	d6,a2
+	roxr.l	#1,d6			; shift guard, preserve sticky
+	bcc.s	_dpmul_ne_s
+	ori.l	#1,d6
+_dpmul_ne_s:
+	move.l	a2,d7
+	addq.l	#1,d7
+	move.l	d7,a2
 _dpmul_no_extra:
+	; --- Round to nearest even using guard/sticky in d6 ---
+	tst.l	d6
+	bpl.s	_dpmul_rounded		; guard clear -> round down
+	move.l	d6,d7
+	andi.l	#$7FFFFFFF,d7		; sticky bits below the guard
+	bne.s	_dpmul_roundup
+	btst.l	#0,d1			; exactly halfway -> round to even
+	beq.s	_dpmul_rounded
+_dpmul_roundup:
+	addq.l	#1,d1
+	bcc.s	_dpmul_rup_hi
+	addq.l	#1,d0
+_dpmul_rup_hi:
+	btst.l	#21,d0			; mantissa carried out of bit 52?
+	beq.s	_dpmul_rounded
+	lsr.l	#1,d0
+	roxr.l	#1,d1
+	move.l	a2,d7
+	addq.l	#1,d7
+	move.l	d7,a2
+_dpmul_rounded:
 
 	; --- Check exponent bounds ---
 	move.l	a2,d6
@@ -160,7 +191,54 @@ _dpmul_overflow:
 	or.l	d6,d0
 	bra.s	_dpmul_done
 
-_dpmul_special:
+_dpmul_a_special:
+	; a is inf or NaN
+	move.l	DBL_ARG1_HI(a6),d0
+	move.l	DBL_ARG1_LO(a6),d1
+	move.l	d0,d2
+	andi.l	#IEEE754_DBL_MANT_MASK_HI,d2
+	or.l	d1,d2
+	bne	_dpmul_ret_nan		; a is NaN
+	; a is inf: b zero -> NaN, b NaN -> NaN, else signed inf
+	move.l	DBL_ARG2_HI(a6),d2
+	move.l	DBL_ARG2_LO(a6),d3
+	move.l	d2,d4
+	andi.l	#$7FFFFFFF,d4
+	or.l	d3,d4
+	beq	_dpmul_ret_nan		; inf * 0 = NaN
+	move.l	d2,d4
+	andi.l	#IEEE754_DBL_EXP_MASK_HI,d4
+	cmpi.l	#IEEE754_DBL_EXP_MASK_HI,d4
+	bne.s	_dpmul_inf		; b finite -> inf
+	move.l	d2,d4
+	andi.l	#IEEE754_DBL_MANT_MASK_HI,d4
+	or.l	d3,d4
+	bne	_dpmul_ret_nan		; b is NaN -> NaN
+_dpmul_inf:
+	move.l	#DBL_INF_HI,d0
+	moveq	#0,d1
+	move.l	a0,d2
+	or.l	d2,d0			; apply sign
+	bra	_dpmul_done
+
+_dpmul_b_special:
+	; a is finite (a_special not taken); b is inf or NaN
+	move.l	DBL_ARG2_HI(a6),d0
+	move.l	DBL_ARG2_LO(a6),d1
+	move.l	d0,d2
+	andi.l	#IEEE754_DBL_MANT_MASK_HI,d2
+	or.l	d1,d2
+	bne	_dpmul_ret_nan		; b is NaN
+	; b is inf: a zero -> NaN, else signed inf
+	move.l	DBL_ARG1_HI(a6),d2
+	move.l	DBL_ARG1_LO(a6),d3
+	move.l	d2,d4
+	andi.l	#$7FFFFFFF,d4
+	or.l	d3,d4
+	beq	_dpmul_ret_nan		; 0 * inf = NaN
+	bra.s	_dpmul_inf
+
+_dpmul_ret_nan:
 	move.l	#DBL_QNAN_HI,d0
 	move.l	#DBL_QNAN_LO,d1
 	bra	_dpmul_done

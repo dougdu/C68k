@@ -1,0 +1,232 @@
+	title	"IEEE 754 double-precision arcsine / arccosine"
+; ============================================================
+;  _asind — double-precision arcsine
+;  _acosd — double-precision arccosine
+;
+;  double _asind(double x) — returns asin(x) in D0:D1
+;  double _acosd(double x) — returns acos(x) in D0:D1
+;
+;  Built on the accurate _atand and _sqrtd.  Using
+;  s = sqrt((1-|x|)*(1+|x|)) = sqrt(1-x^2) avoids the
+;  cancellation of (1 - x*x) near |x| = 1.
+;
+;    asin(x) = atan( x / s )
+;    acos(x) = atan( s / x )        for x > 0
+;              pi - atan( s / |x| )  for x < 0
+;              pi/2                  for x = 0
+;
+;  Domain:  |x| <= 1.  |x| > 1 (and inf / NaN) -> NaN.
+;  Edges:   asin(+/-1) = +/- pi/2;  acos(1) = 0, acos(-1) = pi.
+; ============================================================
+
+	.model	flat
+	include	ieee754.inc
+	include	ieee754d.inc
+
+	public	_asind, _acosd
+	extern	_fpaddd, _fpsubd, _fpmultd, _fpdivd
+	extern	_sqrtd, _atand
+
+	.code
+
+; --- constants (high:low) ---
+_dac_one	dc.l	$3FF00000,$00000000	; 1.0
+_dac_pi		dc.l	$400921FB,$54442D18	; pi
+_dac_pi_2	dc.l	$3FF921FB,$54442D18	; pi/2
+
+; ============================================================
+;  _asind
+; ============================================================
+_asind:
+	link	a6,#-8			; -8:-4 = t1 = (1 - |x|)
+	movem.l	d2-d5,-(sp)
+	move.l	DBL_ARG1_HI(a6),d2	; x.hi
+	move.l	DBL_ARG1_LO(a6),d3	; x.lo
+	move.l	d2,d4
+	andi.l	#$7FFFFFFF,d4		; |x|.hi
+	move.l	d3,d5			; |x|.lo
+
+	; domain: |x| vs 1.0
+	cmpi.l	#DBL_ONE_HI,d4
+	bhi	_asind_nan		; |x|.hi > 1 -> >1 (or inf / NaN)
+	blt.s	_asind_calc
+	tst.l	d5
+	bne	_asind_nan		; hi == 1, lo != 0 -> |x| > 1
+	bra	_asind_one		; |x| == 1 exactly
+
+_asind_calc:
+	; t1 = 1 - |x|
+	move.l	d5,-(sp)		; arg2.lo = |x|.lo
+	move.l	d4,-(sp)		; arg2.hi = |x|.hi
+	move.l	_dac_one+4(pc),-(sp)	; arg1.lo = 1.lo
+	move.l	_dac_one(pc),-(sp)	; arg1.hi = 1.hi
+	jsr	_fpsubd			; 1 - |x|
+	lea	16(sp),sp
+	move.l	d0,-8(a6)		; save t1.hi
+	move.l	d1,-4(a6)		; save t1.lo
+
+	; t2 = 1 + |x|
+	move.l	d5,-(sp)
+	move.l	d4,-(sp)
+	move.l	_dac_one+4(pc),-(sp)
+	move.l	_dac_one(pc),-(sp)
+	jsr	_fpaddd			; 1 + |x|
+	lea	16(sp),sp
+
+	; prod = t1 * t2 = 1 - x^2
+	move.l	d1,-(sp)		; arg2.lo = t2.lo
+	move.l	d0,-(sp)		; arg2.hi = t2.hi
+	move.l	-4(a6),-(sp)		; arg1.lo = t1.lo
+	move.l	-8(a6),-(sp)		; arg1.hi = t1.hi
+	jsr	_fpmultd
+	lea	16(sp),sp
+
+	; s = sqrt(prod)
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	jsr	_sqrtd
+	addq.l	#8,sp
+
+	; q = x / s
+	move.l	d1,-(sp)		; arg2.lo = s.lo
+	move.l	d0,-(sp)		; arg2.hi = s.hi
+	move.l	DBL_ARG1_LO(a6),-(sp)	; arg1.lo = x.lo
+	move.l	DBL_ARG1_HI(a6),-(sp)	; arg1.hi = x.hi
+	jsr	_fpdivd			; x / s
+	lea	16(sp),sp
+
+	; asind = atand(q)
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	jsr	_atand
+	addq.l	#8,sp
+
+_asind_ret:
+	movem.l	(sp)+,d2-d5
+	unlk	a6
+	rts
+
+_asind_one:
+	; |x| == 1 -> +/- pi/2 (sign of x)
+	move.l	_dac_pi_2(pc),d0
+	move.l	_dac_pi_2+4(pc),d1
+	move.l	DBL_ARG1_HI(a6),d2
+	andi.l	#$80000000,d2
+	or.l	d2,d0			; apply sign of x
+	bra	_asind_ret
+
+_asind_nan:
+	move.l	#DBL_QNAN_HI,d0
+	move.l	#DBL_QNAN_LO,d1
+	bra	_asind_ret
+
+; ============================================================
+;  _acosd
+; ============================================================
+_acosd:
+	link	a6,#-8			; -8:-4 = t1 = (1 - |x|)
+	movem.l	d2-d5,-(sp)
+	move.l	DBL_ARG1_HI(a6),d2	; x.hi
+	move.l	DBL_ARG1_LO(a6),d3	; x.lo
+	move.l	d2,d4
+	andi.l	#$7FFFFFFF,d4		; |x|.hi
+	move.l	d3,d5			; |x|.lo
+
+	cmpi.l	#DBL_ONE_HI,d4
+	bhi	_acosd_nan		; |x| > 1 (or inf / NaN) -> NaN
+	blt.s	_acosd_chkzero
+	tst.l	d5
+	bne	_acosd_nan		; |x| > 1
+	; |x| == 1
+	tst.l	d2
+	bmi	_acosd_pi		; x = -1 -> pi
+	bra	_acosd_zero		; x = +1 -> 0
+
+_acosd_chkzero:
+	move.l	d4,d0
+	or.l	d5,d0
+	beq	_acosd_halfpi		; x == 0 -> pi/2
+
+	; t1 = 1 - |x|
+	move.l	d5,-(sp)
+	move.l	d4,-(sp)
+	move.l	_dac_one+4(pc),-(sp)
+	move.l	_dac_one(pc),-(sp)
+	jsr	_fpsubd			; 1 - |x|
+	lea	16(sp),sp
+	move.l	d0,-8(a6)
+	move.l	d1,-4(a6)
+
+	; t2 = 1 + |x|
+	move.l	d5,-(sp)
+	move.l	d4,-(sp)
+	move.l	_dac_one+4(pc),-(sp)
+	move.l	_dac_one(pc),-(sp)
+	jsr	_fpaddd			; 1 + |x|
+	lea	16(sp),sp
+
+	; prod = t1 * t2 = 1 - x^2
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	move.l	-4(a6),-(sp)
+	move.l	-8(a6),-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+
+	; s = sqrt(prod)
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	jsr	_sqrtd
+	addq.l	#8,sp
+
+	; q = s / |x|  (reload |x| from the stable arg)
+	move.l	DBL_ARG1_LO(a6),d5
+	move.l	DBL_ARG1_HI(a6),d4
+	andi.l	#$7FFFFFFF,d4
+	move.l	d5,-(sp)		; arg2.lo = |x|.lo
+	move.l	d4,-(sp)		; arg2.hi = |x|.hi
+	move.l	d1,-(sp)		; arg1.lo = s.lo
+	move.l	d0,-(sp)		; arg1.hi = s.hi
+	jsr	_fpdivd			; s / |x|
+	lea	16(sp),sp
+
+	; a = atand(s/|x|)
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	jsr	_atand
+	addq.l	#8,sp
+
+	; x > 0 -> acos = a ;  x < 0 -> acos = pi - a
+	move.l	DBL_ARG1_HI(a6),d2
+	bpl	_acosd_ret		; x > 0 (x != 0 here)
+
+	move.l	d1,-(sp)		; arg2.lo = a.lo
+	move.l	d0,-(sp)		; arg2.hi = a.hi
+	move.l	_dac_pi+4(pc),-(sp)	; arg1.lo = pi.lo
+	move.l	_dac_pi(pc),-(sp)	; arg1.hi = pi.hi
+	jsr	_fpsubd			; pi - a
+	lea	16(sp),sp
+
+_acosd_ret:
+	movem.l	(sp)+,d2-d5
+	unlk	a6
+	rts
+
+_acosd_pi:
+	move.l	_dac_pi(pc),d0
+	move.l	_dac_pi+4(pc),d1
+	bra	_acosd_ret
+_acosd_zero:
+	moveq	#0,d0
+	moveq	#0,d1
+	bra	_acosd_ret
+_acosd_halfpi:
+	move.l	_dac_pi_2(pc),d0
+	move.l	_dac_pi_2+4(pc),d1
+	bra	_acosd_ret
+_acosd_nan:
+	move.l	#DBL_QNAN_HI,d0
+	move.l	#DBL_QNAN_LO,d1
+	bra	_acosd_ret
+
+	end

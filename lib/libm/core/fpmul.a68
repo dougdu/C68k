@@ -35,14 +35,6 @@ _fpmultf:
 	andi.l	#IEEE754_SNG_SIGN_MASK,d0
 	move.l	d0,a0			; a0 = result sign (saved)
 
-	; --- Handle zeros ---
-	move.l	d6,d0
-	andi.l	#$7FFFFFFF,d0
-	beq	_mul_return_zero
-	move.l	d7,d0
-	andi.l	#$7FFFFFFF,d0
-	beq	_mul_return_zero
-
 	; --- Extract exponents ---
 	move.l	d6,d2
 	andi.l	#IEEE754_SNG_EXP_MASK,d2
@@ -52,11 +44,19 @@ _fpmultf:
 	andi.l	#IEEE754_SNG_EXP_MASK,d3
 	EXTRACT_EXP d3
 
-	; --- Handle inf/NaN ---
+	; --- Handle inf/NaN FIRST so 0*inf and 0*NaN -> NaN (not 0) ---
 	cmpi.l	#255,d2
 	beq	_mul_a_special
 	cmpi.l	#255,d3
 	beq	_mul_b_special
+
+	; --- Handle zeros (neither operand is inf/NaN at this point) ---
+	move.l	d6,d0
+	andi.l	#$7FFFFFFF,d0
+	beq	_mul_return_zero
+	move.l	d7,d0
+	andi.l	#$7FFFFFFF,d0
+	beq	_mul_return_zero
 
 	; --- Result exponent = ea + eb - bias ---
 	add.l	d3,d2			; d2 = ea + eb
@@ -100,6 +100,11 @@ _fpmultf:
 
 	mulu	d3,d0			; d0 = aH * bH
 
+	; Capture the low 16 product bits (aL*bL[15:0]) that the combine
+	; below discards; they are the round "sticky".  bH (d3) is dead now.
+	move.l	d7,d3
+	andi.l	#$FFFF,d3		; d3 = product bits 15:0 (low sticky)
+
 	; Combine: build bits 47:16 of the 48-bit product in d0
 	; middle_sum = (aL*bL >> 16) + aH*bL + aL*bH
 	swap	d7			; d7 high word = (aL*bL) >> 16
@@ -123,13 +128,42 @@ _fpmultf:
 	; which is bit 30 of our 32-bit d0.  If the product >= 2.0 (both
 	; mantissas large enough), bit 47 → bit 31 is set instead.
 
+	; Fold the discarded low bits (d3) into a single sticky at bit 0.
+	; Bit 0 of d0 is product bit 16, already inside the round/sticky
+	; field, so OR-ing there preserves the guard and mantissa bits.
+	tst.l	d3
+	beq.s	_mul_sticky_done
+	ori.l	#1,d0
+_mul_sticky_done:
 	btst.l	#31,d0			; product >= 2.0?
-	beq.s	_mul_no_extra_shift
-	lsr.l	#8,d0			; shift right 8 → implied bit at 23
+	beq.s	_mul_round7
+	; product in [2,4): shift 8; guard = bit 7, round field = bits 6:0
 	addq.l	#1,d2			; increment exponent
-	bra.s	_mul_check_exp
-_mul_no_extra_shift:
-	lsr.l	#7,d0			; shift right 7 → implied bit at 23
+	move.l	d0,d1
+	lsr.l	#8,d0			; d0 = 24-bit mantissa (implied bit @ 23)
+	andi.l	#$FF,d1			; d1 = guard+round (8 bits)
+	cmpi.l	#$80,d1
+	blo.s	_mul_check_exp		; below half -> truncate
+	bhi.s	_mul_roundup		; above half -> round up
+	btst.l	#0,d0			; exactly half -> round to even
+	beq.s	_mul_check_exp
+	bra.s	_mul_roundup
+_mul_round7:
+	; product in [1,2): shift 7; guard = bit 6, round field = bits 5:0
+	move.l	d0,d1
+	lsr.l	#7,d0			; d0 = 24-bit mantissa (implied bit @ 23)
+	andi.l	#$7F,d1			; d1 = guard+round (7 bits)
+	cmpi.l	#$40,d1
+	blo.s	_mul_check_exp
+	bhi.s	_mul_roundup
+	btst.l	#0,d0
+	beq.s	_mul_check_exp
+_mul_roundup:
+	addq.l	#1,d0			; round up
+	cmpi.l	#$1000000,d0		; mantissa overflowed to 0x1000000?
+	blo.s	_mul_check_exp
+	lsr.l	#1,d0			; renormalize
+	addq.l	#1,d2			; bump exponent
 
 _mul_check_exp:
 	; Check exponent bounds
@@ -171,10 +205,12 @@ _mul_a_special:
 	move.l	d6,d0
 	andi.l	#IEEE754_SNG_MANT_MASK,d0
 	bne.s	_mul_nan		; a is NaN
-	; a is inf: inf * 0 = NaN, inf * finite = inf, inf * inf = inf
+	; a is inf: inf * 0 = NaN, inf * NaN = NaN, inf * finite/inf = inf
 	move.l	d7,d0
-	andi.l	#$7FFFFFFF,d0
+	andi.l	#$7FFFFFFF,d0		; d0 = |b|
 	beq.s	_mul_nan		; inf * 0 = NaN
+	cmpi.l	#SNG_INF,d0		; |b| > inf  =>  b is NaN
+	bhi.s	_mul_nan		; inf * NaN = NaN
 	move.l	#SNG_INF,d0
 	move.l	a0,d1
 	or.l	d1,d0

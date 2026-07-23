@@ -28,18 +28,6 @@ _fpdivd:
 	andi.l	#IEEE754_DBL_SIGN_MASK_HI,d0
 	move.l	d0,a0
 
-	; Handle zero dividend
-	move.l	d2,d0
-	andi.l	#$7FFFFFFF,d0
-	or.l	d3,d0
-	beq	_dpdiv_zero
-
-	; Handle zero divisor
-	move.l	d4,d0
-	andi.l	#$7FFFFFFF,d0
-	or.l	d5,d0
-	beq	_dpdiv_inf
-
 	; Extract exponents
 	move.l	d2,d6
 	andi.l	#IEEE754_DBL_EXP_MASK_HI,d6
@@ -49,11 +37,21 @@ _fpdivd:
 	andi.l	#IEEE754_DBL_EXP_MASK_HI,d7
 	EXTRACT_DBL_EXP d7
 
-	; Handle inf/NaN
+	; --- Handle inf/NaN FIRST (so 0/0, inf/inf -> NaN) ---
 	cmpi.l	#2047,d6
-	beq	_dpdiv_special
+	beq	_dpdiv_a_special
 	cmpi.l	#2047,d7
-	beq	_dpdiv_special
+	beq	_dpdiv_b_special
+
+	; --- Zeros ---
+	move.l	d2,d0
+	andi.l	#$7FFFFFFF,d0
+	or.l	d3,d0
+	beq	_dpdiv_a_zero		; 0 / x
+	move.l	d4,d0
+	andi.l	#$7FFFFFFF,d0
+	or.l	d5,d0
+	beq	_dpdiv_inf		; x / 0 = inf (x nonzero finite)
 
 	; Result exponent = ea - eb + bias
 	sub.l	d7,d6
@@ -67,13 +65,24 @@ _fpdivd:
 	andi.l	#IEEE754_DBL_MANT_MASK_HI,d4
 	ori.l	#IEEE754_DBL_IMPLIED_BIT_HI,d4
 
-	; --- Restoring division: 53 iterations ---
-	; Dividend = d2:d3, Divisor = d4:d5
-	; Quotient built in d0:d1
+	; --- Pre-align so dividend >= divisor (quotient in [1,2)) ---
+	cmp.l	d4,d2
+	bhi.s	_dpdiv_go
+	bcs.s	_dpdiv_prealign
+	cmp.l	d5,d3
+	bcc.s	_dpdiv_go		; dividend >= divisor
+_dpdiv_prealign:
+	lsl.l	#1,d3
+	roxl.l	#1,d2			; dividend <<= 1
+	move.l	a2,d6
+	subq.l	#1,d6
+	move.l	d6,a2			; result exp -= 1
+_dpdiv_go:
+
+	; --- Restoring division: 54 iterations (53 mantissa + 1 guard bit) ---
 	moveq	#0,d0
 	moveq	#0,d1
-
-	moveq	#53,d7			; iteration count (using d7 as counter)
+	moveq	#54,d7
 
 _dpdiv_loop:
 	; Shift quotient left 1
@@ -93,35 +102,40 @@ _dpdiv_sub:
 	ori.l	#1,d1			; set quotient bit
 
 _dpdiv_nosub:
-	; Shift dividend left 1
+	; Shift dividend (remainder) left 1
 	lsl.l	#1,d3
 	roxl.l	#1,d2
 
 	subq.l	#1,d7
 	bne.s	_dpdiv_loop
 
-	; d0:d1 = 53-bit quotient
-	; The implied bit should be at bit 20 of d0 (position 52 of the 64-bit pair)
-	; After 53 iterations starting with aligned mantissas, the quotient's
-	; MSB is at bit 52 (position 20 of d0). It may need normalization.
+	; d0:d1 = 54-bit quotient: implied bit at bit 53 (bit 21 of d0),
+	; guard = bit 0; remainder d2:d3 != 0 => sticky.  (d4:d5 divisor dead.)
+	move.l	d1,d4
+	andi.l	#1,d4			; d4 = guard bit
+	move.l	d2,d5
+	or.l	d3,d5			; d5 != 0 => sticky
+	lsr.l	#1,d0			; drop guard -> implied at bit 20 of d0
+	roxr.l	#1,d1
 
-	btst.l	#21,d0			; quotient >= 2?
-	beq.s	_dpdiv_norm_check
-	; Shift right 1
+	; --- Round to nearest even ---
+	tst.l	d4			; guard set?
+	beq.s	_dpdiv_pack
+	tst.l	d5			; sticky?
+	bne.s	_dpdiv_roundup
+	btst.l	#0,d1			; exactly halfway -> round to even
+	beq.s	_dpdiv_pack
+_dpdiv_roundup:
+	addq.l	#1,d1
+	bcc.s	_dpdiv_rup_hi
+	addq.l	#1,d0
+_dpdiv_rup_hi:
+	btst.l	#21,d0			; carried out of bit 52?
+	beq.s	_dpdiv_pack
 	lsr.l	#1,d0
 	roxr.l	#1,d1
 	move.l	a2,d6
 	addq.l	#1,d6
-	move.l	d6,a2
-
-_dpdiv_norm_check:
-	; Normalize if needed
-	btst.l	#20,d0
-	bne.s	_dpdiv_pack
-	lsl.l	#1,d1
-	roxl.l	#1,d0
-	move.l	a2,d6
-	subq.l	#1,d6
 	move.l	d6,a2
 
 _dpdiv_pack:
@@ -166,7 +180,53 @@ _dpdiv_overflow:
 	or.l	d6,d0
 	bra.s	_dpdiv_done
 
-_dpdiv_special:
+_dpdiv_a_special:
+	; a is inf or NaN
+	move.l	DBL_ARG1_HI(a6),d0
+	move.l	DBL_ARG1_LO(a6),d1
+	move.l	d0,d2
+	andi.l	#IEEE754_DBL_MANT_MASK_HI,d2
+	or.l	d1,d2
+	bne	_dpdiv_ret_nan		; a is NaN
+	; a is inf: b inf/NaN -> NaN; b finite -> signed inf
+	move.l	DBL_ARG2_HI(a6),d2
+	andi.l	#IEEE754_DBL_EXP_MASK_HI,d2
+	cmpi.l	#IEEE754_DBL_EXP_MASK_HI,d2
+	beq	_dpdiv_ret_nan		; inf/inf or inf/NaN = NaN
+	move.l	#DBL_INF_HI,d0
+	moveq	#0,d1
+	move.l	a0,d2
+	or.l	d2,d0			; signed inf
+	bra	_dpdiv_done
+
+_dpdiv_b_special:
+	; a finite, b is inf or NaN
+	move.l	DBL_ARG2_HI(a6),d0
+	move.l	DBL_ARG2_LO(a6),d1
+	move.l	d0,d2
+	andi.l	#IEEE754_DBL_MANT_MASK_HI,d2
+	or.l	d1,d2
+	bne	_dpdiv_ret_nan		; b is NaN
+	; b is inf: finite / inf = signed 0
+	moveq	#0,d0
+	moveq	#0,d1
+	move.l	a0,d2
+	or.l	d2,d0
+	bra	_dpdiv_done
+
+_dpdiv_a_zero:
+	; a is zero: 0/0 -> NaN; 0/finite -> signed 0
+	move.l	d4,d0
+	andi.l	#$7FFFFFFF,d0
+	or.l	d5,d0
+	beq	_dpdiv_ret_nan		; 0 / 0 = NaN
+	moveq	#0,d0
+	moveq	#0,d1
+	move.l	a0,d2
+	or.l	d2,d0			; signed zero
+	bra	_dpdiv_done
+
+_dpdiv_ret_nan:
 	move.l	#DBL_QNAN_HI,d0
 	move.l	#DBL_QNAN_LO,d1
 	bra	_dpdiv_done

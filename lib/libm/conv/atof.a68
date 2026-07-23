@@ -47,6 +47,13 @@ _atof_skipsign:
 
 	; Parse integer digits
 _atof_digits:
+	; "inf"/"infinity" -> +/-inf, "nan" -> NaN (BUG-0028)
+	move.b	(a0),d0
+	andi.b	#$DF,d0			; fold an ASCII letter to uppercase
+	cmpi.b	#'I',d0
+	beq	_atof_inf
+	cmpi.b	#'N',d0
+	beq	_atof_nan
 	clr.l	d7			; d7 = accumulated number (float)
 	clr.l	d6			; d6 = exponent adjustment
 	clr.l	d4			; d4 = digit count
@@ -233,5 +240,15 @@ _atof_done:
 	movem.l	(sp)+,a0
 	unlk	a6
 	rts
+
+_atof_inf:
+	move.l	#SNG_INF,d7
+	tst.l	d5			; apply sign
+	beq.s	_atof_done
+	ori.l	#$80000000,d7		; -inf
+	bra.s	_atof_done
+_atof_nan:
+	move.l	#SNG_QNAN,d7		; NaN (sign-independent)
+	bra.s	_atof_done
 
 	end

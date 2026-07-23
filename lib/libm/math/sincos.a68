@@ -18,6 +18,8 @@
 	public	_sin, _sinf, _cos, _cosf
 	extern	_fpadd, _fpsub, _fpmult, _fpdiv, _fpneg, _fmod
 	extern	_fpftol, _fpltof
+	; double-precision ops for the range reduction (library is consolidated)
+	extern	_fpftod, _fpdtof, _fpmultd, _fpaddd, _fpsubd, _fpdtol, _fpltod
 
 	.code
 
@@ -27,86 +29,134 @@ _sc_pi_over_2	dc.l	$3FC90FDB	; pi/2 = 1.570796327
 _sc_one		dc.l	SNG_ONE		; 1.0
 _sc_neg_one	dc.l	$BF800000	; -1.0
 
+; Double constants for the range reduction (BUG-0021: large-arg accuracy)
+_sc_2opi_d	dc.l	$3FE45F30,$6DC9C883	; 2/pi
+_sc_pio2hi_d	dc.l	$3FF921FB,$54400000	; pi/2 hi (low mantissa zero, k*hi exact)
+_sc_pio2lo_d	dc.l	$3DD0B461,$1A626331	; pi/2 lo
+
 ; Sine polynomial coefficients: x - x³/3! + x⁵/5! - x⁷/7!
 _sc_s1		dc.l	$BF800000	; this is a placeholder structure
 ; Actually we compute Horner form: x*(1 + x²*(-1/6 + x²*(1/120 + x²*(-1/5040))))
 _sc_c3		dc.l	$BE2AAAAB	; -1/6     = -0.166666667
 _sc_c5		dc.l	$3C088889	;  1/120   =  0.008333333
 _sc_c7		dc.l	$B9500D01	; -1/5040  = -0.000198413
+_sc_c9		dc.l	$3638EF1D	;  1/362880 (BUG-0021: extend to ~1 ULP)
 
 ; Cosine polynomial coefficients: 1 - x²/2! + x⁴/4! - x⁶/6!
 _sc_c2		dc.l	$BF000000	; -1/2     = -0.5
 _sc_c4		dc.l	$3D2AAAAB	;  1/24    =  0.041666667
 _sc_c6		dc.l	$BAB60B61	; -1/720   = -0.001388889
+_sc_c8		dc.l	$37D00D01	;  1/40320 (BUG-0021: extend to ~1 ULP)
 
 ; ============================================================
-;  _cos — compute cos(x) = sin(x + pi/2)
+;  _cos — cos(x) = sin(x + pi/2): reduce x directly and shift the quadrant by 1
+;  (adding pi/2 to x in single precision lost bits for large x)
 ; ============================================================
 _cos:
 _cosf:
-	link	a6,#0
-	; cos(x) = sin(x + pi/2)
-	move.l	_sc_pi_over_2(pc),-(sp)	; push pi/2
-	move.l	8(a6),-(sp)		; push x
-	jsr	_fpadd			; d0 = x + pi/2
-	addq.l	#8,sp
-	move.l	d0,8(a6)		; replace x with x+pi/2
-	unlk	a6
-	; Fall through to sin
+	link	a6,#-24			; -4=r -8=k -16=xd -24=kd
+	movem.l	d2-d5,-(sp)
+	moveq	#1,d5			; cos: quadrant += 1
+	bra.s	_sc_common
 
 ; ============================================================
 ;  _sin — compute sin(x)
 ; ============================================================
 _sin:
 _sinf:
-	link	a6,#-8			; local: -4(a6)=reduced x, -8(a6)=quadrant
-	movem.l	d2-d4,-(sp)
-
+	link	a6,#-24			; -4=r(single) -8=k -16=xd(double) -24=kd(double)
+	movem.l	d2-d5,-(sp)
+	moveq	#0,d5			; sin: no quadrant shift
+_sc_common:
 	move.l	8(a6),d2		; d2 = x
 
-	; Handle zero
+	; sin/cos(+/-inf) = NaN, sin/cos(NaN) = NaN (BUG-0013)
+	move.l	d2,d0
+	andi.l	#$7FFFFFFF,d0
+	cmpi.l	#SNG_INF,d0
+	bge	_sin_return_nan		; |x| >= inf pattern (inf or NaN) -> NaN
+
+	; Handle zero -- sin only (sin(0)=0, sin(tiny)~tiny).  cos goes through the
+	; reduction so cos(0)=1 comes out of the quadrant-1 poly on r=0.
+	tst.l	d5
+	bne.s	_sc_reduce
 	move.l	d2,d0
 	andi.l	#$7FFFFFFF,d0
 	beq	_sin_return_x		; sin(0) = 0
+_sc_reduce:
 
-	; --- Range reduction: find quadrant ---
-	; k = round(x / (pi/2)), r = x - k*(pi/2)
-	; Compute x * (2/pi)
-	move.l	_sc_two_over_pi(pc),-(sp)
-	move.l	d2,-(sp)
-	jsr	_fpmult			; d0 = x * 2/pi
-	addq.l	#8,sp
-
-	; Round to nearest integer: add 0.5 (or subtract if negative), then truncate
-	move.l	d0,d3			; save
-	move.l	d0,d4
-	andi.l	#IEEE754_SNG_SIGN_MASK,d4 ; d4 = sign of x*2/pi
-	move.l	#SNG_HALF,d0
-	or.l	d4,d0			; ±0.5 with same sign
-	move.l	d0,-(sp)
-	move.l	d3,-(sp)
-	jsr	_fpadd			; d0 = x*2/pi ± 0.5
-	addq.l	#8,sp
-
-	; Truncate to integer
-	move.l	d0,-(sp)
-	jsr	_fpftol			; d0 = k (integer quadrant)
+	; --- Range reduction in DOUBLE precision (Cody-Waite) ---
+	; The old single-precision k*(pi/2) lost low bits for large |x|, wrecking
+	; sin/cos of large arguments (BUG-0021).  Reduce in double: xd=(double)x,
+	; k=round(xd*2/pi), r=((xd - k*PIO2_HI) - k*PIO2_LO), narrowed to single.
+	move.l	d2,-(sp)		; xd = (double)x  -> -16(a6)
+	jsr	_fpftod
 	addq.l	#4,sp
+	move.l	d0,-16(a6)
+	move.l	d1,-12(a6)
+	; t = xd * (2/pi)
+	move.l	_sc_2opi_d+4(pc),-(sp)
+	move.l	_sc_2opi_d(pc),-(sp)
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	; k = round(t) = (int)(t + copysign(0.5, t))
+	move.l	d0,d3
+	andi.l	#$80000000,d3		; sign of t (hi longword)
+	move.l	#$3FE00000,d4		; 0.5 hi
+	or.l	d3,d4			; +/-0.5 hi
+	move.l	#0,-(sp)		; 0.5 lo
+	move.l	d4,-(sp)		; +/-0.5 hi
+	move.l	d1,-(sp)		; t.lo
+	move.l	d0,-(sp)		; t.hi
+	jsr	_fpaddd
+	lea	16(sp),sp
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpdtol			; k (integer quadrant)
+	addq.l	#8,sp
 	move.l	d0,-8(a6)		; save k
-
-	; Compute r = x - k * (pi/2)
+	; kd = (double)k  -> -24(a6)
 	move.l	d0,-(sp)
-	jsr	_fpltof			; d0 = float(k)
+	jsr	_fpltod
 	addq.l	#4,sp
-	move.l	_sc_pi_over_2(pc),-(sp)
+	move.l	d0,-24(a6)
+	move.l	d1,-20(a6)
+	; w = xd - kd*PIO2_HI
+	move.l	_sc_pio2hi_d+4(pc),-(sp)
+	move.l	_sc_pio2hi_d(pc),-(sp)
+	move.l	-20(a6),-(sp)
+	move.l	-24(a6),-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	d1,-(sp)
 	move.l	d0,-(sp)
-	jsr	_fpmult			; d0 = k * pi/2
+	move.l	-12(a6),-(sp)		; xd.lo
+	move.l	-16(a6),-(sp)		; xd.hi
+	jsr	_fpsubd
+	lea	16(sp),sp
+	move.l	d0,-16(a6)		; w -> reuse xd slot
+	move.l	d1,-12(a6)
+	; r = w - kd*PIO2_LO
+	move.l	_sc_pio2lo_d+4(pc),-(sp)
+	move.l	_sc_pio2lo_d(pc),-(sp)
+	move.l	-20(a6),-(sp)
+	move.l	-24(a6),-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	move.l	-12(a6),-(sp)		; w.lo
+	move.l	-16(a6),-(sp)		; w.hi
+	jsr	_fpsubd
+	lea	16(sp),sp
+	; r = (single)r_double
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpdtof
 	addq.l	#8,sp
-	move.l	d0,-(sp)		; push k*pi/2
-	move.l	d2,-(sp)		; push x
-	jsr	_fpsub			; d0 = x - k*pi/2 = r
-	addq.l	#8,sp
-	move.l	d0,-4(a6)		; save r
+	move.l	d0,-4(a6)		; save r (single)
 
 	; --- Compute x² = r² ---
 	move.l	d0,-(sp)
@@ -115,19 +165,30 @@ _sinf:
 	addq.l	#8,sp
 	move.l	d0,d3			; d3 = x²
 
-	; --- Determine which polynomial based on k mod 4 ---
+	; --- Determine which polynomial based on (k + cos flag) mod 4 ---
 	move.l	-8(a6),d4		; k
-	andi.l	#3,d4			; k mod 4
+	add.l	d5,d4			; + cos quadrant shift (d5 = 0 sin / 1 cos)
+	andi.l	#3,d4			; mod 4
 
 	; quadrant 0,2: use sin polynomial on r
 	; quadrant 1,3: use cos polynomial on r
 	btst.l	#0,d4
 	bne	_sin_use_cos_poly
 
-	; --- Sin polynomial: r * (1 + x²*(-1/6 + x²*(1/120 + x²*(-1/5040)))) ---
+	; --- Sin polynomial: r * (1 + x²*(-1/6 + x²*(1/120 + x²*(-1/5040 + x²/362880)))) ---
 	; Horner: start from innermost
-	; t = -1/5040
-	move.l	_sc_c7(pc),d2
+	; t = 1/362880
+	move.l	_sc_c9(pc),d2
+	; t = -1/5040 + x²*t
+	move.l	d3,-(sp)
+	move.l	d2,-(sp)
+	jsr	_fpmult
+	addq.l	#8,sp
+	move.l	_sc_c7(pc),-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpadd
+	addq.l	#8,sp
+	move.l	d0,d2
 
 	; t = 1/120 + x²*t
 	move.l	d3,-(sp)		; push x²
@@ -169,9 +230,19 @@ _sinf:
 	bra	_sin_apply_sign
 
 _sin_use_cos_poly:
-	; --- Cos polynomial: 1 + x²*(-1/2 + x²*(1/24 + x²*(-1/720))) ---
-	; t = -1/720
-	move.l	_sc_c6(pc),d2
+	; --- Cos polynomial: 1 + x²*(-1/2 + x²*(1/24 + x²*(-1/720 + x²/40320))) ---
+	; t = 1/40320
+	move.l	_sc_c8(pc),d2
+	; t = -1/720 + x²*t
+	move.l	d3,-(sp)
+	move.l	d2,-(sp)
+	jsr	_fpmult
+	addq.l	#8,sp
+	move.l	_sc_c6(pc),-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpadd
+	addq.l	#8,sp
+	move.l	d0,d2
 
 	; t = 1/24 + x²*t
 	move.l	d3,-(sp)
@@ -207,8 +278,9 @@ _sin_use_cos_poly:
 	; d0 = cos(r) — already the result
 
 _sin_apply_sign:
-	; Negate if quadrant 2 or 3
+	; Negate if (k + cos flag) mod 4 is 2 or 3
 	move.l	-8(a6),d4
+	add.l	d5,d4
 	andi.l	#3,d4
 	cmpi.l	#2,d4
 	blt.s	_sin_done
@@ -216,13 +288,19 @@ _sin_apply_sign:
 	eori.l	#IEEE754_SNG_SIGN_MASK,d0
 
 _sin_done:
-	movem.l	(sp)+,d2-d4
+	movem.l	(sp)+,d2-d5
 	unlk	a6
 	rts
 
 _sin_return_x:
 	move.l	d2,d0			; sin(0) = 0, sin(tiny) ≈ tiny
-	movem.l	(sp)+,d2-d4
+	movem.l	(sp)+,d2-d5
+	unlk	a6
+	rts
+
+_sin_return_nan:
+	move.l	#SNG_QNAN,d0
+	movem.l	(sp)+,d2-d5
 	unlk	a6
 	rts
 

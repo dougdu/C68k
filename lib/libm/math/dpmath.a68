@@ -31,6 +31,9 @@ _d_neg_one	dc.l	$BFF00000,$00000000
 
 _d_pi_2		dc.l	$3FF921FB,$54442D18
 _d_pi_4		dc.l	$3FE921FB,$54442D18
+; Cody-Waite split of pi/2 (hi has low mantissa bits zero so k*hi is exact) -- BUG-0021
+_d_pio2_hi	dc.l	$3FF921FB,$54400000
+_d_pio2_lo	dc.l	$3DD0B461,$1A626331
 _d_two_over_pi	dc.l	$3FE45F30,$6DC9C883
 
 ; Sin coefficients: x*(1 + x²*(s1 + x²*(s2 + ...)))
@@ -39,6 +42,8 @@ _d_s2		dc.l	$3F811111,$1110F8A6	;  1/5!
 _d_s3		dc.l	$BF2A01A0,$19C161D5	; -1/7!
 _d_s4		dc.l	$3EC71DE3,$A556C734	;  1/9!
 _d_s5		dc.l	$BE5AE5E6,$8A2B9CEB	; -1/11!
+_d_s6		dc.l	$3DE61246,$13A86D09	;  1/13! (BUG-0021: extend to ~1 ULP)
+_d_s7		dc.l	$BD6AE7F3,$E733B81F	; -1/15!
 
 ; Cos coefficients: 1 + x²*(c1 + x²*(c2 + ...))
 _d_c1		dc.l	$BFE00000,$00000000	; -1/2!
@@ -46,15 +51,25 @@ _d_c2		dc.l	$3FA55555,$55555555	;  1/4!
 _d_c3		dc.l	$BF56C16C,$16C15177	; -1/6!
 _d_c4		dc.l	$3EFA01A0,$19CB1590	;  1/8!
 _d_c5		dc.l	$BE927E4F,$B7789F5C	; -1/10!
+_d_c6		dc.l	$3E21EED8,$EFF8D898	;  1/12! (BUG-0021: extend to ~1 ULP)
+_d_c7		dc.l	$BDA93974,$A8C07C9D	; -1/14!
+_d_c8		dc.l	$3D2AE7F3,$E733B81F	;  1/16!
 
 ; Atan constants
 _d_tan_pi8	dc.l	$3FDA8279,$9E3C0424	; sqrt(2)-1
-_d_at1		dc.l	$BFD55555,$55555550	; -1/3
-_d_at2		dc.l	$3FC99999,$9999999A	;  1/5
-_d_at3		dc.l	$BFC24924,$92492492	; -1/7
-_d_at4		dc.l	$3FBC71C7,$1C71C71C	;  1/9
-_d_at5		dc.l	$BFB745D1,$745D1746	; -1/11
-_d_at6		dc.l	$3FB3B13B,$13B13B14	;  1/13
+; atan(u) = u*(1 + at1*u^2 + ...): fdlibm minimax coefficients (-aT[k]), double
+; grade over |u| <= tan(pi/8) -- BUG-0021 (was 6-term Taylor = single grade)
+_d_at1		dc.l	$BFD55555,$5555550D	; -aT[0]
+_d_at2		dc.l	$3FC99999,$9998EBC4	; -aT[1]
+_d_at3		dc.l	$BFC24924,$920083FF	; -aT[2]
+_d_at4		dc.l	$3FBC71C6,$FE231671	; -aT[3]
+_d_at5		dc.l	$BFB745CD,$C54C206E	; -aT[4]
+_d_at6		dc.l	$3FB3B0F2,$AF749A6D	; -aT[5]
+_d_at7		dc.l	$BFB10D66,$A0D03D51	; -aT[6]
+_d_at8		dc.l	$3FADDE2D,$52DEFD9A	; -aT[7]
+_d_at9		dc.l	$BFA97B4B,$24760DEB	; -aT[8]
+_d_at10		dc.l	$3FA2B444,$2C6A6C2F	; -aT[9]
+_d_at11		dc.l	$BF90AD3A,$E322DA11	; -aT[10]
 
 ; Exp constants
 _d_inv_ln2	dc.l	$3FF71547,$652B82FE	; 1/ln(2)
@@ -65,6 +80,13 @@ _d_e3		dc.l	$3FA55555,$55555555	; 1/4!
 _d_e4		dc.l	$3F811111,$11111111	; 1/5!
 _d_e5		dc.l	$3F56C16C,$16C16C17	; 1/6!
 _d_e6		dc.l	$3F2A01A0,$1A01A01A	; 1/7!
+; extended to double precision (Taylor to r^13, ~1 ULP over |r|<=ln2/2) -- BUG-0021
+_d_e7		dc.l	$3EFA01A0,$1A01A01A	; 1/8!
+_d_e8		dc.l	$3EC71DE3,$A556C734	; 1/9!
+_d_e9		dc.l	$3E927E4F,$B7789F5C	; 1/10!
+_d_e10		dc.l	$3E5AE645,$67F544E4	; 1/11!
+_d_e11		dc.l	$3E21EED8,$EFF8D898	; 1/12!
+_d_e12		dc.l	$3DE61246,$13A86D09	; 1/13!
 
 ; Log constants
 _d_l1		dc.l	$3FD55555,$55555555	; 1/3
@@ -91,20 +113,16 @@ _floord:
 	cmpi.l	#IEEE754_DBL_EXP_BIAS,d4
 	blt.s	_floord_small
 
-	move.l	d3,-(sp)
-	move.l	d2,-(sp)
-	jsr	_fpdtol
-	addq.l	#8,sp
-	move.l	d0,d5
-	move.l	d0,-(sp)
-	jsr	_fpltod
-	addq.l	#4,sp
+	; trunc(x) toward zero via an in-place mantissa mask (BUG-0023: this used
+	; to round-trip through the 32-bit _fpdtol, which overflowed for
+	; 2^31 <= |x| < 2^52).  _dptrunc preserves d2:d3 (= x).
+	bsr	_dptrunc		; d0:d1 = trunc(x)
 	tst.l	d2
-	bpl.s	_floord_done
+	bpl.s	_floord_done		; x >= 0 -> floor = trunc(x)
 	cmp.l	d2,d0
 	bne.s	_floord_sub1
 	cmp.l	d3,d1
-	beq.s	_floord_done
+	beq.s	_floord_done		; x is an exact integer -> floor = x
 _floord_sub1:
 	move.l	_d_one+4(pc),-(sp)
 	move.l	_d_one(pc),-(sp)
@@ -121,6 +139,10 @@ _floord_int:
 	move.l	d3,d1
 	bra.s	_floord_done
 _floord_small:
+	move.l	d2,d0
+	andi.l	#$7FFFFFFF,d0
+	or.l	d3,d0
+	beq.s	_floord_ret_x		; x = +/-0 -> return x (floor(-0) = -0)
 	tst.l	d2
 	bpl.s	_floord_z
 	move.l	_d_neg_one(pc),d0
@@ -129,6 +151,10 @@ _floord_small:
 _floord_z:
 	moveq	#0,d0
 	moveq	#0,d1
+	bra.s	_floord_done
+_floord_ret_x:
+	move.l	d2,d0
+	move.l	d3,d1
 	bra.s	_floord_done
 
 
@@ -154,37 +180,81 @@ _ceild:
 ; ============================================================
 _fmodd:
 	link	a6,#0
-	movem.l	d2-d5,-(sp)
+	movem.l	d2-d7,-(sp)
 	move.l	DBL_ARG1_HI(a6),d2
 	move.l	DBL_ARG1_LO(a6),d3
 	move.l	DBL_ARG2_HI(a6),d4
 	move.l	DBL_ARG2_LO(a6),d5
-	move.l	d5,-(sp)
-	move.l	d4,-(sp)
-	move.l	d3,-(sp)
+	andi.l	#$7FFFFFFF,d2		; r = |x| (hi:lo = d2:d3)
+	andi.l	#$7FFFFFFF,d4		; b = |y| (hi:lo = d4:d5)
+
+	; --- special values (guarantee termination; exact remainder, BUG-0024) ---
+	move.l	d4,d0
+	or.l	d5,d0
+	beq	_fmodd_nan		; fmod(x, 0) = NaN
+	move.l	d2,d0
+	cmpi.l	#$7FF00000,d0
+	bge	_fmodd_nan		; |x| exp all-ones -> inf or NaN -> NaN
+	move.l	d4,d0
+	cmpi.l	#$7FF00000,d0
+	bhi	_fmodd_nan		; y NaN -> NaN
+	blt.s	_fmodd_yok
+	tst.l	d5
+	bne	_fmodd_nan		; y NaN (hi all-ones, lo != 0)
+	bra	_fmodd_retx		; y = +/-inf -> fmod(x, inf) = x
+_fmodd_yok:
+	; |x| < |y| ?  (64-bit unsigned) -> remainder is x
+	cmp.l	d4,d2
+	bhi.s	_fmodd_reduce
+	bcs	_fmodd_retx
+	cmp.l	d5,d3
+	bcs	_fmodd_retx
+
+_fmodd_reduce:
+	move.l	d4,d6			; sb = b
+	move.l	d5,d7
+_fmodd_scale:
+	move.l	d6,d0
+	add.l	#$00100000,d0		; sb2 = sb * 2 (double exponent field + 1)
+	move.l	d7,d1
+	cmp.l	d2,d0			; sb2 > r ?
+	bhi.s	_fmodd_sub
+	bcs.s	_fmodd_scale_lt
+	cmp.l	d3,d1
+	bhi.s	_fmodd_sub
+_fmodd_scale_lt:
+	move.l	d0,d6			; sb *= 2
+	move.l	d1,d7
+	bra.s	_fmodd_scale
+_fmodd_sub:
+	move.l	d7,-(sp)		; sb
+	move.l	d6,-(sp)
+	move.l	d3,-(sp)		; r
 	move.l	d2,-(sp)
-	jsr	_fpdivd
+	jsr	_fpsubd			; r - sb  (Sterbenz-exact)
 	lea	16(sp),sp
-	move.l	d1,-(sp)
-	move.l	d0,-(sp)
-	jsr	_fpdtol
-	addq.l	#8,sp
-	move.l	d0,-(sp)
-	jsr	_fpltod
-	addq.l	#4,sp
-	move.l	d5,-(sp)
-	move.l	d4,-(sp)
-	move.l	d1,-(sp)
-	move.l	d0,-(sp)
-	jsr	_fpmultd
-	lea	16(sp),sp
-	move.l	d1,-(sp)
-	move.l	d0,-(sp)
-	move.l	d3,-(sp)
-	move.l	d2,-(sp)
-	jsr	_fpsubd
-	lea	16(sp),sp
-	movem.l	(sp)+,d2-d5
+	move.l	d0,d2			; r = r - sb
+	move.l	d1,d3
+	cmp.l	d4,d2			; r >= b ?
+	bhi.s	_fmodd_reduce
+	bcs.s	_fmodd_done
+	cmp.l	d5,d3
+	bcc.s	_fmodd_reduce
+_fmodd_done:
+	move.l	DBL_ARG1_HI(a6),d0
+	andi.l	#$80000000,d0		; sign of x
+	or.l	d2,d0
+	move.l	d3,d1
+	bra.s	_fmodd_ret
+_fmodd_retx:
+	move.l	DBL_ARG1_HI(a6),d0
+	move.l	DBL_ARG1_LO(a6),d1
+	bra.s	_fmodd_ret
+_fmodd_nan:
+	move.l	#DBL_QNAN_HI,d0
+	move.l	#DBL_QNAN_LO,d1
+_fmodd_ret:
+	movem.l	(sp)+,d2-d7
 	unlk	a6
 	rts
 
@@ -195,17 +265,27 @@ _fmodd:
 ; ============================================================
 _modfd:
 	link	a6,#0
-	movem.l	d2-d3/a2,-(sp)
+	movem.l	d2-d3/a0/a2,-(sp)	; a0 is used below as a scratch stash, so save it
 	move.l	DBL_ARG1_HI(a6),d2
 	move.l	DBL_ARG1_LO(a6),d3
 	movea.l	DBL_ARG2_HI(a6),a2
-	move.l	d3,-(sp)
-	move.l	d2,-(sp)
-	jsr	_fpdtol
-	addq.l	#8,sp
-	move.l	d0,-(sp)
-	jsr	_fpltod
-	addq.l	#4,sp
+	; ipart = trunc(x) via an in-place mantissa mask (BUG-0023: this used to
+	; round-trip through the 32-bit _fpdtol, which overflowed at |x| >= 2^31).
+	; _dptrunc preserves d2:d3 (= x) and a2 (= &ipart).
+	bsr	_dptrunc		; d0:d1 = trunc(x)
+	; ipart keeps x's sign even when its magnitude is 0 (BUG-0025):
+	; dtol/ltod drop the sign of a zero.  Only the zero case is touched.
+	move.l	d0,a0			; save hi
+	andi.l	#$7FFFFFFF,d0
+	or.l	d1,d0			; (|hi| | lo) == 0  iff ipart is +/-0
+	bne.s	_modfd_ip_nz
+	move.l	d2,d0			; ipart = 0 with x's sign
+	andi.l	#$80000000,d0
+	moveq	#0,d1
+	bra.s	_modfd_ip_done
+_modfd_ip_nz:
+	move.l	a0,d0			; restore hi (lo unchanged)
+_modfd_ip_done:
 	move.l	d0,(a2)
 	move.l	d1,4(a2)
 	move.l	d1,-(sp)
@@ -214,8 +294,69 @@ _modfd:
 	move.l	d2,-(sp)
 	jsr	_fpsubd
 	lea	16(sp),sp
-	movem.l	(sp)+,d2-d3/a2
+	; fraction keeps x's sign even when it is 0 (BUG-0025)
+	move.l	d0,a0			; save hi
+	andi.l	#$7FFFFFFF,d0
+	or.l	d1,d0
+	bne.s	_modfd_fr_nz
+	move.l	d2,d0			; frac = 0 with x's sign
+	andi.l	#$80000000,d0
+	moveq	#0,d1
+	bra.s	_modfd_fr_done
+_modfd_fr_nz:
+	move.l	a0,d0			; restore hi (lo unchanged)
+_modfd_fr_done:
+	movem.l	(sp)+,d2-d3/a0/a2
 	unlk	a6
+	rts
+
+
+; ============================================================
+;  _dptrunc (internal) — truncate x toward zero by masking off the
+;  fractional mantissa bits in place.  No 32-bit integer round-trip, so it
+;  is correct over the whole 2^52 integer range (fixes BUG-0023).
+;    In:  d2:d3 = x (hi:lo)
+;    Out: d0:d1 = trunc(x), carrying x's sign
+;    Preserves d2:d3 and a-regs; saves/restores d4:d5; clobbers only d0/d1.
+; ============================================================
+_dptrunc:
+	movem.l	d4-d5,-(sp)
+	move.l	d2,d4
+	andi.l	#IEEE754_DBL_EXP_MASK_HI,d4
+	EXTRACT_DBL_EXP d4		; d4 = biased exponent (0..2047)
+	subi.l	#IEEE754_DBL_EXP_BIAS,d4	; d4 = unbiased exponent
+	bmi.s	_dptrunc_zero		; |x| < 1 -> trunc = +/-0
+	cmpi.l	#52,d4
+	bge.s	_dptrunc_allint		; |x| >= 2^52 -> already integer
+	moveq	#52,d5
+	sub.l	d4,d5			; d5 = f = 52 - uexp  (# fractional bits, 1..52)
+	move.l	d2,d0
+	move.l	d3,d1
+	cmpi.l	#32,d5
+	bge.s	_dptrunc_hi
+	; f < 32: clear the low f bits of the low longword
+	moveq	#-1,d4
+	lsl.l	d5,d4			; mask = $FFFFFFFF << f
+	and.l	d4,d1
+	bra.s	_dptrunc_ret
+_dptrunc_hi:
+	; f >= 32: clear the whole low longword + the low (f-32) mantissa bits of hi
+	moveq	#0,d1
+	subi.l	#32,d5			; d5 = f - 32  (0..20)
+	moveq	#-1,d4
+	lsl.l	d5,d4			; mask = $FFFFFFFF << (f-32)
+	and.l	d4,d0
+	bra.s	_dptrunc_ret
+_dptrunc_zero:
+	move.l	d2,d0
+	andi.l	#IEEE754_DBL_SIGN_MASK_HI,d0	; +/-0 with x's sign
+	moveq	#0,d1
+	bra.s	_dptrunc_ret
+_dptrunc_allint:
+	move.l	d2,d0
+	move.l	d3,d1
+_dptrunc_ret:
+	movem.l	(sp)+,d4-d5
 	rts
 
 
@@ -282,9 +423,100 @@ _expd:
 	move.l	d0,d4
 	move.l	d1,d5
 
-	; Horner: 1+r*(1+r*(e1+r*(e2+r*(e3+r*(e4+r*(e5+r*e6))))))
-	move.l	_d_e6(pc),d2
-	move.l	_d_e6+4(pc),d3
+	; Horner (Taylor to r^13, ~1 ULP for |r|<=ln2/2) -- BUG-0021
+	; 1+r*(1+r*(e1+r*(e2+r*(e3+r*(e4+r*(e5+r*(e6+...+r*(e11+r*e12))))))))
+	move.l	_d_e12(pc),d2
+	move.l	_d_e12+4(pc),d3
+	; e11+r*t
+	move.l	d3,-(sp)
+	move.l	d2,-(sp)
+	move.l	d5,-(sp)
+	move.l	d4,-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	_d_e11+4(pc),-(sp)
+	move.l	_d_e11(pc),-(sp)
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpaddd
+	lea	16(sp),sp
+	move.l	d0,d2
+	move.l	d1,d3
+	; e10+r*t
+	move.l	d3,-(sp)
+	move.l	d2,-(sp)
+	move.l	d5,-(sp)
+	move.l	d4,-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	_d_e10+4(pc),-(sp)
+	move.l	_d_e10(pc),-(sp)
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpaddd
+	lea	16(sp),sp
+	move.l	d0,d2
+	move.l	d1,d3
+	; e9+r*t
+	move.l	d3,-(sp)
+	move.l	d2,-(sp)
+	move.l	d5,-(sp)
+	move.l	d4,-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	_d_e9+4(pc),-(sp)
+	move.l	_d_e9(pc),-(sp)
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpaddd
+	lea	16(sp),sp
+	move.l	d0,d2
+	move.l	d1,d3
+	; e8+r*t
+	move.l	d3,-(sp)
+	move.l	d2,-(sp)
+	move.l	d5,-(sp)
+	move.l	d4,-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	_d_e8+4(pc),-(sp)
+	move.l	_d_e8(pc),-(sp)
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpaddd
+	lea	16(sp),sp
+	move.l	d0,d2
+	move.l	d1,d3
+	; e7+r*t
+	move.l	d3,-(sp)
+	move.l	d2,-(sp)
+	move.l	d5,-(sp)
+	move.l	d4,-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	_d_e7+4(pc),-(sp)
+	move.l	_d_e7(pc),-(sp)
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpaddd
+	lea	16(sp),sp
+	move.l	d0,d2
+	move.l	d1,d3
+	; e6+r*t
+	move.l	d3,-(sp)
+	move.l	d2,-(sp)
+	move.l	d5,-(sp)
+	move.l	d4,-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	_d_e6+4(pc),-(sp)
+	move.l	_d_e6(pc),-(sp)
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpaddd
+	lea	16(sp),sp
+	move.l	d0,d2
+	move.l	d1,d3
 	; e5+r*t
 	move.l	d3,-(sp)
 	move.l	d2,-(sp)
@@ -407,6 +639,16 @@ _expd_one:
 	move.l	_d_one+4(pc),d1
 	bra.s	_expd_ret
 _expd_ovf:
+	; expd(NaN) = NaN (BUG-0013); else +/-inf / 0 by sign
+	move.l	d2,d0
+	andi.l	#$7FF00000,d0
+	cmpi.l	#$7FF00000,d0
+	bne.s	_expd_ovf_signed
+	move.l	d2,d0
+	andi.l	#$000FFFFF,d0
+	or.l	d3,d0
+	bne.s	_expd_nan		; exp all-ones + mant != 0 = NaN
+_expd_ovf_signed:
 	tst.l	d2
 	bpl.s	_expd_inf
 	moveq	#0,d0
@@ -415,6 +657,10 @@ _expd_ovf:
 _expd_inf:
 	move.l	#DBL_INF_HI,d0
 	moveq	#0,d1
+	bra.s	_expd_ret
+_expd_nan:
+	move.l	#DBL_QNAN_HI,d0
+	move.l	#DBL_QNAN_LO,d1
 	bra.s	_expd_ret
 
 
@@ -428,23 +674,50 @@ _logd:
 	move.l	DBL_ARG1_HI(a6),d2
 	move.l	DBL_ARG1_LO(a6),d3
 
-	tst.l	d2
-	bmi	_logd_nan
+	; log(+/-0) = -inf: test MAGNITUDE first so log(-0) = -inf too (BUG-0013)
 	move.l	d2,d0
+	andi.l	#$7FFFFFFF,d0
 	or.l	d3,d0
 	beq	_logd_ninf
+	; log(negative) = NaN (includes -inf)
+	tst.l	d2
+	bmi	_logd_nan
+	; exp all-ones: +NaN -> NaN, +inf -> +inf
+	move.l	d2,d0
+	andi.l	#$7FF00000,d0
+	cmpi.l	#$7FF00000,d0
+	bne.s	_logd_finite
+	move.l	d2,d0
+	andi.l	#$000FFFFF,d0
+	or.l	d3,d0
+	bne	_logd_nan		; +NaN -> NaN
+	bra	_logd_pinf		; +inf -> +inf
+_logd_finite:
 
-	; e = biased_exp - 1023
-	move.l	d2,d4
-	andi.l	#IEEE754_DBL_EXP_MASK_HI,d4
-	EXTRACT_DBL_EXP d4
-	subi.l	#IEEE754_DBL_EXP_BIAS,d4
-	move.l	d4,-4(a6)
+	; e = biased_exp - 1023  (held in d0 until we may bump it below)
+	move.l	d2,d0
+	andi.l	#IEEE754_DBL_EXP_MASK_HI,d0
+	EXTRACT_DBL_EXP d0
+	subi.l	#IEEE754_DBL_EXP_BIAS,d0
 
-	; m = x with exp=1023
+	; m = x with exp=1023 -> m in [1,2), hi=d4 lo=d3
 	move.l	d2,d4
 	andi.l	#IEEE754_DBL_MANT_MASK_HI,d4
 	ori.l	#$3FF00000,d4
+
+	; Center m around 1 (BUG-0015): if m > sqrt(2), use m/2 and e+1 so the
+	; reduced mantissa stays in [sqrt(2)/2, sqrt(2)) and the catastrophic
+	; e*ln2 + ln(m) cancellation for x just below 1 (m ~ 2, e = -1) is avoided.
+	cmpi.l	#$3FF6A09E,d4		; m_hi vs sqrt(2) hi
+	bhi.s	_logd_halve
+	bcs.s	_logd_no_halve
+	cmpi.l	#$667F3BCD,d3		; hi equal -> compare m_lo (unsigned)
+	bls.s	_logd_no_halve
+_logd_halve:
+	subi.l	#$00100000,d4		; m = m / 2  (double exponent field - 1)
+	addq.l	#1,d0			; e = e + 1
+_logd_no_halve:
+	move.l	d0,-4(a6)		; save e
 
 	; t = (m-1)/(m+1)
 	move.l	_d_one+4(pc),-(sp)
@@ -594,6 +867,10 @@ _logd_ninf:
 	move.l	#DBL_NEG_INF_HI,d0
 	moveq	#0,d1
 	bra.s	_logd_ret
+_logd_pinf:
+	move.l	#DBL_INF_HI,d0
+	moveq	#0,d1
+	bra.s	_logd_ret
 
 
 ; ============================================================
@@ -617,7 +894,7 @@ _cosd:
 ; ============================================================
 _sind:
 	link	a6,#-12
-	movem.l	d2-d5,-(sp)
+	movem.l	d2-d7,-(sp)
 	move.l	DBL_ARG1_HI(a6),d2
 	move.l	DBL_ARG1_LO(a6),d3
 
@@ -649,20 +926,37 @@ _sind:
 	addq.l	#8,sp
 	move.l	d0,-4(a6)
 
-	; r=x-k*pi/2
-	move.l	d0,-(sp)
+	; r = (x - kd*PIO2_HI) - kd*PIO2_LO   (Cody-Waite: a single-double k*pi/2
+	; loses low bits for large |x|; the split keeps the reduced arg accurate)
+	move.l	d0,-(sp)		; k (int)
 	jsr	_fpltod
 	addq.l	#4,sp
-	move.l	_d_pi_2+4(pc),-(sp)
-	move.l	_d_pi_2(pc),-(sp)
-	move.l	d1,-(sp)
-	move.l	d0,-(sp)
+	move.l	d0,d6			; kd (double) in d6:d7 (survives the calls)
+	move.l	d1,d7
+	move.l	_d_pio2_hi+4(pc),-(sp)	; t1 = kd * PIO2_HI (exact)
+	move.l	_d_pio2_hi(pc),-(sp)
+	move.l	d7,-(sp)
+	move.l	d6,-(sp)
 	jsr	_fpmultd
 	lea	16(sp),sp
-	move.l	d1,-(sp)
+	move.l	d1,-(sp)		; w = x - t1
 	move.l	d0,-(sp)
 	move.l	d3,-(sp)
 	move.l	d2,-(sp)
+	jsr	_fpsubd
+	lea	16(sp),sp
+	move.l	d0,d4			; w in d4:d5
+	move.l	d1,d5
+	move.l	_d_pio2_lo+4(pc),-(sp)	; t2 = kd * PIO2_LO
+	move.l	_d_pio2_lo(pc),-(sp)
+	move.l	d7,-(sp)
+	move.l	d6,-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	d1,-(sp)		; r = w - t2
+	move.l	d0,-(sp)
+	move.l	d5,-(sp)
+	move.l	d4,-(sp)
 	jsr	_fpsubd
 	lea	16(sp),sp
 	move.l	d0,-12(a6)
@@ -685,9 +979,35 @@ _sind:
 	btst.l	#0,d4
 	bne	_sind_cpoly
 
-	; Sin poly: 5-term Horner
-	move.l	_d_s5(pc),d0
-	move.l	_d_s5+4(pc),d1
+	; Sin poly: 7-term Horner (Taylor to x^15, ~1 ULP) -- BUG-0021
+	move.l	_d_s7(pc),d0
+	move.l	_d_s7+4(pc),d1
+	; s6+x²*t
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	move.l	d3,-(sp)
+	move.l	d2,-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	_d_s6+4(pc),-(sp)
+	move.l	_d_s6(pc),-(sp)
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpaddd
+	lea	16(sp),sp
+	; s5+x²*t
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	move.l	d3,-(sp)
+	move.l	d2,-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	_d_s5+4(pc),-(sp)
+	move.l	_d_s5(pc),-(sp)
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpaddd
+	lea	16(sp),sp
 	; s4+x²*t (macro-expand 5 Horner steps)
 	move.l	d1,-(sp)
 	move.l	d0,-(sp)
@@ -763,9 +1083,49 @@ _sind:
 	bra	_sind_sign
 
 _sind_cpoly:
-	; Cos poly: 5-term Horner
-	move.l	_d_c5(pc),d0
-	move.l	_d_c5+4(pc),d1
+	; Cos poly: 8-term Horner (Taylor to x^16, ~1 ULP) -- BUG-0021
+	move.l	_d_c8(pc),d0
+	move.l	_d_c8+4(pc),d1
+	; c7+x²*t
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	move.l	d3,-(sp)
+	move.l	d2,-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	_d_c7+4(pc),-(sp)
+	move.l	_d_c7(pc),-(sp)
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpaddd
+	lea	16(sp),sp
+	; c6+x²*t
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	move.l	d3,-(sp)
+	move.l	d2,-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	_d_c6+4(pc),-(sp)
+	move.l	_d_c6(pc),-(sp)
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpaddd
+	lea	16(sp),sp
+	; c5+x²*t
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	move.l	d3,-(sp)
+	move.l	d2,-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	_d_c5+4(pc),-(sp)
+	move.l	_d_c5(pc),-(sp)
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpaddd
+	lea	16(sp),sp
+	; c4+x²*t
 	move.l	d1,-(sp)
 	move.l	d0,-(sp)
 	move.l	d3,-(sp)
@@ -834,7 +1194,7 @@ _sind_sign:
 	blt.s	_sind_ret
 	eori.l	#IEEE754_DBL_SIGN_MASK_HI,d0
 _sind_ret:
-	movem.l	(sp)+,d2-d5
+	movem.l	(sp)+,d2-d7
 	unlk	a6
 	rts
 _sind_retx:
@@ -852,6 +1212,17 @@ _atand:
 	move.l	DBL_ARG1_HI(a6),d2
 	move.l	DBL_ARG1_LO(a6),d3
 
+	; atand(NaN) = NaN, atand(+/-inf) = +/-pi/2 (BUG-0013)
+	move.l	d2,d0
+	andi.l	#$7FF00000,d0
+	cmpi.l	#$7FF00000,d0
+	bne.s	_atand_finite
+	move.l	d2,d0
+	andi.l	#$000FFFFF,d0
+	or.l	d3,d0
+	bne	_atand_nan		; exp all-ones + mant != 0 = NaN
+	bra	_atand_inf		; +/-inf -> +/-pi/2
+_atand_finite:
 	move.l	d2,d4
 	andi.l	#IEEE754_DBL_SIGN_MASK_HI,d4
 	move.l	d4,-16(a6)
@@ -935,9 +1306,74 @@ _atand_poly:
 	move.l	d0,d2
 	move.l	d1,d3
 
-	; 7-term Horner: at6,at5,...at1,1
-	move.l	_d_at6(pc),d0
-	move.l	_d_at6+4(pc),d1
+	; 12-term Horner: at11,at10,...at1,1 (double grade) -- BUG-0021
+	move.l	_d_at11(pc),d0
+	move.l	_d_at11+4(pc),d1
+	; at10+x²*t
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	move.l	d3,-(sp)
+	move.l	d2,-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	_d_at10+4(pc),-(sp)
+	move.l	_d_at10(pc),-(sp)
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpaddd
+	lea	16(sp),sp
+	; at9+x²*t
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	move.l	d3,-(sp)
+	move.l	d2,-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	_d_at9+4(pc),-(sp)
+	move.l	_d_at9(pc),-(sp)
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpaddd
+	lea	16(sp),sp
+	; at8+x²*t
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	move.l	d3,-(sp)
+	move.l	d2,-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	_d_at8+4(pc),-(sp)
+	move.l	_d_at8(pc),-(sp)
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpaddd
+	lea	16(sp),sp
+	; at7+x²*t
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	move.l	d3,-(sp)
+	move.l	d2,-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	_d_at7+4(pc),-(sp)
+	move.l	_d_at7(pc),-(sp)
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpaddd
+	lea	16(sp),sp
+	; at6+x²*t
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	move.l	d3,-(sp)
+	move.l	d2,-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	_d_at6+4(pc),-(sp)
+	move.l	_d_at6(pc),-(sp)
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpaddd
+	lea	16(sp),sp
 	; at5+x²*t
 	move.l	d1,-(sp)
 	move.l	d0,-(sp)
@@ -1055,23 +1491,74 @@ _atand_retx:
 	movem.l	(sp)+,d2-d5
 	unlk	a6
 	rts
+_atand_nan:
+	move.l	#DBL_QNAN_HI,d0
+	move.l	#DBL_QNAN_LO,d1
+	movem.l	(sp)+,d2-d5
+	unlk	a6
+	rts
+_atand_inf:
+	move.l	d2,d4
+	andi.l	#IEEE754_DBL_SIGN_MASK_HI,d4	; sign of x
+	move.l	_d_pi_2(pc),d0
+	or.l	d4,d0			; +/-pi/2 hi
+	move.l	_d_pi_2+4(pc),d1
+	movem.l	(sp)+,d2-d5
+	unlk	a6
+	rts
 
 
 ; ============================================================
 ;  _sqrtd — Newton-Raphson (3 iterations from single seed)
 ; ============================================================
 _sqrtd:
-	link	a6,#0
-	movem.l	d2-d5,-(sp)
+	link	a6,#-4			; -4(a6) = half_e (survives the Newton calls)
+	movem.l	d2-d7,-(sp)
 	move.l	DBL_ARG1_HI(a6),d2
 	move.l	DBL_ARG1_LO(a6),d3
 
-	tst.l	d2
-	bmi.s	_sqrtd_nan
+	; --- special values (BUG-0017) ---
 	move.l	d2,d0
+	andi.l	#$7FFFFFFF,d0		; |x| hi
+	move.l	d0,d1
+	or.l	d3,d1
+	beq	_sqrtd_z		; +/-0 -> signed zero
+	cmpi.l	#$7FF00000,d0
+	blt.s	_sqrtd_finite
+	; |x| exp all-ones: NaN (mant != 0) or +/-inf
+	andi.l	#$000FFFFF,d0
 	or.l	d3,d0
-	beq.s	_sqrtd_z
+	bne	_sqrtd_nan		; NaN -> NaN
+	tst.l	d2
+	bmi	_sqrtd_nan		; -inf -> NaN
+	move.l	#DBL_INF_HI,d0		; +inf -> +inf
+	moveq	#0,d1
+	bra	_sqrtd_ret
+_sqrtd_finite:
+	tst.l	d2
+	bmi	_sqrtd_nan		; negative finite -> NaN
 
+	; --- reduce x = m * 2^e, m in [1,4), e even ---
+	move.l	d2,d0
+	andi.l	#$7FF00000,d0
+	lsr.l	#8,d0
+	lsr.l	#8,d0
+	lsr.l	#4,d0			; d0 = E (biased exponent)
+	subi.l	#1023,d0		; d0 = e' (unbiased)
+	move.l	d0,d6
+	asr.l	#1,d6			; d6 = half_e = floor(e'/2)
+	move.l	d6,-4(a6)		; stash half_e
+	andi.l	#1,d0			; d0 = e' & 1
+	addi.l	#1023,d0		; d0 = m exponent field (1023 or 1024)
+	lsl.l	#8,d0
+	lsl.l	#8,d0
+	lsl.l	#4,d0			; d0 = m_exp << 20
+	move.l	d2,d1
+	andi.l	#$000FFFFF,d1		; x mantissa (hi)
+	or.l	d1,d0
+	move.l	d0,d2			; d2 = m hi  (m lo = d3 = x lo, unchanged)
+
+	; --- seed s0 = (double) sqrt( (single) m ),  m in [1,4) is single-safe ---
 	move.l	d3,-(sp)
 	move.l	d2,-(sp)
 	jsr	_fpdtof
@@ -1082,40 +1569,47 @@ _sqrtd:
 	move.l	d0,-(sp)
 	jsr	_fpftod
 	addq.l	#4,sp
-	move.l	d0,d4
-	move.l	d1,d5
+	move.l	d0,d4			; s hi
+	move.l	d1,d5			; s lo
 
-	; 3 Newton steps: y=(y+x/y)/2
-	moveq	#3,d0
-	move.l	d0,-(sp)
-_sqrtd_lp:
+	; --- Newton on m: s = (s + m/s)/2, 4 iterations (quadratic; 24-bit seed) ---
+	moveq	#4,d0
+	move.l	d0,-(sp)		; loop counter on the stack (calls may clobber d-regs)
+_sqrtd_nl:
 	move.l	d5,-(sp)
 	move.l	d4,-(sp)
 	move.l	d3,-(sp)
 	move.l	d2,-(sp)
-	jsr	_fpdivd
+	jsr	_fpdivd			; m / s
 	lea	16(sp),sp
 	move.l	d1,-(sp)
 	move.l	d0,-(sp)
 	move.l	d5,-(sp)
 	move.l	d4,-(sp)
-	jsr	_fpaddd
+	jsr	_fpaddd			; s + m/s
 	lea	16(sp),sp
-	subi.l	#$00100000,d0
+	subi.l	#$00100000,d0		; (s + m/s) / 2  (exponent - 1)
 	move.l	d0,d4
 	move.l	d1,d5
 	subq.l	#1,(sp)
-	bne.s	_sqrtd_lp
+	bne.s	_sqrtd_nl
 	addq.l	#4,sp
+
+	; --- scale: sqrt(x) = s * 2^half_e : result hi = s_hi + (half_e << 20) ---
+	move.l	-4(a6),d0		; half_e (signed)
+	asl.l	#8,d0
+	asl.l	#8,d0
+	asl.l	#4,d0			; half_e << 20
+	add.l	d0,d4
 	move.l	d4,d0
 	move.l	d5,d1
 _sqrtd_ret:
-	movem.l	(sp)+,d2-d5
+	movem.l	(sp)+,d2-d7
 	unlk	a6
 	rts
 _sqrtd_z:
-	moveq	#0,d0
-	moveq	#0,d1
+	move.l	d2,d0
+	move.l	d3,d1			; return signed zero (the input)
 	bra.s	_sqrtd_ret
 _sqrtd_nan:
 	move.l	#DBL_QNAN_HI,d0
@@ -1128,25 +1622,82 @@ _sqrtd_nan:
 ; ============================================================
 _powd:
 	link	a6,#0
-	movem.l	d2-d3,-(sp)
-	move.l	DBL_ARG2_HI(a6),d2
-	move.l	DBL_ARG2_LO(a6),d3
-	move.l	DBL_ARG1_LO(a6),-(sp)
-	move.l	DBL_ARG1_HI(a6),-(sp)
+	movem.l	d2-d7,-(sp)
+	move.l	DBL_ARG1_HI(a6),d2	; x hi
+	move.l	DBL_ARG1_LO(a6),d3	; x lo
+	move.l	DBL_ARG2_HI(a6),d4	; y hi
+	move.l	DBL_ARG2_LO(a6),d5	; y lo
+	moveq	#0,d6			; d6 = negate-result flag (0 = no)
+
+	; pow(x, 0) = 1 for every x (incl 0 / negative / inf / NaN)  (BUG-0016)
+	move.l	d4,d0
+	andi.l	#$7FFFFFFF,d0
+	or.l	d5,d0
+	beq	_powd_one
+
+	; x == +/-0 : logd(+0) = -inf gives pow(0,y>0)=0, pow(0,y<0)=+inf.
+	; Force +0 (drop the -0-base odd-exponent sign nicety, a rare edge).
+	move.l	d2,d0
+	andi.l	#$7FFFFFFF,d0
+	or.l	d3,d0
+	bne.s	_powd_nonzero
+	bclr.l	#31,d2
+	bra	_powd_calc
+_powd_nonzero:
+	; x > 0 -> standard exp(y*log x)
+	tst.l	d2
+	bpl	_powd_calc
+
+	; --- x < 0 (nonzero): defined only for INTEGER y; sign = (-1)^y ---
+	; yi = trunc(y) as int32 (valid |y| < 2^31); reject non-integer / huge -> NaN
+	move.l	d5,-(sp)
+	move.l	d4,-(sp)
+	jsr	_fpdtol			; d0 = trunc(y)
+	addq.l	#8,sp
+	move.l	d0,d7			; d7 = yi (int32)
+	move.l	d0,-(sp)
+	jsr	_fpltod			; d0:d1 = (double)yi
+	addq.l	#4,sp
+	cmp.l	d4,d0			; (double)yi == y ? (bit-identical for integer y)
+	bne	_powd_nan
+	cmp.l	d5,d1
+	bne	_powd_nan
+	btst	#0,d7			; integer y: odd -> negate the (positive) |x|^y
+	beq.s	_powd_absx
+	moveq	#1,d6
+_powd_absx:
+	bclr.l	#31,d2			; x := |x| for the logd
+
+_powd_calc:
+	; r = expd(y * logd(x))
+	move.l	d3,-(sp)
+	move.l	d2,-(sp)
 	jsr	_logd
 	addq.l	#8,sp
 	move.l	d1,-(sp)
 	move.l	d0,-(sp)
-	move.l	d3,-(sp)
-	move.l	d2,-(sp)
+	move.l	d5,-(sp)
+	move.l	d4,-(sp)
 	jsr	_fpmultd
 	lea	16(sp),sp
 	move.l	d1,-(sp)
 	move.l	d0,-(sp)
 	jsr	_expd
 	addq.l	#8,sp
-	movem.l	(sp)+,d2-d3
+	tst.l	d6
+	beq.s	_powd_ret
+	bchg.l	#31,d0			; negative base, odd exponent -> negate
+_powd_ret:
+	movem.l	(sp)+,d2-d7
 	unlk	a6
 	rts
+_powd_one:
+	move.l	_d_one(pc),d0
+	move.l	_d_one+4(pc),d1
+	bra.s	_powd_ret
+_powd_nan:
+	move.l	#DBL_QNAN_HI,d0
+	move.l	#DBL_QNAN_LO,d1
+	bra.s	_powd_ret
 
 	end

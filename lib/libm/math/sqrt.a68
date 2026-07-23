@@ -19,7 +19,7 @@
 _sqrt:
 _sqrtf:
 	link	a6,#0
-	movem.l	d2-d3,-(sp)
+	movem.l	d2-d7,-(sp)
 
 	move.l	8(a6),d2		; d2 = x
 
@@ -78,23 +78,186 @@ _sqrt_iter:
 	subq.l	#1,d0
 	bpl.s	_sqrt_iter
 
+	; ============================================================
+	;  Correctly-round the Newton estimate (d3 = y, within 1 ULP)
+	;  via an EXACT residual test on the significands (BUG-0012 fix):
+	;  y is correctly rounded iff (2Ys-1)^2 <= Xs<<(k+2) <= (2Ys+1)^2,
+	;  where k = Xe - 2Ye + 150 (biased exp fields).  Ties round to even.
+	;  Only for normal x + normal y; subnormal x keeps the estimate.
+	; ============================================================
+	move.l	d2,d0
+	andi.l	#$7F800000,d0
+	beq	sqrt_result		; x subnormal -> skip (ledgered)
+	move.l	d3,d0
+	andi.l	#$7F800000,d0
+	beq	sqrt_result		; y subnormal / 0 -> skip
+	cmpi.l	#$7F800000,d0
+	beq	sqrt_result		; y inf -> skip
+
+	; ye_f = exp field of y
+	move.l	d3,d0
+	lsr.l	#8,d0
+	lsr.l	#8,d0
+	lsr.l	#7,d0
+	andi.l	#$FF,d0
+	move.l	d0,ye_f
+	move.l	d0,d5			; d5 = Ye field
+	; d7 = exp field of x
+	move.l	d2,d7
+	lsr.l	#8,d7
+	lsr.l	#8,d7
+	lsr.l	#7,d7
+	andi.l	#$FF,d7
+	; d1 = k + 2 = (Xe - 2*Ye + 150) + 2
+	add.l	d5,d5			; 2*Ye
+	move.l	d7,d1
+	sub.l	d5,d1
+	addi.l	#152,d1			; d1 = shift count (k+2)
+	; XX = Xs << (k+2)  -> xx_hi:xx_lo
+	move.l	d2,d0
+	andi.l	#$007FFFFF,d0
+	ori.l	#$00800000,d0		; Xs (24-bit)
+	moveq	#0,d4			; hi
+sqrt_shl:
+	lsl.l	#1,d0
+	roxl.l	#1,d4
+	subq.l	#1,d1
+	bne.s	sqrt_shl
+	move.l	d0,xx_lo
+	move.l	d4,xx_hi
+	; Ys in d6
+	move.l	d3,d6
+	andi.l	#$007FFFFF,d6
+	ori.l	#$00800000,d6		; Ys (24-bit)
+	; --- upper bound U = (2Ys+1)^2 ---
+	move.l	d6,d0
+	add.l	d0,d0
+	addq.l	#1,d0			; 2Ys+1
+	bsr	sqrt_sqr25		; d0:d1 = hi:lo(U)
+	move.l	xx_lo,d4
+	move.l	xx_hi,d5
+	sub.l	d1,d4			; XX - U (64-bit)
+	subx.l	d0,d5
+	tst.l	d5
+	bmi	sqrt_below_u		; XX < U
+	move.l	d5,d0
+	or.l	d4,d0
+	beq	sqrt_tie_up		; XX == U (half-way to y+1)
+	bra	sqrt_inc		; XX > U
+sqrt_tie_up:
+	btst	#0,d6			; round to even
+	bne	sqrt_inc
+	bra	sqrt_keep
+sqrt_below_u:
+	cmpi.l	#$00800000,d6		; result mantissa a power of two?
+	beq.s	sqrt_below_pow2
+	; --- normal lower bound L = (2Ys-1)^2 vs XX ---
+	move.l	d6,d0
+	add.l	d0,d0
+	subq.l	#1,d0			; 2Ys-1
+	bsr	sqrt_sqr25		; d0:d1 = hi:lo(L)
+	move.l	xx_lo,d4
+	move.l	xx_hi,d5
+	sub.l	d1,d4			; XX - L
+	subx.l	d0,d5
+	bra.s	sqrt_low_test
+sqrt_below_pow2:
+	; power-of-two result: the lower neighbour has HALF the ULP, so the
+	; lower mid-point is (4Ys-1)^2 compared against XX<<2 (a finer grid).
+	move.l	xx_lo,d4
+	move.l	xx_hi,d5
+	lsl.l	#1,d4
+	roxl.l	#1,d5
+	lsl.l	#1,d4
+	roxl.l	#1,d5			; XX << 2
+	move.l	d6,d0
+	lsl.l	#2,d0			; 4Ys
+	subq.l	#1,d0			; 4Ys-1
+	bsr	sqrt_sqr25		; d0:d1 = hi:lo(L)
+	sub.l	d1,d4			; XX<<2 - L
+	subx.l	d0,d5
+sqrt_low_test:
+	tst.l	d5
+	bmi	sqrt_dec		; XX < L -> decrement
+	move.l	d5,d0
+	or.l	d4,d0
+	beq	sqrt_tie_down		; XX == L (half-way to y-1)
+	bra	sqrt_keep		; L < XX < U -> y is correct
+sqrt_tie_down:
+	btst	#0,d6
+	bne	sqrt_dec
+	bra	sqrt_keep
+sqrt_inc:
+	addq.l	#1,d6
+	cmpi.l	#$01000000,d6
+	bcs.s	sqrt_keep		; still < 2^24
+	lsr.l	#1,d6			; 0x1000000 -> 0x800000, bump exponent
+	addq.l	#1,ye_f
+	bra.s	sqrt_keep
+sqrt_dec:
+	subq.l	#1,d6
+	cmpi.l	#$00800000,d6
+	bcc.s	sqrt_keep		; still >= 2^23
+	move.l	#$00FFFFFF,d6		; 0x7FFFFF -> 0xFFFFFF, drop exponent
+	subq.l	#1,ye_f
+sqrt_keep:
+	move.l	ye_f,d0
+	lsl.l	#8,d0
+	lsl.l	#8,d0
+	lsl.l	#7,d0			; Ye field << 23
+	move.l	d6,d1
+	andi.l	#$007FFFFF,d1		; mantissa (drop implicit bit)
+	or.l	d1,d0
+	move.l	d0,d3			; corrected result (positive)
+sqrt_result:
 	move.l	d3,d0			; result
 
 _sqrt_done:
-	movem.l	(sp)+,d2-d3
+	movem.l	(sp)+,d2-d7
 	unlk	a6
+	rts
+
+; sqrt_sqr25 -- D0 = A (<= 25 bits) -> D0:D1 = hi:lo of A*A.  Clobbers D0/D1.
+sqrt_sqr25:
+	movem.l	d2-d4,-(sp)
+	move.l	d0,d2
+	andi.l	#$FFFF,d2		; Al
+	move.l	d0,d3
+	clr.w	d3
+	swap	d3			; Ah = A >> 16
+	move.l	d2,d0
+	mulu	d2,d0			; Al^2         (lo accumulator)
+	move.l	d3,d1
+	mulu	d3,d1			; Ah^2         (hi accumulator)
+	move.l	d3,d4
+	mulu	d2,d4			; Ah*Al
+	add.l	d4,d4			; 2*Ah*Al
+	move.l	d4,d2
+	swap	d2			; d2.w = (2AhAl)>>16 ; upper word = (2AhAl)&FFFF
+	moveq	#0,d3
+	move.w	d2,d3			; d3 = (2AhAl) >> 16
+	clr.w	d2			; d2 = ((2AhAl)&FFFF) << 16
+	add.l	d2,d0			; lo += low cross term
+	addx.l	d3,d1			; hi += high cross term + carry
+	exg	d0,d1			; d0 = hi, d1 = lo
+	movem.l	(sp)+,d2-d4
 	rts
 
 _sqrt_zero:
 	move.l	d2,d0			; return original ±0
-	bra.s	_sqrt_done
+	bra	_sqrt_done
 
 _sqrt_nan:
 	move.l	#SNG_QNAN,d0
-	bra.s	_sqrt_done
+	bra	_sqrt_done
 
 _sqrt_inf:
 	move.l	#SNG_INF,d0		; sqrt(+inf) = +inf
-	bra.s	_sqrt_done
+	bra	_sqrt_done
+
+	.bss
+ye_f		ds.l	1		; result exponent field (mutable during rounding)
+xx_hi		ds.l	1		; 4 * Xs << k  (64-bit)
+xx_lo		ds.l	1
 
 	end

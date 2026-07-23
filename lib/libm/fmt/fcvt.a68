@@ -45,16 +45,20 @@
 	include	ieee754.inc
 
 	public	__ecvt, _ecvtbuf, __fcvt, _fcvtbuf
-	extern	_fpdiv, _fpadd, _fpmult, _fpcmp, _fpftol, _modf
+	extern	_fpftod, _fpdivd, _fpmultd, _fpaddd, _fpcmpd, _fpdtol, _modfd
 
 	.code
 
 CVTBUFSIZE      equ     (309 + 40)
 
-* Floating point constants used (IEEE-754 format)
-FP_1		equ	$3f800000	; 1.0
-FP_10 		equ	$41200000	; 10.0
-FP_dot03	equ	$3cf5c28f	; 0.03
+* Floating point constants used (IEEE-754 double, hi:lo) -- BUG-0029: the digit
+* extraction runs in double precision so a single's ~7-8 digits come out exact.
+DBL_1_HI	equ	$3FF00000	; 1.0
+DBL_1_LO	equ	$00000000
+DBL_10_HI	equ	$40240000	; 10.0
+DBL_10_LO	equ	$00000000
+DBL_HALF_HI	equ	$3FE00000	; 0.5 (round-to-nearest of an integer digit)
+DBL_HALF_LO	equ	$00000000
 
 * Parameter offsets
 arg     equ     28			; Register D3
@@ -66,16 +70,15 @@ eflag   equ     8
 
 * Local variable offsets
 r2 	equ 	-4			; Register D4
-fi 	equ 	-8			; Register D6
-fj 	equ 	-12			; Register D5
-p 	equ 	-16			; Register A1
-p1 	equ 	-20			; Register A2
+fi 	equ 	-12			; double (integer part)
+fj 	equ 	-20			; double (fraction part)
+argd	equ	-28			; double (the running value)
 
-_cvtFrameSize equ -20
+_cvtFrameSize equ -28
 
 _cvt:
 	link	a6,#_cvtFrameSize		; Create frame pointer
-	movem.l	d3-d7,-(sp)			; Save registers
+	movem.l	d3-d7/a2-a5,-(sp)		; Save registers (A2-A5 are callee-saved)
 
 	; Pre-load register variables
 	movea.l buf(a6),a0 			; A0 --> buf
@@ -123,58 +126,75 @@ _ndigitsOk:
 	; }
 
 _argPosOrZero:
-	; arg = modf(arg, &fi)
-	move.l	d3,-(sp)			; Push 'arg'
+	; widen |arg| (single, D3) to double -> argd
+	move.l	d3,-(sp)
+	jsr	_fpftod
+	addq.l	#4,sp
+	move.l	d0,argd(a6)
+	move.l	d1,argd+4(a6)
+
+	; argd = modfd(argd, &fi)   -- fi = integer part, argd = fraction
 	lea	fi(a6),a5 			; A5 --> fi
-	move.l 	a5,-(sp)			; Push &fi
-	jsr 	_modf
-	adda.l 	#8,sp
-	move.l 	fi(a6),d6 			; Reload register variable
-	move.l 	d0,d3				; arg = modf(arg,fi)
+	move.l 	a5,-(sp)			; Push &fi   (arg2 -> 16(a6))
+	move.l	argd+4(a6),-(sp)		; Push argd.lo (-> 12(a6))
+	move.l	argd(a6),-(sp)			; Push argd.hi (->  8(a6))
+	jsr 	_modfd
+	lea 	12(sp),sp
+	move.l 	d0,argd(a6)			; argd = frac(arg)
+	move.l 	d1,argd+4(a6)
 
 	; p1 = &buf[CVTBUFSIZE]
 	lea 	CVTBUFSIZE(a0),a2 		; p1 = &buf[CVTBUFSIZE]
 
 	; if (fi != 0) {
-	tst.l 	d6 				; Is fi != 0 ?
-	beq.s 	_cvtElse1			; Nope it's 0, skip
+	move.l 	fi(a6),d0 			; Is fi != 0 ?
+	or.l	fi+4(a6),d0
+	beq 	_cvtElse1			; Nope it's 0, skip
 
 	; while (fi != 0) {
 _cvtLoop1:
-	tst.l 	d6 				; Is fi 0?
-	beq.s 	_cvtExitLoop1			; Yes, exit loop
+	move.l 	fi(a6),d0 			; Is fi 0?
+	or.l	fi+4(a6),d0
+	beq 	_cvtExitLoop1			; Yes, exit loop
 
-	; fj = modf(fi / 10.0, &fi);
-	move.l 	#FP_10,-(sp)			; Push 10.0
-	move.l 	d6,-(sp)			; Push fi
-	jsr 	_fpdiv				; D0 = fi/10.0
-	adda.l 	#8,sp
-	move.l 	d0,-(sp)			; Push fi/10
-	move.l 	a5,-(sp)			; Push &fi
-	jsr 	_modf 				; D0 = fraction, fi=integer
-	adda.l 	#8,sp
-	move.l 	fi(a6),d6			; Reload register variable fi
-	move.l 	d0,d5 				; D5 = fraction part (fj)
+	; fj = modfd(fi / 10.0, &fi)
+	move.l 	#DBL_10_LO,-(sp)		; fi / 10.0
+	move.l 	#DBL_10_HI,-(sp)
+	move.l 	fi+4(a6),-(sp)
+	move.l 	fi(a6),-(sp)
+	jsr 	_fpdivd
+	lea 	16(sp),sp
+	lea	fi(a6),a5			; modfd(fi/10, &fi)
+	move.l 	a5,-(sp)			; &fi
+	move.l 	d1,-(sp)			; (fi/10).lo
+	move.l 	d0,-(sp)			; (fi/10).hi
+	jsr 	_modfd
+	lea 	12(sp),sp
+	move.l 	d0,fj(a6)			; fj = frac
+	move.l 	d1,fj+4(a6)
 
-	; *--p1 = (int)((fj + .03) * 10.0) + '0';
-	move.l 	d5,-(sp)			; Push fj
-	move.l 	#FP_dot03,-(sp)			; Push 0.03
-	jsr 	_fpadd 				; D0 = fj + 0.03
-	adda.l 	#8,sp
-	move.l 	d0,-(sp)			; Push (fj + 0.03)
-	move.l 	#FP_10,-(sp)			; Push 10.0
-	jsr 	_fpmult 			; D0 = (fj + 0.03) * 10.0
-	adda.l 	#8,sp
-	move.l 	d0,-(sp)			; Push ((fj + 0.03) * 10.0)
-	jsr 	_fpftol 			; D0 = (int)((fj + 0.03) * 10.0)
-	adda.l 	#4,sp
-	addi.l 	#'0',d0				; D0 = (int)((fj + 0.03) * 10.0) + '0'
-	move.b 	d0,-(a2)			; *--p1 = (int)((fj + 0.03) * 10.0) + '0'
+	; *--p1 = (int)(fj * 10.0 + 0.5) + '0'   (round: fj*10 is an integer digit)
+	move.l 	#DBL_10_LO,-(sp)
+	move.l 	#DBL_10_HI,-(sp)
+	move.l 	fj+4(a6),-(sp)
+	move.l 	fj(a6),-(sp)
+	jsr 	_fpmultd
+	lea 	16(sp),sp
+	move.l	#DBL_HALF_LO,-(sp)
+	move.l	#DBL_HALF_HI,-(sp)
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpaddd
+	lea	16(sp),sp
+	move.l 	d1,-(sp)
+	move.l 	d0,-(sp)
+	jsr 	_fpdtol
+	addq.l 	#8,sp
+	addi.l 	#'0',d0
+	move.b 	d0,-(a2)			; *--p1 = digit
 
-	; r2++;
-	addi.l 	#1,d4				; Bump r2
-
-	bra.s 	_cvtLoop1 			; Loop until fi = 0
+	addi.l 	#1,d4				; r2++
+	bra 	_cvtLoop1
 	; }
 
 _cvtExitLoop1:
@@ -190,29 +210,38 @@ _cvtLoop2:
 	bra.s 	_cvtLoop2			; Loop until all characters copied
 
 _cvtElse1:
-	; else if (arg > 0)
-	tst.l 	d3				; Is arg > 0? (must be 0 or positive)
-	beq.s 	_cvtEndIf1			; Nope, skip
+	; else if (arg > 0)   -- arg (fraction) is non-negative
+	move.l 	argd(a6),d0 			; test |arg| magnitude
+	andi.l	#$7FFFFFFF,d0
+	or.l	argd+4(a6),d0
+	beq 	_cvtEndIf1			; arg == 0 -> skip
 
 	; while ((fj = arg * 10) < 1) {
 _cvtLoop3:
-	move.l 	d3,-(sp)			; Push arg on the stack
-	move.l 	#FP_10,-(sp)			; Push 10.0 on the stack
-	jsr 	_fpmult 			; D0 = arg * 10.0
-	adda.l 	#8,sp
-	move.l 	d0,d5 				; fj = arg * 10.0
-	move.l 	#FP_1,-(sp)			; Push 1.0
-	move.l 	d0,-(sp)			; Push arg * 10.0
-	jsr 	_fpcmp 				; arg * 10.0 < 1.0
-	adda.l 	#8,sp
-	bge.s 	_cvtEndIf1			; Nope, all done
+	move.l	#DBL_10_LO,-(sp)		; fj = arg * 10.0
+	move.l	#DBL_10_HI,-(sp)
+	move.l 	argd+4(a6),-(sp)
+	move.l 	argd(a6),-(sp)
+	jsr 	_fpmultd
+	lea 	16(sp),sp
+	move.l 	d0,fj(a6) 			; fj = arg * 10.0
+	move.l 	d1,fj+4(a6)
+	move.l	#DBL_1_LO,-(sp)			; fpcmpd(fj, 1.0)
+	move.l	#DBL_1_HI,-(sp)
+	move.l 	fj+4(a6),-(sp)
+	move.l 	fj(a6),-(sp)
+	jsr 	_fpcmpd
+	lea 	16(sp),sp
+	tst.l	d0				; fj >= 1.0 ?
+	bge 	_cvtEndIf1			; Nope, all done
 
 	; arg = fj
-	move.l 	d5,d3 				; arg = fj
+	move.l 	fj(a6),argd(a6) 		; arg = fj
+	move.l 	fj+4(a6),argd+4(a6)
 
 	; r2--;
 	subi.l 	#1,d4				; r2--
-	bra.s	_cvtLoop3			; Loop until done
+	bra	_cvtLoop3			; Loop until done
 
 _cvtEndIf1:
 
@@ -251,24 +280,29 @@ _cvtLoop4:
 	bge.s 	_exitLoop4 			; Nope, exit loop
 
 	; arg *= 10.0;
-	move.l 	d3,-(sp)			; Push arg
-	move.l 	#FP_10,-(sp)			; Push 10.0
-	jsr 	_fpmult				; D0 = arg * 10.0
-	adda.l 	#8,sp
-	move.l 	d0,d3 				; arg = arg * 10.0
+	move.l	#DBL_10_LO,-(sp)
+	move.l	#DBL_10_HI,-(sp)
+	move.l 	argd+4(a6),-(sp)
+	move.l 	argd(a6),-(sp)
+	jsr 	_fpmultd
+	lea 	16(sp),sp
+	move.l 	d0,argd(a6) 			; arg = arg * 10.0
+	move.l 	d1,argd+4(a6)
 
-	; arg = modf(arg, &fj)
-	move.l 	d3,-(sp)			; Push arg
-	move.l 	a4,-(sp)			; Push &fj
-	jsr 	_modf				; D0 = fraction part, fj = integer part
-	adda.l 	#8,sp
-	move.l 	fj(a6),d5 			; Reload register variable
-	move.l 	d0,d3 				; arg = modf(arg, &fj)
+	; arg = modfd(arg, &fj)
+	move.l 	a4,-(sp)			; Push &fj  (arg2 -> 16(a6))
+	move.l 	argd+4(a6),-(sp)		; arg.lo (-> 12(a6))
+	move.l 	argd(a6),-(sp)			; arg.hi (->  8(a6))
+	jsr 	_modfd				; D0:D1 = fraction, fj = integer part
+	lea 	12(sp),sp
+	move.l 	d0,argd(a6) 			; arg = modf(arg, &fj)
+	move.l 	d1,argd+4(a6)
 
 	; *p++ = (int)fj + '0'
-	move.l 	d5,-(sp)			; Push fj
-	jsr 	_fpftol 			; D0 = (int)fj
-	adda.l 	#4,sp
+	move.l 	fj+4(a6),-(sp)			; Push fj
+	move.l 	fj(a6),-(sp)
+	jsr 	_fpdtol 			; D0 = (int)fj
+	addq.l 	#8,sp
 	add.l 	#'0',d0 			; D0 = (int)fj + '0'
 	move.b 	d0,(a1)+ 			; *p++ = (int)fj + '0'
 
@@ -285,20 +319,23 @@ _exitLoop4:
 _cvtEndIf4:
 	; p = p1;
 	movea.l a2,a1 				; p = p1
+
+	; *p1 += 5;
 	addi.b 	#5,(a2)				; *p1 += 5;
 
 	; while (*p1 > '9') {
 
 _cvtLoop5:
-	cmpi.b 	#'9',d0 			; *p1 >'9'
-	ble.s 	_cvtExitLoop5			; Nope, exit loop
+	move.b	(a2),d0				; *p1  (BUG-0029: the loop must test the
+	cmpi.b 	#'9',d0 			;   ROUNDED *p1, not a stale D0 -- otherwise
+	ble.s 	_cvtExitLoop5			;   the round-up carry never propagated)
 
 	; *p1 = '0';
 	move.b 	#'0',(a2)			; Store a '0'
 
 	; if (p1 > buf)
-	cmpa.l 	a2,a0 				; p1 > buf ?
-	ble.s 	_cvtElse5			; Nope, skip
+	cmpa.l 	a0,a2 				; p1 > buf ?  (BUG-0029: operands were
+	ble.s 	_cvtElse5			;   swapped, so the carry never decremented)
 
 	; ++* --p1;
 	suba.l 	#1,a2 				; --p1
@@ -340,7 +377,7 @@ _cvtExit:
 	; return buf
 	move.l	a0,d0 				; D0 = buf
 
-	movem.l	(sp)+,d3-d7			; Restore registers
+	movem.l	(sp)+,d3-d7/a2-a5		; Restore registers
 	unlk	a6				; Clean up frame
 	rts					; Return to caller
 

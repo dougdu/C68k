@@ -92,29 +92,35 @@ _dpadd_no_swap:
 	move.l	d6,a2			; a2 = result exponent (saved)
 	sub.l	d7,d6			; d6 = exponent difference
 
-	cmpi.l	#54,d6			; shift >= 54 → smaller is negligible
+	cmpi.l	#55,d6			; shift >= 55 -> smaller below guard+sticky
 	bge	_dpadd_result_a
 
-	; --- Shift smaller mantissa right by d6 bits ---
-	; d4:d5 is 64 bits, shift right d6 positions
-	move.l	d6,d7			; shift count
+	; --- Shift smaller mantissa right by d6, capturing guard+sticky in d7 ---
+	; [d4:d5:d7] >> d6.  d7 bit31 = guard, lower bits = round/sticky; a 1
+	; shifted off d7's bottom is OR'd back so the sticky bit stays set.
+	move.l	d6,d1			; d1 = shift count
+	moveq	#0,d7			; d7 = guard/sticky accumulator
 _dpadd_shift:
-	tst.l	d7
+	tst.l	d1
 	beq.s	_dpadd_shifted
-	lsr.l	#1,d4			; shift high right
-	roxr.l	#1,d5			; shift low right with carry
-	subq.l	#1,d7
+	lsr.l	#1,d4
+	roxr.l	#1,d5
+	roxr.l	#1,d7
+	bcc.s	_dpadd_shift_ns
+	ori.l	#1,d7
+_dpadd_shift_ns:
+	subq.l	#1,d1
 	bra.s	_dpadd_shift
 _dpadd_shifted:
 
-	; --- Add or subtract based on signs ---
+	; --- Add or subtract based on signs (d7 holds the guard; use d1) ---
 	move.l	a0,d6
-	move.l	a1,d7
-	eor.l	d7,d6			; same sign if bit 31 clear
+	move.l	a1,d1
+	eor.l	d1,d6			; same sign if bit 31 clear
 	btst.l	#31,d6
 	bne.s	_dpadd_subtract
 
-	; Same sign: add mantissas (d2:d3 + d4:d5)
+	; Same sign: add mantissas (guard d7 = b's fraction; a's fraction = 0)
 	add.l	d5,d3			; add low words
 	addx.l	d4,d2			; add high words with carry
 
@@ -124,36 +130,44 @@ _dpadd_shifted:
 	; Shift right 1, increment exponent
 	lsr.l	#1,d2
 	roxr.l	#1,d3
+	roxr.l	#1,d7			; shift guard, preserve sticky
+	bcc.s	_dpadd_co_ns
+	ori.l	#1,d7
+_dpadd_co_ns:
 	move.l	a2,d6
 	addq.l	#1,d6
 	move.l	d6,a2
 	cmpi.l	#2047,d6
 	bge	_dpadd_overflow
-	bra.s	_dpadd_pack
+	bra	_dpadd_pack
 
 _dpadd_subtract:
-	; Different signs: subtract mantissas
-	sub.l	d5,d3			; subtract low
+	; Different signs: 96-bit subtract [d2:d3:0] - [d4:d5:d7]
+	neg.l	d7			; 0 - b_guard; borrow (X) if guard != 0
+	subx.l	d5,d3			; subtract low with guard borrow
 	subx.l	d4,d2			; subtract high with borrow
 	bpl.s	_dpadd_normalize
-	; Result negative: negate and flip sign
-	neg.l	d3
+	; Result negative: negate 96-bit [d2:d3:d7] and flip sign
+	neg.l	d7
+	negx.l	d3
 	negx.l	d2
 	move.l	a0,d6
 	eori.l	#IEEE754_DBL_SIGN_MASK_HI,d6
 	move.l	d6,a0
 
 _dpadd_normalize:
-	; Normalize: shift left until bit 20 of high word is set
+	; Normalize: shift [d2:d3:d7] left until bit 20 of high word is set
 	move.l	d2,d6
 	or.l	d3,d6
-	beq	_dpadd_return_zero	; mantissa is zero
+	or.l	d7,d6
+	beq	_dpadd_return_zero	; all zero
 
 _dpadd_norm_loop:
 	btst.l	#20,d2			; implied bit position
-	bne.s	_dpadd_pack
-	lsl.l	#1,d3			; shift low left
-	roxl.l	#1,d2			; shift high left with carry
+	bne	_dpadd_pack
+	lsl.l	#1,d7			; shift guard up into the mantissa
+	roxl.l	#1,d3
+	roxl.l	#1,d2
 	move.l	a2,d6
 	subq.l	#1,d6
 	move.l	d6,a2
@@ -162,6 +176,29 @@ _dpadd_norm_loop:
 	bra.s	_dpadd_norm_loop
 
 _dpadd_pack:
+	; --- Round to nearest even using guard/sticky in d7 ---
+	tst.l	d7
+	bpl.s	_dpadd_rounded		; guard (bit31) clear -> round down
+	move.l	d7,d6
+	andi.l	#$7FFFFFFF,d6		; sticky bits below the guard
+	bne.s	_dpadd_roundup
+	btst.l	#0,d3			; exactly halfway -> round to even
+	beq.s	_dpadd_rounded
+_dpadd_roundup:
+	addq.l	#1,d3
+	bcc.s	_dpadd_rup_hi
+	addq.l	#1,d2
+_dpadd_rup_hi:
+	btst.l	#21,d2			; mantissa carried out of bit 52?
+	beq.s	_dpadd_rounded
+	lsr.l	#1,d2
+	roxr.l	#1,d3
+	move.l	a2,d6
+	addq.l	#1,d6
+	move.l	d6,a2
+	cmpi.l	#2047,d6
+	bge	_dpadd_overflow
+_dpadd_rounded:
 	; Strip implied bit, pack sign + exponent + mantissa
 	andi.l	#IEEE754_DBL_MANT_MASK_HI,d2 ; strip implied bit from high
 
@@ -220,13 +257,36 @@ _dpadd_overflow:
 	bra	_dpadd_done
 
 _dpadd_a_special:
-	; a is inf or NaN → return a (simplified)
+	; a is inf or NaN
 	move.l	DBL_ARG1_HI(a6),d0
 	move.l	DBL_ARG1_LO(a6),d1
+	move.l	d0,d2
+	andi.l	#IEEE754_DBL_MANT_MASK_HI,d2
+	or.l	d1,d2
+	bne	_dpadd_ret_nan		; a is NaN -> NaN
+	; a is inf; inspect b
+	move.l	DBL_ARG2_HI(a6),d2
+	move.l	DBL_ARG2_LO(a6),d3
+	move.l	d2,d4
+	andi.l	#IEEE754_DBL_EXP_MASK_HI,d4
+	cmpi.l	#IEEE754_DBL_EXP_MASK_HI,d4
+	bne	_dpadd_done		; b finite -> inf + finite = inf (=a)
+	move.l	d2,d4
+	andi.l	#IEEE754_DBL_MANT_MASK_HI,d4
+	or.l	d3,d4
+	bne	_dpadd_ret_nan		; b is NaN -> NaN
+	; both inf: opposite signs -> inf + (-inf) = NaN
+	eor.l	d0,d2
+	bmi	_dpadd_ret_nan
+	bra	_dpadd_done		; same sign -> inf
+
+_dpadd_ret_nan:
+	move.l	#$7FF80000,d0
+	moveq	#0,d1
 	bra	_dpadd_done
 
 _dpadd_b_special:
-	; b is inf or NaN → return b
+	; a is finite (a_special not taken), b is inf or NaN -> return b
 	move.l	DBL_ARG2_HI(a6),d0
 	move.l	DBL_ARG2_LO(a6),d1
 	bra	_dpadd_done

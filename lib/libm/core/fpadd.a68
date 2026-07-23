@@ -107,57 +107,86 @@ _add_no_swap:
 
 	move.l	d2,d6			; d6 = result exponent
 	sub.l	d3,d2			; d2 = exponent difference
-	cmpi.l	#25,d2			; if shift >= 25, smaller is negligible
-	bge	_add_result_a		; result is just a
+	cmpi.l	#26,d2			; shift >= 26: smaller is < 1/4 ULP even
+	bge	_add_result_a		;   after a power-of-two subtract -> result is a
 
-	; Shift smaller mantissa right by exponent difference
-	; Use d5 for mantissa, d2 for shift count
-	lsr.l	d2,d5			; shift b mantissa right
+	; --- Align smaller mantissa right by d2, capturing the shifted-out
+	;     fraction into guard register d7:  [d5:d7] = [d5:0] >> d2 ---
+	;     (d7 = d5 << (32-d2) always has >= 8 trailing zeros, so later
+	;      single-step renormalizations never drop a sticky bit.)
+	moveq	#0,d7			; guard/round/sticky = 0
+	tst.l	d2
+	beq.s	_add_aligned		; exact alignment (no fraction)
+	move.l	d5,d7
+	moveq	#32,d3
+	sub.l	d2,d3			; d3 = 32 - d2
+	lsl.l	d3,d7			; d7 = shifted-out fraction (guard at bit 31)
+	lsr.l	d2,d5			; d5 = aligned integer part
+_add_aligned:
 
 	; --- Add or subtract mantissas ---
 	cmp.l	d0,d1			; same sign?
 	bne.s	_add_subtract
 
-	; Same sign: add mantissas
+	; Same sign: add mantissas (guard d7 unaffected)
 	add.l	d5,d4			; d4 = sum
-	; Check for carry (overflow beyond 24 bits)
-	btst.l	#24,d4
+	btst.l	#24,d4			; carry beyond 24 bits?
 	beq.s	_add_normalize
-	; Shift right by 1, increment exponent
-	lsr.l	#1,d4
+	lsr.l	#1,d4			; renormalize right by 1,
+	roxr.l	#1,d7			;   folding the lost bit into the guard
 	addq.l	#1,d6
-	; Check exponent overflow
 	cmpi.l	#255,d6
 	bge	_add_overflow
 	bra.s	_add_round
 
 _add_subtract:
-	; Different signs: subtract mantissas
-	sub.l	d5,d4			; d4 = |a_mant| - |b_mant|
-	bpl.s	_add_normalize		; result positive, sign = a's sign
-	; Result negative: negate mantissa and flip sign
-	neg.l	d4
+	; Different signs: 64-bit subtract  [d4:0] - [d5:d7]
+	neg.l	d7			; 0 - guard  (X = borrow if guard != 0)
+	subx.l	d5,d4			; d4 = d4 - d5 - borrow
+	bpl.s	_add_normalize		; result non-negative
+	; Result negative: negate [d4:d7] and flip the sign
+	neg.l	d7
+	negx.l	d4
 	eori.l	#IEEE754_SNG_SIGN_MASK,d0
 
 _add_normalize:
-	; Normalize: shift left until bit 23 is set (or mantissa is zero)
-	tst.l	d4
+	; Zero result? (both mantissa words clear)
+	move.l	d4,d3
+	or.l	d7,d3
 	beq	_add_return_zero
 _add_norm_loop:
 	btst.l	#IEEE754_SNG_MANT_BITS,d4 ; bit 23 set?
 	bne.s	_add_round
-	lsl.l	#1,d4
+	lsl.l	#1,d7			; shift [d4:d7] left,
+	roxl.l	#1,d4			;   pulling the guard into d4 bit 0
 	subq.l	#1,d6
 	tst.l	d6			; exponent underflow?
 	ble	_add_return_zero	; flush to zero
 	bra.s	_add_norm_loop
 
 _add_round:
-	; Round to nearest (simple: just truncate for now)
-	; Strip the implied bit and pack
-	andi.l	#IEEE754_SNG_MANT_MASK,d4 ; strip implied bit
+	; Round to nearest even from the guard register d7:
+	;   d7 <  $80000000 -> round down;  d7 > $80000000 -> round up;
+	;   d7 == $80000000 (exactly half) -> round to even.
+	tst.l	d7
+	bpl.s	_add_pack		; guard bit 31 clear -> below half -> down
+	move.l	d7,d3
+	andi.l	#$7FFFFFFF,d3		; sticky = bits below the half bit
+	bne.s	_add_roundup		; above half -> up
+	btst.l	#0,d4			; exactly half -> round to even
+	beq.s	_add_pack		; mantissa LSB already even -> down
+_add_roundup:
+	addq.l	#1,d4			; round up
+	btst.l	#24,d4			; carried out of the mantissa?
+	beq.s	_add_pack
+	lsr.l	#1,d4
+	addq.l	#1,d6
+	cmpi.l	#255,d6
+	bge	_add_overflow
 
-	; Pack result: sign | exponent | mantissa
+_add_pack:
+	; Strip the implied bit and pack sign | exponent | mantissa
+	andi.l	#IEEE754_SNG_MANT_MASK,d4
 	INSERT_EXP d6
 	or.l	d6,d4			; combine exponent and mantissa
 	or.l	d0,d4			; combine sign
@@ -217,6 +246,7 @@ _add_result_a:
 	; d4 = mantissa (with implied bit), d0 = sign, d6 = exponent
 	andi.l	#IEEE754_SNG_MANT_MASK,d4
 	INSERT_EXP d6
+	or.l	d6,d4			; combine exponent (BUG-0001 fix)
 	or.l	d0,d4
 	move.l	d4,d0
 	bra	_add_done
@@ -230,22 +260,10 @@ _add_return_nan:
 	bra	_add_done
 
 _add_overflow:
-	; Exponent overflow → return infinity with correct sign
-	move.l	#SNG_INF,d0
-	or.l	d0,d0			; d0 = +inf (sign in d0 already cleared by constant)
-	; Apply original sign
-	move.l	d0,d4
-	or.l	d0,d4			; actually need to re-apply sign from d0
-	move.l	#SNG_INF,d0
-	or.l	d0,d0			; start with +inf
-	; d0 still has sign from the operation
-	; Actually the sign is in the scratch d0, let's reconstruct
-	move.l	#SNG_INF,d4
-	move.l	d4,d0
-	; The sign was saved in the d0 register but we've clobbered it.
-	; For overflow during same-sign add, use the original sign.
-	; d0 was the sign extracted earlier — but we used d0 for other things.
-	; Safe fallback: return +inf (sign issue is minor edge case)
+	; Exponent overflow -> signed infinity.  D0 already holds the result sign
+	; (bit 31; the same-sign add path never clobbers it), so OR in +inf.
+	; (BUG-0008 fix -- the old block clobbered the sign and returned +inf.)
+	ori.l	#SNG_INF,d0
 	bra	_add_done
 
 	end

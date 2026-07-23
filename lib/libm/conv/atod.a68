@@ -13,7 +13,7 @@
 	include	ieee754d.inc
 
 	public	_atod
-	extern	_fpmultd, _fpaddd, _fpltod, _fpdivd
+	extern	_fpmultd, _fpaddd, _fpsubd, _fpltod, _fpdivd
 
 	.code
 
@@ -34,11 +34,23 @@ DECADJ		equ	-24
 DIGCNT		equ	-28
 DECCNT		equ	-32
 SPTR		equ	-36
-FRAMESZ		equ	-36
+; --- double-double scratch for the correctly-rounded decimal scaling (BUG-0030) ---
+DDA		equ	-44		; two_prod operand a (double)
+DDB		equ	-52		; two_prod operand b = current 10^step (double)
+DDP		equ	-60		; two_prod product hi
+DDE		equ	-68		; two_prod error term (reused for q2)
+DDAH		equ	-76		; split(a) hi
+DDAL		equ	-84		; split(a) lo
+DDBH		equ	-92		; split(b) hi
+DDBL		equ	-100		; split(b) lo
+DDSA		equ	-108		; split input / temp
+DDST		equ	-116		; split temp (t, then hi)
+DDSL		equ	-124		; split lo output
+FRAMESZ		equ	-124
 
 _atod:
 	link	a6,#FRAMESZ
-	movem.l	d2-d5/a0,-(sp)
+	movem.l	d2-d7/a0,-(sp)
 	movea.l	8(a6),a0		; a0 → string
 
 	; Initialize locals
@@ -65,10 +77,18 @@ _ad_sign:
 	cmpi.b	#'+',d0
 	beq.s	_ad_skipsign
 	cmpi.b	#'-',d0
-	bne.s	_ad_intloop
+	bne.s	_ad_special
 	move.l	#1,NSIGN(a6)
 _ad_skipsign:
 	addq.l	#1,a0
+_ad_special:
+	; "inf"/"infinity" -> +/-inf, "nan" -> NaN (BUG-0028)
+	move.b	(a0),d0
+	andi.b	#$DF,d0			; fold an ASCII letter to uppercase
+	cmpi.b	#'I',d0
+	beq	_ad_inf
+	cmpi.b	#'N',d0
+	beq	_ad_nan
 
 ; ---- Parse integer digits ----
 _ad_intloop:
@@ -165,95 +185,70 @@ _ad_expdone:
 _ad_exppos:
 	add.l	d2,DECADJ(a6)
 
-; ---- Scale by 10^exponent via repeated squaring ----
+; ---- Scale by 10^exponent, correctly rounded (BUG-0030) ----
+;   The value is (significand) * 10^k.  10^k is applied in chunks of at most 22
+;   (10^22 is the largest power of ten exactly representable as a double), and
+;   the running value is carried as a DOUBLE-DOUBLE (acc.hi in d2:d3, acc.lo in
+;   d4:d5) so no accuracy is lost across the chain and there is a single final
+;   rounding.  This fixes both the old overflow (10^k -> +inf for |k| >= 309,
+;   which flushed the min-normal 2.2e-308 to +0) and the few-ULP drift at the
+;   exponent extremes; the result is within <= 1 ULP over the whole range.
+;   _fpmultd/_fpaddd/_fpsubd/_fpdivd preserve d2-d7, so acc stays in registers.
 _ad_applyexp:
-	move.l	DECADJ(a6),d4		; d4 = exponent
+	move.l	DECADJ(a6),d6		; d6 = remaining exponent (signed)
 	beq	_ad_done
-
-	move.l	d4,d5			; d5 = original sign
-	bpl.s	_ad_expabs
-	neg.l	d4
-_ad_expabs:
-	; pow = 1.0 (in TMP), base = 10.0 (in d2:d3)
-	move.l	#DBL_ONE_HI,TMP_HI(a6)
-	move.l	#DBL_ONE_LO,TMP_LO(a6)
-	move.l	#DBL_TEN_HI,d2
-	move.l	#DBL_TEN_LO,d3
-
-_ad_pow_loop:
-	tst.l	d4
-	beq.s	_ad_pow_done
-
-	btst.l	#0,d4
-	beq.s	_ad_pow_even
-
-	; pow *= base
-	move.l	a0,SPTR(a6)
-	move.l	d4,-(sp)
-	move.l	d3,-(sp)		; base lo
-	move.l	d2,-(sp)		; base hi
-	move.l	TMP_LO(a6),-(sp)
-	move.l	TMP_HI(a6),-(sp)
-	jsr	_fpmultd
-	lea	16(sp),sp
-	move.l	(sp)+,d4
-	move.l	d0,TMP_HI(a6)
-	move.l	d1,TMP_LO(a6)
-	movea.l	SPTR(a6),a0
-
-_ad_pow_even:
-	lsr.l	#1,d4
-	beq.s	_ad_pow_done
-
-	; base *= base
-	move.l	a0,SPTR(a6)
-	move.l	d4,-(sp)
-	move.l	d3,-(sp)		; base lo
-	move.l	d2,-(sp)		; base hi
-	move.l	d3,-(sp)		; base lo
-	move.l	d2,-(sp)		; base hi
-	jsr	_fpmultd
-	lea	16(sp),sp
-	move.l	(sp)+,d4
-	move.l	d0,d2
-	move.l	d1,d3
-	movea.l	SPTR(a6),a0
-	bra.s	_ad_pow_loop
-
-_ad_pow_done:
-	move.l	a0,SPTR(a6)
-	tst.l	d5
-	bpl.s	_ad_scaleup
-
-	; acc / pow
-	move.l	TMP_LO(a6),-(sp)
-	move.l	TMP_HI(a6),-(sp)
-	move.l	ACC_LO(a6),-(sp)
-	move.l	ACC_HI(a6),-(sp)
-	jsr	_fpdivd
-	lea	16(sp),sp
-	bra.s	_ad_scalestore
-
-_ad_scaleup:
-	; acc * pow
-	move.l	TMP_LO(a6),-(sp)
-	move.l	TMP_HI(a6),-(sp)
-	move.l	ACC_LO(a6),-(sp)
-	move.l	ACC_HI(a6),-(sp)
-	jsr	_fpmultd
-	lea	16(sp),sp
-
-_ad_scalestore:
-	move.l	d0,ACC_HI(a6)
-	move.l	d1,ACC_LO(a6)
-	movea.l	SPTR(a6),a0
+	move.l	ACC_HI(a6),d2		; acc.hi = significand
+	move.l	ACC_LO(a6),d3
+	moveq	#0,d4			; acc.lo = 0
+	moveq	#0,d5
+_ad_stage:
+	tst.l	d6
+	beq.s	_ad_scaledone
+	move.l	d6,d7			; step = min(|rem|, 22)
+	bpl.s	_ad_stage_abs
+	neg.l	d7
+_ad_stage_abs:
+	cmpi.l	#22,d7
+	ble.s	_ad_stage_idx
+	moveq	#22,d7
+_ad_stage_idx:
+	move.l	d7,d0
+	lsl.l	#3,d0			; step * 8 bytes
+	lea	_ad_pow10(pc),a1
+	adda.l	d0,a1
+	move.l	(a1),DDB(a6)		; DDB = 10^step (exact double)
+	move.l	4(a1),DDB+4(a6)
+	tst.l	d6
+	bmi.s	_ad_stage_div
+	bsr	_ad_ddmul		; acc *= 10^step
+	sub.l	d7,d6
+	bra.s	_ad_stage
+_ad_stage_div:
+	bsr	_ad_dddiv		; acc /= 10^step
+	add.l	d7,d6
+	bra.s	_ad_stage
+_ad_scaledone:
+	move.l	d2,ACC_HI(a6)		; result = acc.hi (correctly-rounded double)
+	move.l	d3,ACC_LO(a6)
 
 _ad_done:
 	move.l	ACC_HI(a6),d0
 	move.l	ACC_LO(a6),d1
-	movem.l	(sp)+,d2-d5/a0
+	movem.l	(sp)+,d2-d7/a0
 	unlk	a6
 	rts
+
+_ad_inf:
+	move.l	#$7FF00000,ACC_HI(a6)
+	clr.l	ACC_LO(a6)
+	tst.l	NSIGN(a6)
+	beq	_ad_done
+	ori.l	#$80000000,ACC_HI(a6)	; -inf
+	bra	_ad_done
+_ad_nan:
+	move.l	#$7FF80000,ACC_HI(a6)	; quiet NaN (sign-independent)
+	clr.l	ACC_LO(a6)
+	bra	_ad_done
 
 ; ============================================================
 ;  _ad_accum_digit — ACC = ACC * 10.0 + double(digit)
@@ -292,5 +287,310 @@ _ad_accum_digit:
 	move.l	d1,ACC_LO(a6)
 	movea.l	SPTR(a6),a0
 	rts
+
+; ============================================================
+;  Double-double helpers for the correctly-rounded decimal scaling (BUG-0030).
+;  All preserve d2-d7 (the _fp*d ops honour that), so the caller keeps the
+;  running value (acc) in d2:d3 (hi) and d4:d5 (lo).
+; ============================================================
+
+; _ad_split -- Veltkamp split of the double in D0:D1 into hi (returned in D0:D1)
+;   and lo (returned in DDSL).  |a| > 2^996 is pre-scaled by 2^-28 so the
+;   splitter product (2^27 * a) cannot overflow, then the parts are scaled back.
+_ad_split:
+	move.l	d0,DDSA(a6)		; stash a
+	move.l	d1,DDSA+4(a6)
+	move.l	d0,d1
+	andi.l	#$7FF00000,d1		; exponent field of a
+	cmpi.l	#$7E300000,d1		; >= 2^996 ?
+	bls.s	_ad_split_small
+	; large: a' = a * 2^-28  -> DDSA
+	move.l	DDSA+4(a6),-(sp)
+	move.l	DDSA(a6),-(sp)
+	move.l	#$00000000,-(sp)
+	move.l	#$3E300000,-(sp)	; 2^-28
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	d0,DDSA(a6)
+	move.l	d1,DDSA+4(a6)
+	bsr	_ad_split_core		; DDSA -> D0:D1=hi', DDSL=lo'
+	; hi = hi' * 2^28
+	move.l	#$00000000,-(sp)
+	move.l	#$41B00000,-(sp)	; 2^28
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	d0,DDST(a6)		; final hi
+	move.l	d1,DDST+4(a6)
+	; lo = lo' * 2^28
+	move.l	#$00000000,-(sp)
+	move.l	#$41B00000,-(sp)
+	move.l	DDSL+4(a6),-(sp)
+	move.l	DDSL(a6),-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	d0,DDSL(a6)		; final lo
+	move.l	d1,DDSL+4(a6)
+	move.l	DDST(a6),d0		; return hi
+	move.l	DDST+4(a6),d1
+	rts
+_ad_split_small:
+	bsr	_ad_split_core		; DDSA -> D0:D1=hi, DDSL=lo
+	rts
+
+; _ad_split_core -- split DDSA into D0:D1=hi, DDSL=lo (no overflow guard).
+_ad_split_core:
+	move.l	DDSA+4(a6),-(sp)	; t = SPLITTER * a
+	move.l	DDSA(a6),-(sp)
+	move.l	#$02000000,-(sp)	; SPLITTER = 2^27+1 = $41A0000002000000
+	move.l	#$41A00000,-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	d0,DDST(a6)		; t
+	move.l	d1,DDST+4(a6)
+	move.l	DDSA+4(a6),-(sp)	; tmp = t - a
+	move.l	DDSA(a6),-(sp)
+	move.l	DDST+4(a6),-(sp)
+	move.l	DDST(a6),-(sp)
+	jsr	_fpsubd
+	lea	16(sp),sp
+	move.l	d1,-(sp)		; hi = t - tmp
+	move.l	d0,-(sp)
+	move.l	DDST+4(a6),-(sp)
+	move.l	DDST(a6),-(sp)
+	jsr	_fpsubd
+	lea	16(sp),sp
+	move.l	d0,DDST(a6)		; hi
+	move.l	d1,DDST+4(a6)
+	move.l	DDST+4(a6),-(sp)	; lo = a - hi
+	move.l	DDST(a6),-(sp)
+	move.l	DDSA+4(a6),-(sp)
+	move.l	DDSA(a6),-(sp)
+	jsr	_fpsubd
+	lea	16(sp),sp
+	move.l	d0,DDSL(a6)		; lo
+	move.l	d1,DDSL+4(a6)
+	move.l	DDST(a6),d0		; return hi
+	move.l	DDST+4(a6),d1
+	rts
+
+; _ad_twoprod -- exact product DDA * DDB = DDP (hi) + DDE (err).
+_ad_twoprod:
+	move.l	DDB+4(a6),-(sp)		; p = a * b
+	move.l	DDB(a6),-(sp)
+	move.l	DDA+4(a6),-(sp)
+	move.l	DDA(a6),-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	d0,DDP(a6)
+	move.l	d1,DDP+4(a6)
+	move.l	DDA(a6),d0		; split(a) -> DDAH, DDAL
+	move.l	DDA+4(a6),d1
+	bsr	_ad_split
+	move.l	d0,DDAH(a6)
+	move.l	d1,DDAH+4(a6)
+	move.l	DDSL(a6),d0
+	move.l	DDSL+4(a6),d1
+	move.l	d0,DDAL(a6)
+	move.l	d1,DDAL+4(a6)
+	move.l	DDB(a6),d0		; split(b) -> DDBH, DDBL
+	move.l	DDB+4(a6),d1
+	bsr	_ad_split
+	move.l	d0,DDBH(a6)
+	move.l	d1,DDBH+4(a6)
+	move.l	DDSL(a6),d0
+	move.l	DDSL+4(a6),d1
+	move.l	d0,DDBL(a6)
+	move.l	d1,DDBL+4(a6)
+	move.l	DDBH+4(a6),-(sp)	; e = ah*bh - p
+	move.l	DDBH(a6),-(sp)
+	move.l	DDAH+4(a6),-(sp)
+	move.l	DDAH(a6),-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	DDP+4(a6),-(sp)
+	move.l	DDP(a6),-(sp)
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpsubd
+	lea	16(sp),sp
+	move.l	d0,DDE(a6)
+	move.l	d1,DDE+4(a6)
+	move.l	DDBL+4(a6),-(sp)	; e += ah*bl
+	move.l	DDBL(a6),-(sp)
+	move.l	DDAH+4(a6),-(sp)
+	move.l	DDAH(a6),-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	move.l	DDE+4(a6),-(sp)
+	move.l	DDE(a6),-(sp)
+	jsr	_fpaddd
+	lea	16(sp),sp
+	move.l	d0,DDE(a6)
+	move.l	d1,DDE+4(a6)
+	move.l	DDBH+4(a6),-(sp)	; e += al*bh
+	move.l	DDBH(a6),-(sp)
+	move.l	DDAL+4(a6),-(sp)
+	move.l	DDAL(a6),-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	move.l	DDE+4(a6),-(sp)
+	move.l	DDE(a6),-(sp)
+	jsr	_fpaddd
+	lea	16(sp),sp
+	move.l	d0,DDE(a6)
+	move.l	d1,DDE+4(a6)
+	move.l	DDBL+4(a6),-(sp)	; e += al*bl
+	move.l	DDBL(a6),-(sp)
+	move.l	DDAL+4(a6),-(sp)
+	move.l	DDAL(a6),-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	move.l	DDE+4(a6),-(sp)
+	move.l	DDE(a6),-(sp)
+	jsr	_fpaddd
+	lea	16(sp),sp
+	move.l	d0,DDE(a6)
+	move.l	d1,DDE+4(a6)
+	rts
+
+; _ad_ddmul -- acc(d2:d3,d4:d5) *= DDB (exact double); result back in d2:d3,d4:d5.
+_ad_ddmul:
+	move.l	d2,DDA(a6)		; two_prod(acc.hi, b)
+	move.l	d3,DDA+4(a6)
+	bsr	_ad_twoprod		; DDP = p, DDE = e
+	move.l	DDB+4(a6),-(sp)		; e += acc.lo * b
+	move.l	DDB(a6),-(sp)
+	move.l	d5,-(sp)
+	move.l	d4,-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	move.l	DDE+4(a6),-(sp)
+	move.l	DDE(a6),-(sp)
+	jsr	_fpaddd
+	lea	16(sp),sp
+	move.l	d0,DDE(a6)
+	move.l	d1,DDE+4(a6)
+	move.l	DDE+4(a6),-(sp)		; s = p + e  -> acc.hi
+	move.l	DDE(a6),-(sp)
+	move.l	DDP+4(a6),-(sp)
+	move.l	DDP(a6),-(sp)
+	jsr	_fpaddd
+	lea	16(sp),sp
+	move.l	d0,d2
+	move.l	d1,d3
+	move.l	DDP+4(a6),-(sp)		; s - p
+	move.l	DDP(a6),-(sp)
+	move.l	d3,-(sp)
+	move.l	d2,-(sp)
+	jsr	_fpsubd
+	lea	16(sp),sp
+	move.l	d1,-(sp)		; acc.lo = e - (s - p)
+	move.l	d0,-(sp)
+	move.l	DDE+4(a6),-(sp)
+	move.l	DDE(a6),-(sp)
+	jsr	_fpsubd
+	lea	16(sp),sp
+	move.l	d0,d4
+	move.l	d1,d5
+	rts
+
+; _ad_dddiv -- acc(d2:d3,d4:d5) /= DDB (exact double); result back in d2:d3,d4:d5.
+_ad_dddiv:
+	move.l	DDB+4(a6),-(sp)		; q1 = acc.hi / b
+	move.l	DDB(a6),-(sp)
+	move.l	d3,-(sp)
+	move.l	d2,-(sp)
+	jsr	_fpdivd
+	lea	16(sp),sp
+	move.l	d0,DDA(a6)		; DDA = q1
+	move.l	d1,DDA+4(a6)
+	bsr	_ad_twoprod		; two_prod(q1, b) -> DDP=ph, DDE=pe
+	move.l	DDP+4(a6),-(sp)		; r = acc.hi - ph
+	move.l	DDP(a6),-(sp)
+	move.l	d3,-(sp)
+	move.l	d2,-(sp)
+	jsr	_fpsubd
+	lea	16(sp),sp
+	move.l	DDE+4(a6),-(sp)		; r -= pe
+	move.l	DDE(a6),-(sp)
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpsubd
+	lea	16(sp),sp
+	move.l	d5,-(sp)		; r += acc.lo
+	move.l	d4,-(sp)
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpaddd
+	lea	16(sp),sp
+	move.l	DDB+4(a6),-(sp)		; q2 = r / b
+	move.l	DDB(a6),-(sp)
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpdivd
+	lea	16(sp),sp
+	move.l	d0,DDE(a6)		; DDE = q2
+	move.l	d1,DDE+4(a6)
+	move.l	DDE+4(a6),-(sp)		; s = q1 + q2  -> acc.hi
+	move.l	DDE(a6),-(sp)
+	move.l	DDA+4(a6),-(sp)
+	move.l	DDA(a6),-(sp)
+	jsr	_fpaddd
+	lea	16(sp),sp
+	move.l	d0,d2
+	move.l	d1,d3
+	move.l	DDA+4(a6),-(sp)		; s - q1
+	move.l	DDA(a6),-(sp)
+	move.l	d3,-(sp)
+	move.l	d2,-(sp)
+	jsr	_fpsubd
+	lea	16(sp),sp
+	move.l	d1,-(sp)		; acc.lo = q2 - (s - q1)
+	move.l	d0,-(sp)
+	move.l	DDE+4(a6),-(sp)
+	move.l	DDE(a6),-(sp)
+	jsr	_fpsubd
+	lea	16(sp),sp
+	move.l	d0,d4
+	move.l	d1,d5
+	rts
+
+; ============================================================
+;  _ad_pow10 — 10^0 .. 10^22 as exact doubles (hi:lo), indexed by
+;  step*8 for the staged decimal scaling above (BUG-0030).
+; ============================================================
+_ad_pow10	dc.l	$3FF00000,$00000000	; 10^0
+	dc.l	$40240000,$00000000	; 10^1
+	dc.l	$40590000,$00000000	; 10^2
+	dc.l	$408F4000,$00000000	; 10^3
+	dc.l	$40C38800,$00000000	; 10^4
+	dc.l	$40F86A00,$00000000	; 10^5
+	dc.l	$412E8480,$00000000	; 10^6
+	dc.l	$416312D0,$00000000	; 10^7
+	dc.l	$4197D784,$00000000	; 10^8
+	dc.l	$41CDCD65,$00000000	; 10^9
+	dc.l	$4202A05F,$20000000	; 10^10
+	dc.l	$42374876,$E8000000	; 10^11
+	dc.l	$426D1A94,$A2000000	; 10^12
+	dc.l	$42A2309C,$E5400000	; 10^13
+	dc.l	$42D6BCC4,$1E900000	; 10^14
+	dc.l	$430C6BF5,$26340000	; 10^15
+	dc.l	$4341C379,$37E08000	; 10^16
+	dc.l	$43763457,$85D8A000	; 10^17
+	dc.l	$43ABC16D,$674EC800	; 10^18
+	dc.l	$43E158E4,$60913D00	; 10^19
+	dc.l	$4415AF1D,$78B58C40	; 10^20
+	dc.l	$444B1AE4,$D6E2EF50	; 10^21
+	dc.l	$4480F0CF,$064DD592	; 10^22
 
 	end

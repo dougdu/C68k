@@ -34,6 +34,12 @@ _logf:
 
 	move.l	8(a6),d2		; d2 = x
 
+	; log(NaN) = NaN (BUG-0013)
+	move.l	d2,d3
+	andi.l	#$7FFFFFFF,d3
+	cmpi.l	#SNG_INF,d3
+	bhi	_log_nan		; |x| > inf pattern = NaN -> NaN
+
 	; Handle x <= 0
 	tst.l	d2
 	ble	_log_invalid
@@ -47,12 +53,22 @@ _logf:
 	andi.l	#IEEE754_SNG_EXP_MASK,d3
 	EXTRACT_EXP d3
 	subi.l	#IEEE754_SNG_EXP_BIAS,d3 ; unbias: e = biased_exp - 127
-	move.l	d3,-4(a6)		; save e
 
 	; m = set exponent to 127 (so m is in [1,2))
 	move.l	d2,d4
 	andi.l	#IEEE754_SNG_MANT_MASK,d4
 	ori.l	#$3F800000,d4		; d4 = m (IEEE with exp=127 → value in [1,2))
+
+	; Center m around 1 (BUG-0015): if m > sqrt(2) use m/2 and e+1, so the
+	; reduced mantissa stays in [sqrt(2)/2, sqrt(2)) ~ [0.707, 1.414).  This
+	; avoids the catastrophic e*ln2 + ln(m) cancellation for x just below 1
+	; (where m ~ 2, e = -1) and keeps |t| <= 0.172 for a tighter polynomial.
+	cmpi.l	#$3FB504F3,d4		; sqrt(2) in single precision
+	bls.s	_log_no_halve
+	subi.l	#$00800000,d4		; m = m / 2   (exponent 127 -> 126)
+	addq.l	#1,d3			; e = e + 1
+_log_no_halve:
+	move.l	d3,-4(a6)		; save e
 
 	; --- t = (m - 1) / (m + 1) ---
 	move.l	_log_one(pc),-(sp)
@@ -148,13 +164,18 @@ _log_done:
 	rts
 
 _log_invalid:
-	; log(0) = -inf, log(negative) = NaN
-	tst.l	d2
-	beq.s	_log_neg_inf
+	; log(+/-0) = -inf, log(negative) = NaN.  BUG-0013: -0 is negative-as-
+	; signed, so test the MAGNITUDE for zero to give log(-0) = -inf too.
+	move.l	d2,d0
+	andi.l	#$7FFFFFFF,d0
+	beq.s	_log_neg_inf		; x == +/-0 -> -inf
 	move.l	#SNG_QNAN,d0
 	bra.s	_log_done
 _log_neg_inf:
 	move.l	#SNG_NEG_INF,d0
+	bra.s	_log_done
+_log_nan:
+	move.l	#SNG_QNAN,d0
 	bra.s	_log_done
 
 _log_inf:
