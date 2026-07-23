@@ -12,11 +12,12 @@
  * and leaves everything after it -- including the terminating whitespace or
  * newline -- for the next read.
  *
- * Conversions: %d %i %u %o %x %X %p, %f %e %g %E %G, %s, %c, %n, %%, with
- * field width, '*' assignment suppression, and hh/h/l/ll length modifiers.
- * (No %[ scanset or %a hex-float.)  A malformed numeric prefix -- a lone
- * sign, "0x" with no hex digit, or "e" with no exponent digit -- may consume
- * that one extra character rather than leaving it in the stream.
+ * Conversions: %d %i %u %o %x %X %p, %f %e %g %a (and %E %G %A %F, incl.
+ * hexadecimal floats), %s, %[...] (scanset), %c, %n, %%, with field width,
+ * '*' assignment suppression, and hh/h/l/ll length modifiers.  A malformed
+ * numeric prefix -- a lone sign, "0x" with no digit, or "e"/"p" with no
+ * exponent digit -- may consume that one extra character rather than leaving
+ * it in the stream.
  * ===================================================================== */
 
 /* Fetch the next input character (consumed), or EOF. */
@@ -68,6 +69,59 @@ static int digit_ok(int c, int base) {
     d = lc - 'a' + 10;
   }
   return d < base;
+}
+
+extern double ldexp(double x, int n);
+
+/* Convert a hex-float token "[+/-]0x h.hh [p[+/-]d]" to double without going
+ * through strtod/atod: build the mantissa as a double (16 hex digits already
+ * exceed a double's 53-bit precision, so accumulating rounds correctly) and
+ * scale by a power of two with ldexp.  This is the inverse of printf("%a"). */
+static double sc_hexfloat(const char *s) {
+  int neg = 0;
+  if (*s == '+')
+    s++;
+  else if (*s == '-') {
+    neg = 1;
+    s++;
+  }
+  s += 2; /* skip the "0x" / "0X" prefix */
+  double mant = 0.0;
+  int fracdig = 0, seendot = 0;
+  for (; *s; s++) {
+    int ch = *s;
+    if (ch == '.') {
+      seendot = 1;
+      continue;
+    }
+    int d;
+    if (ch >= '0' && ch <= '9')
+      d = ch - '0';
+    else {
+      int lc = ch | 0x20;
+      if (lc < 'a' || lc > 'f')
+        break; /* the 'p' exponent (or the end of the token) */
+      d = lc - 'a' + 10;
+    }
+    mant = mant * 16.0 + (double)d;
+    if (seendot)
+      fracdig++;
+  }
+  int binexp = 0, esign = 1;
+  if (*s == 'p' || *s == 'P') {
+    s++;
+    if (*s == '+')
+      s++;
+    else if (*s == '-') {
+      esign = -1;
+      s++;
+    }
+    while (*s >= '0' && *s <= '9')
+      binexp = binexp * 10 + (*s++ - '0');
+    binexp *= esign;
+  }
+  double v = ldexp(mant, binexp - 4 * fracdig);
+  return neg ? -v : v;
 }
 
 int _vscan(_scan *z, const char *fmt, va_list ap) {
@@ -199,12 +253,12 @@ int _vscan(_scan *z, const char *fmt, va_list ap) {
         }
         count++;
       }
-    } else if (conv == 'f' || conv == 'e' || conv == 'g' || conv == 'E' ||
-               conv == 'G') {
+    } else if (conv == 'f' || conv == 'e' || conv == 'g' || conv == 'a' ||
+               conv == 'F' || conv == 'E' || conv == 'G' || conv == 'A') {
       int w = haswidth ? width : 63;
       if (w > 63)
         w = 63;
-      int n = 0, any = 0;
+      int n = 0, any = 0, ishex = 0;
       c = sc_skipws(z);
       if (c == EOF) {
         eof_hit = 1;
@@ -214,30 +268,71 @@ int _vscan(_scan *z, const char *fmt, va_list ap) {
         tok[n++] = (char)c;
         c = sc_get(z);
       }
-      while (c >= '0' && c <= '9' && n < w) {
-        tok[n++] = (char)c;
-        any = 1;
-        c = sc_get(z);
+      /* A "0x"/"0X" prefix selects a hexadecimal float (hex mantissa, binary
+         'p' exponent) -- the form printf("%a") emits. */
+      if (c == '0' && n < w) {
+        int c2 = sc_get(z);
+        if ((c2 == 'x' || c2 == 'X') && n + 1 < w) {
+          ishex = 1;
+          tok[n++] = '0';
+          tok[n++] = (char)c2;
+          c = sc_get(z);
+          while (isxdigit(c) && n < w) {
+            tok[n++] = (char)c;
+            any = 1;
+            c = sc_get(z);
+          }
+          if (c == '.' && n < w) {
+            tok[n++] = '.';
+            c = sc_get(z);
+            while (isxdigit(c) && n < w) {
+              tok[n++] = (char)c;
+              any = 1;
+              c = sc_get(z);
+            }
+          }
+          if (any && (c == 'p' || c == 'P') && n < w) {
+            tok[n++] = (char)c;
+            c = sc_get(z);
+            if ((c == '+' || c == '-') && n < w) {
+              tok[n++] = (char)c;
+              c = sc_get(z);
+            }
+            while (c >= '0' && c <= '9' && n < w) {
+              tok[n++] = (char)c;
+              c = sc_get(z);
+            }
+          }
+        } else {
+          sc_unget(z, c2); /* a plain leading 0 in a decimal float */
+        }
       }
-      if (c == '.' && n < w) {
-        tok[n++] = '.';
-        c = sc_get(z);
+      if (!ishex) {
         while (c >= '0' && c <= '9' && n < w) {
           tok[n++] = (char)c;
           any = 1;
           c = sc_get(z);
         }
-      }
-      if (any && (c == 'e' || c == 'E') && n < w) {
-        tok[n++] = (char)c;
-        c = sc_get(z);
-        if ((c == '+' || c == '-') && n < w) {
-          tok[n++] = (char)c;
+        if (c == '.' && n < w) {
+          tok[n++] = '.';
           c = sc_get(z);
+          while (c >= '0' && c <= '9' && n < w) {
+            tok[n++] = (char)c;
+            any = 1;
+            c = sc_get(z);
+          }
         }
-        while (c >= '0' && c <= '9' && n < w) {
+        if (any && (c == 'e' || c == 'E') && n < w) {
           tok[n++] = (char)c;
           c = sc_get(z);
+          if ((c == '+' || c == '-') && n < w) {
+            tok[n++] = (char)c;
+            c = sc_get(z);
+          }
+          while (c >= '0' && c <= '9' && n < w) {
+            tok[n++] = (char)c;
+            c = sc_get(z);
+          }
         }
       }
       sc_unget(z, c);
@@ -245,7 +340,7 @@ int _vscan(_scan *z, const char *fmt, va_list ap) {
       if (!any)
         goto done;
       if (!suppress) {
-        double dv = strtod(tok, NULL);
+        double dv = ishex ? sc_hexfloat(tok) : strtod(tok, NULL);
         if (lng)
           *va_arg(ap, double *) = dv;
         else
@@ -304,6 +399,54 @@ int _vscan(_scan *z, const char *fmt, va_list ap) {
           *va_arg(ap, int *) = (int)z->nread;
       }
       /* %n is not counted as a conversion */
+    } else if (conv == '[') {
+      /* scanset: read characters that are (or, after a leading '^', are not)
+         members of the bracketed set.  Unlike %s it does NOT skip leading
+         whitespace.  A ']' right after '[' or '[^' is a literal member. */
+      const char *q = fmt + 1;
+      int negate = 0;
+      if (*q == '^') {
+        negate = 1;
+        q++;
+      }
+      unsigned char inset[256];
+      for (int i = 0; i < 256; i++)
+        inset[i] = 0;
+      if (*q == ']') {
+        inset[(unsigned char)']'] = 1;
+        q++;
+      }
+      while (*q && *q != ']') {
+        inset[(unsigned char)*q] = 1;
+        q++;
+      }
+      fmt = (*q == ']') ? q : q - 1; /* leave fmt on ']' for the outer step */
+
+      int w = haswidth ? width : 0x7fffffff;
+      char *out = suppress ? NULL : va_arg(ap, char *);
+      int k = 0;
+      c = sc_get(z);
+      while (c != EOF && k < w) {
+        int member = inset[(unsigned char)c] ? 1 : 0;
+        if (negate)
+          member = !member;
+        if (!member)
+          break;
+        if (out)
+          out[k] = (char)c;
+        k++;
+        c = sc_get(z);
+      }
+      sc_unget(z, c);
+      if (out)
+        out[k] = '\0';
+      if (k == 0) { /* matched nothing: EOF -> input failure, else mismatch */
+        if (c == EOF)
+          eof_hit = 1;
+        goto done;
+      }
+      if (!suppress)
+        count++;
     } else {
       goto done; /* unknown conversion */
     }

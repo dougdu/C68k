@@ -80,6 +80,23 @@ int main(void) {
   CHECK(sscanf("  0x2A rest", "%i", &wv) == 1 && wv == 42);
   CHECK(sscanf("", "%d", &wv) == EOF);
 
+  /* scanf %[ scanset (C99: no ranges -- every char, incl. '-', is a literal
+     member; %[ does not skip leading whitespace) */
+  char sset[32];
+  CHECK(sscanf("abcXYZ", "%[abc]", sset) == 1 && strcmp(sset, "abc") == 0);
+  CHECK(sscanf("hello, world", "%[^,]", sset) == 1 && strcmp(sset, "hello") == 0);
+  CHECK(sscanf("aaaaaa", "%3[a]", sset) == 1 && strcmp(sset, "aaa") == 0);
+  CHECK(sscanf("   x", "%[abc]", sset) == 0); /* no ws skip -> 0 chars match */
+
+  /* scanf %a hex-float (the inverse of printf %a); %a and %f each accept both
+     hexadecimal and decimal float input */
+  double da = 0;
+  float fa = 0;
+  CHECK(sscanf("0x1.8p3", "%la", &da) == 1 && da == 12.0);
+  CHECK(sscanf("-0x1p-1", "%a", &fa) == 1 && fa == -0.5f);
+  CHECK(sscanf("0x10p0", "%lf", &da) == 1 && da == 16.0);
+  CHECK(sscanf("2.5", "%la", &da) == 1 && da == 2.5);
+
   /* file-backed ungetc + remove + fscanf */
   FILE *f = fopen("TIER1.TMP", "w");
   if (f) {

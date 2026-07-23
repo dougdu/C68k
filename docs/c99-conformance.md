@@ -9,11 +9,13 @@ deviates from the standard.
 It is a working reference for driving the library toward conformance. Rows
 marked ⚠️ or ❌ are the actionable gaps.
 
-**Status (2026‑07‑22):** the Tier 1 gaps in the roadmap below are now
-implemented and verified — `tests/lockstep/tier1.c` passes 42/42 on both Osiris
+**Status (2026‑07‑23):** the Tier 1 and Tier 2 roadmap gaps below are now
+implemented and verified — `tests/lockstep/tier1.c` passes 50/50 on both Osiris
 and CP/M‑68K. This includes a real `rename` (Osiris DOS 56h / CP/M BDOS 23), a
-true character‑streaming `scanf`/`fscanf`/`sscanf` engine, and text/binary
-`fopen` modes with Ctrl‑Z text‑EOF on CP/M. The tables reflect that work.
+true character‑streaming `scanf`/`fscanf`/`sscanf` engine with the full
+conversion set (`%[` scanset and `%a` hex‑float included), text/binary `fopen`
+modes with Ctrl‑Z text‑EOF on CP/M, real `getenv`/`system` on Osiris (DOS
+`64h`/`4Bh`), and the `f`/`l` math variants. The tables reflect that work.
 
 ## Target model
 
@@ -72,7 +74,7 @@ OS): `<float.h>`, `<iso646.h>`, `<limits.h>`, `<stdarg.h>`, `<stdbool.h>`,
 | `<iso646.h>` | Alternative operator spellings | ✅ | `libc/include/iso646.h` | Complete. |
 | `<limits.h>` | Integer‑type limits | ✅ | `include/limits.h`, `libc/include/limits.h` | Complete for ILP32. |
 | `<locale.h>` | Localization | ❌ | — | Only the "C" locale is implied; `setlocale`/`localeconv` absent. |
-| `<math.h>` | Mathematics | ⚠️ | `libc/include/math.h`, `libc/core/*.c` → **libm** | Base transcendentals inline (double‑only); the full C99 function set + classification/constants added in C (Tier 2 2a/2b/2c, with `EDOM`/`ERANGE`). Pending only: `f`/`l` variants. Works around a libm negative‑arg `exp`/`pow` defect. |
+| `<math.h>` | Mathematics | ⚠️ | `libc/include/math.h`, `libc/core/*.c` → **libm** | Base transcendentals inline (double); the full C99 function set + classification/constants added in C (Tier 2 2a/2b/2c, with `EDOM`/`ERANGE`), plus the `f`/`l` type variants. Earlier libm negative‑arg `exp`/`pow` defects fixed at source. Deviation: soft‑float fixed rounding, no `_Complex`. |
 | `<setjmp.h>` | Non‑local jumps | ✅ | `lib/runtime/rt68k.a68` + hdr | `setjmp`/`longjmp` asm shim; codegen spills temporaries across the `returns_twice` call so longjmp re‑entry is safe. |
 | `<signal.h>` | Signal handling | ⚠️ | `libc/include/signal.h`, `libc/core/signal.c` | Synchronous only — no async delivery on these OSes; `raise` calls handlers inline. |
 | `<stdarg.h>` | Variable arguments | ✅ | `include/stdarg.h` | m68k `va_list`. Conforming. |
@@ -174,8 +176,8 @@ with libm's internal single‑precision `_sqrt`/`_exp`/… symbols, so extern
 linkage needs a vendored‑libm fork).  All **C99 additions** (Tier 2 Phase
 2a/2b/2c) are now present as real extern functions in `libc/core/*.c` over the
 same kernels, plus the standard macros (`HUGE_VAL`/`INFINITY`/`NAN`, `FP_*`,
-classification, comparison).  Remaining gaps: the `f`/`l` variants, and `errno`
-on the inline base functions.
+classification, comparison), and the `f`/`l` type variants.  Remaining gap:
+`errno` is not set by the inline base functions.
 
 Notes: `fma` is a double‑rounded `x*y+z`; the soft‑float adder truncates, so
 `rint`/`nearbyint` use a floor‑based ties‑to‑even; `erf`/`erfc` are a compact
@@ -301,8 +303,8 @@ integer set with limits and `INT*_C`/`UINT*_C` constructors. ✅
 | `vsnprintf` | va_list, bounded | ✅ | libc / `vsnprintf.c` | |
 | `vprintf` `vsprintf` | va_list print variants | ✅ | libc / `vprintf.c`,`vsprintf.c` | |
 | `vscanf` `vfscanf` | va_list scan variants | ✅ | libc / `vscanf.c`,`vfscanf.c` | Share the streaming engine. |
-| `scanf` `fscanf` | Formatted input | ⚠️ | libc / `scanf.c`,`fscanf.c`,`vsscanf.c` | True char-streaming scanner (`_vscan`): consumes exactly what it matches and leaves the rest in the stream. No `%[` scanset or `%a`. |
-| `sscanf` | Parse from string | ⚠️ | libc / `sscanf.c`,`vsscanf.c` | `d/i/u/o/x/X/p`, `f/e/g`, `s/c/n/%`, width, `*`, `hh/h/l/ll`. No `%[`/`%a`. |
+| `scanf` `fscanf` | Formatted input | ⚠️ | libc / `scanf.c`,`fscanf.c`,`vsscanf.c` | True char-streaming scanner (`_vscan`): consumes exactly what it matches and leaves the rest in the stream. Full conversion set incl. `%[`/`%[^]` scanset and `%a` hex‑float. |
+| `sscanf` | Parse from string | ⚠️ | libc / `sscanf.c`,`vsscanf.c` | `d/i/u/o/x/X/p`, `f/e/g/a` (incl. hex float), `[`/`[^` scanset, `s/c/n/%`, width, `*`, `hh/h/l/ll`. |
 | `vsscanf` | va_list parse | ✅ | libc / `vsscanf.c` | |
 | `fgetc` `getc` `getchar` | Read char | ✅ | libc / `fgetc.c`,`getc.c`,`getchar.c` | |
 | `fgets` | Read line | ✅ | libc / `fgets.c` | |
@@ -431,12 +433,13 @@ except where noted.
 
 ### Tier 1 — small, high‑value fixes — ✅ DONE (2026‑07‑22)
 Implemented as pure header/libc additions and verified by
-`tests/lockstep/tier1.c` (27/27 on Osiris and CP/M‑68K):
+`tests/lockstep/tier1.c` (50/50 on Osiris and CP/M‑68K):
 1. ✅ **`<errno.h>`**: `EDOM`, `ERANGE`, `EILSEQ` defined.
 2. ✅ **`<ctype.h>`**: `isblank`, `isgraph`.
 3. ✅ **`<string.h>`**: `strspn`, `strcspn`, `strpbrk`.
-4. ✅ **`<stdlib.h>`**: `atoll`, `llabs`, `lldiv`, `strtof`, `_Exit`, `getenv`
-   (→`NULL`), `system` (`NULL`→0 else −1).
+4. ✅ **`<stdlib.h>`**: `atoll`, `llabs`, `lldiv`, `strtof`, `_Exit`, `getenv`,
+   `system` (both real on Osiris — DOS `64h` env / `4Bh` EXEC; CP/M‑68K has no
+   environment or command processor, so `getenv`→`NULL`, `system(NULL)`→0).
 5. ✅ **`<stdio.h>`**: `rewind`, `clearerr`, `perror`, `ungetc`, `remove`,
    `vprintf`, `vsprintf`, and `scanf`/`fscanf`/`vscanf`/`vfscanf` (layered on
    `vsscanf`); also `hh` length support added to the scanner.
@@ -445,8 +448,9 @@ Implemented as pure header/libc additions and verified by
 
 All Tier 1 items are complete, including a true character‑streaming
 `scanf`/`fscanf`/`sscanf` engine (`_vscan` in `libc/core/vsscanf.c`, shared by the
-string and stream entry points). Remaining scanf gaps — the `%[` scanset and
-`%a` hex‑float — are minor and tracked with the broader conversion‑coverage work.
+string and stream entry points), the `%[`/`%[^]` scanset, and `%a` hexadecimal‑
+float input.  The scanf family is now conversion‑complete (`%a` on input parses
+both hex and decimal floats; the sole printf‑side gap is `%a` *output*).
 
 ### Tier 2 — moderate
 7. **`<math.h>`** — Phase 2a ✅ DONE (2026‑07‑22): added `HUGE_VAL`/`INFINITY`/
@@ -464,10 +468,11 @@ string and stream entry points). Remaining scanf gaps — the `%[` scanset and
      `lgamma`/`tgamma` (Lanczos). `tests/lockstep/tier2.c` 114/114 both OSes.
      Uncovered & worked around a vendored‑libm defect (double `exp`/`pow` wrong
      for negative args / results < 1) — the proper fix is upstream in worm68k.
-   - **Tier 2 `<math.h>` is complete** except the `f`/`l` type variants.
+   - **Tier 2 `<math.h>` is complete**, including the `f` and `l` type variants.
    - The 12 **base** transcendentals stay `static` inline — their C names
      collide with libm's single‑precision `_sqrt`/`_exp`/… so extern linkage
-     would need a vendored‑libm fork; `f`/`l` variants also pending.
+     would need a vendored‑libm fork.  The `f` variants bind to libm's real
+     single kernels; the `l` variants are `double` wrappers.
 8. **`<setjmp.h>`**: ✅ done — `setjmp`/`longjmp` asm shim plus a
    `returns_twice` codegen pass that spills SP‑stack temporaries to frame slots
    around the call so longjmp re‑entry (retry loops) is safe.
