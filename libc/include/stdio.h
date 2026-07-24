@@ -34,8 +34,16 @@ typedef long fpos_t;
 #define _SF_NBF 0x80 /* setvbuf(_IONBF): flush after every write */
 #define _SF_WRITING 0x100 /* buffer currently holds pending output (orientation) */
 #define _SF_TMP 0x200 /* tmpfile(): unlink tmpname on close */
+#define _SF_WORIENT 0x400 /* stream is wide-oriented (fwide / wide I/O) */
+#define _SF_BORIENT 0x800 /* stream is byte-oriented */
+#define _SF_WUNGET 0x1000 /* wunget holds a pending ungetwc() character */
 
-typedef struct _FILE {
+#ifndef __FILE_DEFINED
+#define __FILE_DEFINED
+typedef struct _FILE FILE;
+#endif
+
+struct _FILE {
   int fd;      /* Osiris file handle */
   int flags;   /* _SF_* */
   int cnt;     /* input: bytes left in buf; output: bytes buffered */
@@ -52,7 +60,8 @@ typedef struct _FILE {
    * never name _memstream_append/realloc unless the program uses memstreams. */
   int (*drain)(struct _FILE *fp, const void *data, int n);
   char tmpname[L_tmpnam]; /* tmpfile() auto-remove name (empty otherwise) */
-} FILE;
+  long wunget;            /* ungetwc() pushback (valid only when _SF_WUNGET) */
+};
 
 extern FILE *stdin;
 extern FILE *stdout;

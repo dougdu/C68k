@@ -27,6 +27,11 @@ typedef struct {
 } mbstate_t;
 #endif
 
+#ifndef __FILE_DEFINED
+#define __FILE_DEFINED
+typedef struct _FILE FILE; /* completed by <stdio.h>; opaque here */
+#endif
+
 struct tm; /* for wcsftime, without pulling in <time.h> */
 
 /* --- wide string operations (wchar_t is 32-bit UTF-32) --- */
@@ -75,5 +80,17 @@ long double wcstold(const wchar_t *s, wchar_t **end);
 
 /* --- wide strftime --- */
 size_t wcsftime(wchar_t *s, size_t max, const wchar_t *fmt, const struct tm *tm);
+
+/* --- wide stream I/O (UTF-8 byte streams; each op transcodes) --- */
+int fwide(FILE *fp, int mode);
+wint_t fgetwc(FILE *fp);
+wint_t getwc(FILE *fp);
+wint_t getwchar(void);
+wchar_t *fgetws(wchar_t *s, int n, FILE *fp);
+wint_t fputwc(wchar_t wc, FILE *fp);
+wint_t putwc(wchar_t wc, FILE *fp);
+wint_t putwchar(wchar_t wc);
+int fputws(const wchar_t *s, FILE *fp);
+wint_t ungetwc(wint_t wc, FILE *fp);
 
 #endif /* _WCHAR_H */
