@@ -27,6 +27,12 @@ char *strdup(const char *s);
 char *strndup(const char *s, size_t n);
 char *strtok(char *s, const char *delim);
 
+/* BSD/GNU extensions. */
+size_t strlcpy(char *dst, const char *src, size_t size);
+size_t strlcat(char *dst, const char *src, size_t size);
+char *strsep(char **stringp, const char *delim);
+void *memmem(const void *hay, size_t haylen, const void *needle, size_t nlen);
+
 char *strerror(int errnum);
 
 #endif /* _STRING_H */

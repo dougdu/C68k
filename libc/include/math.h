@@ -1,6 +1,8 @@
 #ifndef _MATH_H
 #define _MATH_H
 
+#include <errno.h>
+
 /*
  * <math.h> over the soft-float runtime (libieee754d). The runtime provides
  * double primitives under the `d`-suffixed names (sind, cosd, ...); the C
@@ -24,6 +26,15 @@ extern double modfd(double, double *);
 extern double asind(double);
 extern double acosd(double);
 
+/* Value/classification helpers used by the errno-setting wrappers below (also
+ * declared with the other IEEE utilities further down; a redundant but legal
+ * re-declaration). */
+extern double __huge_val(void);
+extern double __nan_val(void);
+extern int __isinf(double);
+extern int __isnan(double);
+extern int __isfinite(double);
+
 #define M_PI 3.14159265358979323846
 #define M_E 2.71828182845904523536
 #define M_LN2 0.69314718055994530942
@@ -42,15 +53,59 @@ static double sin(double x) { return sind(x); }
 static double cos(double x) { return cosd(x); }
 static double tan(double x) { return sind(x) / cosd(x); }
 static double atan(double x) { return atand(x); }
-static double exp(double x) { return expd(x); }
-static double log(double x) { return logd(x); }
-static double log10(double x) { return logd(x) / M_LN10; }
-static double sqrt(double x) { return sqrtd(x); }
-static double pow(double b, double e) { return powd(b, e); }
+static double exp(double x) {
+  double r = expd(x);
+  if (__isinf(r) && __isfinite(x))
+    errno = ERANGE; /* overflow */
+  return r;
+}
+static double log(double x) {
+  if (x < 0.0) {
+    errno = EDOM;
+    return __nan_val();
+  }
+  if (x == 0.0) {
+    errno = ERANGE;
+    return -__huge_val();
+  }
+  return logd(x);
+}
+static double log10(double x) {
+  if (x < 0.0) {
+    errno = EDOM;
+    return __nan_val();
+  }
+  if (x == 0.0) {
+    errno = ERANGE;
+    return -__huge_val();
+  }
+  return logd(x) / M_LN10;
+}
+static double sqrt(double x) {
+  if (x < 0.0) {
+    errno = EDOM;
+    return __nan_val();
+  }
+  return sqrtd(x);
+}
+static double pow(double b, double e) {
+  double r = powd(b, e);
+  if (__isnan(r) && !__isnan(b) && !__isnan(e))
+    errno = EDOM;
+  else if (__isinf(r) && __isfinite(b) && __isfinite(e))
+    errno = ERANGE;
+  return r;
+}
 static double floor(double x) { return floord(x); }
 static double ceil(double x) { return ceild(x); }
 static double fabs(double x) { return fabsd(x); }
-static double fmod(double a, double b) { return fmodd(a, b); }
+static double fmod(double a, double b) {
+  if (b == 0.0) {
+    errno = EDOM;
+    return __nan_val();
+  }
+  return fmodd(a, b);
+}
 static double modf(double x, double *ip) { return modfd(x, ip); }
 
 static double atan2(double y, double x) {
@@ -65,8 +120,20 @@ static double atan2(double y, double x) {
    s = sqrt((1-|x|)(1+|x|)); ~1-2 ULP).  They stay `static` because libm's plain
    `_asin` is the SINGLE-precision arcsine, so a C double `asin` must route to
    the d-suffixed `_asind`/`_acosd` instead of colliding with it. */
-static double asin(double x) { return asind(x); }
-static double acos(double x) { return acosd(x); }
+static double asin(double x) {
+  if (x < -1.0 || x > 1.0) {
+    errno = EDOM;
+    return __nan_val();
+  }
+  return asind(x);
+}
+static double acos(double x) {
+  if (x < -1.0 || x > 1.0) {
+    errno = EDOM;
+    return __nan_val();
+  }
+  return acosd(x);
+}
 
 /* ------------------------------------------------------------------------
  * C99 `float` variants.  These bind directly to libm's real single-precision

@@ -6,5 +6,6 @@
 /* POSIX case-insensitive comparison (used by the tokenizer). */
 int strncasecmp(const char *a, const char *b, size_t n);
 int strcasecmp(const char *a, const char *b);
+char *strcasestr(const char *hay, const char *needle);
 
 #endif /* _STRINGS_H */

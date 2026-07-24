@@ -18,6 +18,9 @@ typedef struct {
 void *malloc(size_t n);
 void *calloc(size_t nmemb, size_t size);
 void *realloc(void *p, size_t n);
+void *reallocarray(void *p, size_t nmemb, size_t size);
+void *aligned_alloc(size_t alignment, size_t size);
+int posix_memalign(void **memptr, size_t alignment, size_t size);
 void free(void *p);
 
 int atoi(const char *s);
@@ -44,15 +47,34 @@ void srand(unsigned seed);
 
 void qsort(void *base, size_t nmemb, size_t size,
            int (*cmp)(const void *, const void *));
+void qsort_r(void *base, size_t nmemb, size_t size,
+             int (*cmp)(const void *, const void *, void *), void *arg);
 void *bsearch(const void *key, const void *base, size_t nmemb, size_t size,
               int (*cmp)(const void *, const void *));
 
 void exit(int code);
 int atexit(void (*fn)(void));
+int at_quick_exit(void (*fn)(void));
+void quick_exit(int code);
 void abort(void);
 void _Exit(int code);
 char *getenv(const char *name);
+int setenv(const char *name, const char *value, int overwrite);
+int unsetenv(const char *name);
+int putenv(char *string);
+int clearenv(void);
 int system(const char *command);
+
+/* Non-standard but ubiquitous integer->string helpers (base 2..36; base 10
+ * treats the value as signed, other bases as unsigned). */
+char *itoa(int value, char *buf, int base);
+char *utoa(unsigned value, char *buf, int base);
+char *ltoa(long value, char *buf, int base);
+char *ultoa(unsigned long value, char *buf, int base);
+
+/* BSD program-name accessors (used by <err.h>). */
+const char *getprogname(void);
+void setprogname(const char *name);
 
 #define EXIT_SUCCESS 0
 #define EXIT_FAILURE 1

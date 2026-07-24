@@ -25,3 +25,21 @@ void qsort(void *base, size_t nmemb, size_t size,
     }
   }
 }
+
+/* qsort with a context argument passed to the comparator (GNU argument order:
+ * cmp(a, b, arg)). */
+void qsort_r(void *base, size_t nmemb, size_t size,
+             int (*cmp)(const void *, const void *, void *), void *arg) {
+  char *a = (char *)base;
+  for (size_t gap = nmemb / 2; gap > 0; gap /= 2) {
+    for (size_t i = gap; i < nmemb; i++) {
+      for (size_t j = i; j >= gap; j -= gap) {
+        char *x = a + (j - gap) * size;
+        char *y = a + j * size;
+        if (cmp(x, y, arg) <= 0)
+          break;
+        _swap(x, y, size);
+      }
+    }
+  }
+}

@@ -95,6 +95,9 @@ int setvbuf(FILE *fp, char *buf, int mode, size_t size);
 char *tmpnam(char *s);
 FILE *tmpfile(void);
 
+int fileno(FILE *fp);
+FILE *fdopen(int fd, const char *mode);
+
 int printf(const char *fmt, ...);
 int fprintf(FILE *fp, const char *fmt, ...);
 int sprintf(char *buf, const char *fmt, ...);

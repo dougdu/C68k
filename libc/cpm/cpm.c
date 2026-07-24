@@ -16,14 +16,19 @@ extern long cpm_bdos(int func, long param);
 
 /* BDOS function codes. */
 #define C_RAWIO 6
+#define C_STAT 11
 #define F_OPEN 15
 #define F_CLOSE 16
+#define F_SFIRST 17
+#define F_SNEXT 18
 #define F_DELETE 19
 #define F_READ 20
 #define F_WRITE 21
 #define F_MAKE 22
 #define F_RENAME 23
+#define DRV_GET 25
 #define F_DMAOFF 26
+#define F_ATTRIB 30
 #define F_READRAND 33
 #define F_WRITERAND 34
 #define F_SIZE 35
@@ -271,12 +276,271 @@ int sys_rename(const char *oldp, const char *newp) {
   return ((cpm_bdos(F_RENAME, (long)fcb) & 0xFF) == 0xFF) ? -1 : 0;
 }
 
+/* CP/M-68K files are FCB-based with no OS-level descriptor duplication, so
+   dup()/dup2() cannot be supported here (a proper implementation needs a
+   descriptor table with shared open-file state -- a future refactor of the
+   CpmFile model).  Osiris backs these with DOS 45h/46h. */
+int sys_dup(int fd) {
+  (void)fd;
+  return -1;
+}
+
+int sys_dup2(int oldfd, int newfd) {
+  (void)oldfd;
+  (void)newfd;
+  return -1;
+}
+
+/* fds 0/1/2 are the console; every other fd is a disk file. */
+int sys_isatty(int fd) { return (fd >= 0 && fd < 3) ? 1 : 0; }
+
+/* Existence + read-only probe via the directory search (F_SFIRST).  Returns a
+   DOS-style attribute word (bit 0 = read-only) so the portable access() wrapper
+   is OS-agnostic, or -1 if the file does not exist. */
+int sys_access(const char *path) {
+  unsigned char fcb[FCB_SIZE];
+  unsigned char dma[RECSZ];
+  parse_fcb(fcb, path);
+  cpm_bdos(F_DMAOFF, (long)dma);
+  long code = cpm_bdos(F_SFIRST, (long)fcb) & 0xFF;
+  if (code == 0xFF)
+    return -1; /* not found */
+  /* CP/M stores read-only as bit 7 of the first file-type byte (t1') in the
+     matched 32-byte directory entry (at code*32 within the DMA record). */
+  unsigned char *ent = dma + (code & 3) * 32;
+  return (ent[FCB_TYPE] & 0x80) ? 0x01 : 0x00;
+}
+
+/* ---- directory enumeration (opendir/readdir) + metadata --------------
+ * CP/M-68K has one BDOS search state, so a single static FCB + DMA buffer
+ * serve one active scan at a time.  Each match is rendered into the same
+ * 43-byte DOS-style find block the Osiris backend produces, so the portable
+ * readdir()/stat() code is OS-agnostic: name@30, attr@21, size@26 (big-endian),
+ * time/date = 0 (base CP/M has no timestamps). */
+static unsigned char _dirfcb[FCB_SIZE];
+static unsigned char _dirdma[RECSZ];
+
+/* Build a search FCB from a filename or wildcard pattern.  Takes the drive from
+ * an optional "X:" prefix, drops any directory components (CP/M has no
+ * subdirectories), and parses the final NAME.EXT component -- an exact name
+ * matches one file (stat), while '*' expands to '?' wildcards to the end of the
+ * field (opendir's "*.*" matches every file). */
+static void parse_fcb_search(unsigned char *fcb, const char *path) {
+  for (int i = 0; i < FCB_SIZE; i++)
+    fcb[i] = 0;
+  if (path[0] && path[1] == ':') {
+    fcb[FCB_DRIVE] = (unsigned char)(toupper((unsigned char)path[0]) - 'A' + 1);
+    path += 2;
+  }
+  const char *base = path;
+  for (const char *p = path; *p; p++)
+    if (*p == '\\' || *p == '/')
+      base = p + 1;
+  path = base;
+  if (!*path || (path[0] == '.' && path[1] == 0)) {
+    for (int i = 0; i < 8; i++)
+      fcb[FCB_NAME + i] = '?';
+    for (int i = 0; i < 3; i++)
+      fcb[FCB_TYPE + i] = '?';
+    return;
+  }
+  int i = 0;
+  while (i < 8 && *path && *path != '.') {
+    if (*path == '*') {
+      while (i < 8)
+        fcb[FCB_NAME + i++] = '?';
+      break;
+    }
+    fcb[FCB_NAME + i++] = (unsigned char)toupper((unsigned char)*path++);
+  }
+  while (i < 8)
+    fcb[FCB_NAME + i++] = ' ';
+  while (*path && *path != '.')
+    path++;
+  if (*path == '.')
+    path++;
+  i = 0;
+  while (i < 3 && *path) {
+    if (*path == '*') {
+      while (i < 3)
+        fcb[FCB_TYPE + i++] = '?';
+      break;
+    }
+    fcb[FCB_TYPE + i++] = (unsigned char)toupper((unsigned char)*path++);
+  }
+  while (i < 3)
+    fcb[FCB_TYPE + i++] = ' ';
+}
+
+static void cpm_fmt_dirent(const unsigned char *e, unsigned char *d) {
+  int j = 0;
+  for (int i = 1; i <= 8; i++) {
+    unsigned c = e[i] & 0x7F;
+    if (c == ' ')
+      break;
+    d[30 + j++] = (unsigned char)c;
+  }
+  int hasext = 0;
+  for (int i = 9; i <= 11; i++)
+    if ((e[i] & 0x7F) != ' ')
+      hasext = 1;
+  if (hasext) {
+    d[30 + j++] = '.';
+    for (int i = 9; i <= 11; i++) {
+      unsigned c = e[i] & 0x7F;
+      if (c != ' ')
+        d[30 + j++] = (unsigned char)c;
+    }
+  }
+  d[30 + j] = 0;
+  unsigned a = 0;
+  if (e[9] & 0x80)
+    a |= 0x01; /* t1' bit7 = read-only */
+  if (e[10] & 0x80)
+    a |= 0x04; /* t2' bit7 = system */
+  d[21] = (unsigned char)a;
+  unsigned long recs = (unsigned long)(e[12] & 0x1F) * 128 + e[15];
+  unsigned long sz = recs * 128; /* record-granular, extent-0 approximation */
+  d[26] = (unsigned char)((sz >> 24) & 0xFF);
+  d[27] = (unsigned char)((sz >> 16) & 0xFF);
+  d[28] = (unsigned char)((sz >> 8) & 0xFF);
+  d[29] = (unsigned char)(sz & 0xFF);
+  d[22] = d[23] = d[24] = d[25] = 0;
+}
+
+/* Advance to the first non-deleted extent-0 entry (so each file appears once)
+ * and render it, or return -1 at end-of-directory. */
+static int cpm_find_report(long code, unsigned char *d) {
+  while ((code & 0xFF) != 0xFF) {
+    const unsigned char *e = _dirdma + (code & 3) * 32;
+    if (e[0] != 0xE5 && (e[12] & 0x1F) == 0) {
+      cpm_fmt_dirent(e, d);
+      return 0;
+    }
+    cpm_bdos(F_DMAOFF, (long)_dirdma);
+    code = cpm_bdos(F_SNEXT, (long)_dirfcb) & 0xFF;
+  }
+  return -1;
+}
+
+int sys_findfirst(const char *path, int attr, void *dta) {
+  (void)attr;
+  parse_fcb_search(_dirfcb, path);
+  cpm_bdos(F_DMAOFF, (long)_dirdma);
+  long code = cpm_bdos(F_SFIRST, (long)_dirfcb) & 0xFF;
+  return cpm_find_report(code, (unsigned char *)dta);
+}
+
+int sys_findnext(void *dta) {
+  cpm_bdos(F_DMAOFF, (long)_dirdma);
+  long code = cpm_bdos(F_SNEXT, (long)_dirfcb) & 0xFF;
+  return cpm_find_report(code, (unsigned char *)dta);
+}
+
+/* Base CP/M-68K has no per-file timestamps and no subdirectories. */
+int sys_getfiletime(int fd) {
+  (void)fd;
+  return -1;
+}int sys_setfiletime(int fd, long dtstamp) {
+  (void)fd;
+  (void)dtstamp;
+  return -1;
+}
+
+/* File size from the open FCB.  CP/M stores only a 128-byte record count, not
+ * an exact byte length, so take the record count from the open FCB's extent/RC
+ * (loaded by F_OPEN) and then read the last record and trim trailing ^Z (0x1A)
+ * text-EOF padding to recover the exact size.  A binary file whose data
+ * legitimately ends in 0x1A bytes is over-trimmed -- an inherent CP/M limit.
+ * Record count reflects the current extent (exact for files up to one extent). */
+long sys_fdsize(int fd) {
+  if (fd < 3)
+    return -1;
+  CpmFile *f = &_cpmf[fd - 3];
+  unsigned ex = f->fcb[12] & 0x1F;
+  unsigned rc = f->fcb[15];
+  long recs = (long)ex * 128 + rc;
+  if (recs <= 0)
+    return 0;
+  long last = recs - 1;
+  f->fcb[33] = (unsigned char)(last & 0xFF);
+  f->fcb[34] = (unsigned char)((last >> 8) & 0xFF);
+  f->fcb[35] = (unsigned char)((last >> 16) & 0xFF);
+  unsigned char buf[RECSZ];
+  cpm_bdos(F_DMAOFF, (long)buf);
+  if (cpm_bdos(F_READRAND, (long)f->fcb) != 0)
+    return recs * 128; /* unreadable last record -> record-granular */
+  int k = RECSZ - 1;
+  while (k >= 0 && buf[k] == 0x1A)
+    k--;
+  return last * 128 + (k + 1);
+}
+
+int sys_mkdir(const char *path) {
+  (void)path;
+  return -1;
+}
+int sys_rmdir(const char *path) {
+  (void)path;
+  return -1;
+}
+int sys_chdir(const char *path) {
+  (void)path;
+  return -1;
+}
+
+/* No subdirectories: the working directory is just the current drive's root. */
+int sys_getcwd(char *buf) {
+  int d = (int)(cpm_bdos(DRV_GET, 0) & 0xFF);
+  buf[0] = (char)('A' + d);
+  buf[1] = ':';
+  buf[2] = '\\';
+  buf[3] = 0;
+  return 0;
+}
+
+int sys_chmod(const char *path, int attr) {
+  unsigned char fcb[FCB_SIZE];
+  parse_fcb(fcb, path);
+  if (attr & 0x01)
+    fcb[FCB_TYPE] |= 0x80; /* set read-only (t1' bit7) */
+  else
+    fcb[FCB_TYPE] &= 0x7F;
+  return ((cpm_bdos(F_ATTRIB, (long)fcb) & 0xFF) == 0xFF) ? -1 : 0;
+}
+
 /* CP/M-68K has no process environment, so every getenv() lookup misses.
    (Osiris provides a real environment via DOS 64h in osiris_sys.a68.) */
 char *sys_getenv(const char *name) {
   (void)name;
   return 0;
 }
+
+/* No environment on CP/M-68K: SET fails and the block is empty. */
+int sys_setenv(const char *name, const char *value) {
+  (void)name;
+  (void)value;
+  return -1;
+}
+char *sys_getenvblk(void) { return 0; }
+
+/* conio raw console I/O over BDOS direct console functions. */
+int sys_conin(void) {
+  int c;
+  while ((c = (int)(cpm_bdos(C_RAWIO, 0xFF) & 0xFF)) == 0)
+    ; /* function 6 is non-blocking -> poll until a key */
+  return c;
+}
+int sys_constat(void) { return (cpm_bdos(C_STAT, 0) & 0xFF) ? 1 : 0; }
+
+/* No DOS TRAP #1 on CP/M -- the Osiris escape hatch is unavailable. */
+long sys_doscall(void *r) {
+  (void)r;
+  return -1;
+}
+
+/* CP/M-68K has no extended-error latch; failures are reported inline. */
+int sys_lasterror(void) { return 0; }
 
 /* CP/M-68K has no EXEC / child-process facility, so system() can never run a
    command here.  (system() only reaches this when a command was requested and

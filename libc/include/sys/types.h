@@ -5,5 +5,6 @@
 
 typedef long off_t;
 typedef long ssize_t;
+typedef int mode_t;
 
 #endif /* _SYS_TYPES_H */

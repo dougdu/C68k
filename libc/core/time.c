@@ -79,6 +79,15 @@ time_t time(time_t *timer) {
 
 clock_t clock(void) { return (clock_t)-1; } /* no CPU-time source */
 
+/* C11 timespec_get: only TIME_UTC is supported, at 1-second resolution. */
+int timespec_get(struct timespec *ts, int base) {
+  if (base != TIME_UTC)
+    return 0;
+  ts->tv_sec = time(0);
+  ts->tv_nsec = 0;
+  return base;
+}
+
 double difftime(time_t end, time_t start) { return (double)(end - start); }
 
 struct tm *gmtime(const time_t *timer) {

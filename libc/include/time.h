@@ -11,6 +11,13 @@ typedef long clock_t;
 
 #define CLOCKS_PER_SEC 1000000L
 
+struct timespec {
+  time_t tv_sec;
+  long tv_nsec;
+};
+
+#define TIME_UTC 1
+
 struct tm {
   int tm_sec;   /* 0..60 */
   int tm_min;   /* 0..59 */
@@ -25,6 +32,7 @@ struct tm {
 
 time_t time(time_t *timer);
 clock_t clock(void);
+int timespec_get(struct timespec *ts, int base);
 double difftime(time_t end, time_t start);
 time_t mktime(struct tm *tm);
 struct tm *gmtime(const time_t *timer);

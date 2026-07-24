@@ -17,7 +17,13 @@
         PUBLIC  _sys_write,_sys_read,_sys_open,_sys_creat,_sys_close
         PUBLIC  _sys_seek,_sys_unlink,_sys_rename,_sys_exit,_sys_sbrk,_sys_heapavail
         PUBLIC  _sys_time,_sys_getenv,_sys_exec
-        EXTERN  _main
+        PUBLIC  _sys_dup,_sys_dup2,_sys_isatty,_sys_access
+        PUBLIC  _sys_findfirst,_sys_findnext,_sys_getfiletime,_sys_setfiletime
+        PUBLIC  _sys_mkdir,_sys_rmdir,_sys_chdir,_sys_getcwd,_sys_chmod,_sys_fdsize
+        PUBLIC  _sys_setenv,_sys_getenvblk
+        PUBLIC  _sys_conin,_sys_constat,_sys_doscall,_cpm_bdos
+        PUBLIC  _sys_lasterror
+        EXTERN  _main,_envbuild
 
 * DOS TRAP #1 function selectors (AH, high byte of D0.W).
 DOSF_EXIT    equ  $4C00
@@ -29,10 +35,25 @@ DOSF_WRITE   equ  $4000
 DOSF_UNLINK  equ  $4100
 DOSF_RENAME  equ  $5600
 DOSF_LSEEK   equ  $4200
+DOSF_CHMOD   equ  $4300       ; 43h get/set attributes (AL 00=get -> D2 = attr)
+DOSF_IOCTL   equ  $4400       ; 44h IOCTL (AL 00=get device info -> D3 = info word)
+DOSF_DUP     equ  $4500       ; 45h duplicate handle (D1 -> D0)
+DOSF_DUP2    equ  $4600       ; 46h force-duplicate handle / dup2 (D1,D2)
+DOSF_SETDTA  equ  $1A00       ; 1Ah set Disk Transfer Area = A0
+DOSF_CURDISK equ  $1900       ; 19h current drive -> AL (0=A)
+DOSF_MKDIR   equ  $3900       ; 39h make directory (A0=path)
+DOSF_RMDIR   equ  $3A00       ; 3Ah remove directory (A0=path)
+DOSF_CHDIR   equ  $3B00       ; 3Bh change directory (A0=path)
+DOSF_FFIRST  equ  $4E00       ; 4Eh find first (A0=path, D2=attr -> DTA)
+DOSF_FNEXT   equ  $4F00       ; 4Fh find next (DTA)
+DOSF_GETCWD  equ  $4700       ; 47h get current dir (A0=buf, D3=drive)
+DOSF_FILETIME equ $5700       ; 57h get/set file date-time (D1=handle)
 DOSF_ALLOC   equ  $4800
 DOSF_GETDATE equ  $2A00
 DOSF_GETTIME equ  $2C00
 DOSF_ENVGET  equ  $6400       ; 64h env access, sub-fn 00 (GET): A0=name -> A0=value/0
+DOSF_ENVSET  equ  $6401       ; 64h.01 SET: A0=name, A1=value (empty = delete)
+DOSF_ENVGETBLK equ $6402      ; 64h.02 GETBLK: -> A0 = env block (0 = none)
 DOSF_EXEC    equ  $4B00       ; 4Bh EXEC, mode 00 (load and execute a child to completion)
 DOSF_GETRET  equ  $4D00       ; 4Dh get child return code -> D0 = (cause<<8)|code
 
@@ -89,8 +110,8 @@ start_resok:
         subi.l  #STKSIZE,d0         ; heap length = arena - reserved stack
         move.l  d0,c_heaplen
 
-        lea     c_envp,a0           ; main(argc, argv, envp)
-        move.l  a0,-(sp)
+        jsr     _envbuild           ; build environ[] from the env block -> D0 = envp
+        move.l  d0,-(sp)            ; main(argc, argv, envp)
         lea     c_argv,a0
         move.l  a0,-(sp)
         bsr     build_argv          ; parse the command tail -> c_argv[]; D0 = argc
@@ -372,6 +393,358 @@ sre_err:
         rts
 
 **********************************************************
+* int _sys_dup(int fd) -> new handle, or -1.
+* DOS 45h: D1.W = handle -> D0.W = new handle; carry set on error.
+**********************************************************
+_sys_dup:
+        link    a6,#0
+        move.l  8(a6),d1           ; handle (BX)
+        move.w  #DOSF_DUP,d0
+        trap    #1
+        bcs     dup_err
+        andi.l  #$FFFF,d0          ; new handle
+        unlk    a6
+        rts
+dup_err:
+        moveq   #-1,d0
+        unlk    a6
+        rts
+
+**********************************************************
+* int _sys_dup2(int oldfd, int newfd) -> newfd, or -1.
+* DOS 46h: D1.W = source handle, D2.W = target handle; carry set on error.
+* On success the target handle is the result (POSIX dup2 semantics).
+**********************************************************
+_sys_dup2:
+        link    a6,#0
+        move.l  8(a6),d1           ; source handle (BX)
+        move.l  12(a6),d2          ; target handle (CX)
+        move.w  #DOSF_DUP2,d0
+        trap    #1
+        bcs     dup2_err
+        move.l  12(a6),d0          ; success -> return the target handle
+        unlk    a6
+        rts
+dup2_err:
+        moveq   #-1,d0
+        unlk    a6
+        rts
+
+**********************************************************
+* int _sys_isatty(int fd) -> 1 if a console/char device, else 0.
+* DOS 44h/00h (IOCTL get device info): D1.W = handle -> D3 = info word,
+* bit 7 ($80) = ISDEV.  A bad handle (carry set) reports "not a tty".
+**********************************************************
+_sys_isatty:
+        link    a6,#0
+        move.l  8(a6),d1           ; handle (BX)
+        move.w  #DOSF_IOCTL,d0     ; AL = 00 -> get device info in D3
+        trap    #1
+        bcs     itty_no
+        move.l  d3,d0              ; device-info word (returned in D3)
+        andi.l  #$80,d0            ; bit 7 set = character device
+        beq     itty_no
+        moveq   #1,d0
+        unlk    a6
+        rts
+itty_no:
+        moveq   #0,d0
+        unlk    a6
+        rts
+
+**********************************************************
+* int _sys_access(const char *path) -> DOS attribute word, or -1 if absent.
+* DOS 43h/00h (get attributes): A0 = path -> D2 = attribute (bit 0 = read-only);
+* carry set (file not found) -> -1.
+**********************************************************
+_sys_access:
+        link    a6,#0
+        movea.l 8(a6),a0           ; path
+        move.w  #DOSF_CHMOD,d0     ; AL = 00 -> get attributes in D2
+        trap    #1
+        bcs     acc_err
+        move.l  d2,d0              ; attribute word
+        andi.l  #$FFFF,d0
+        unlk    a6
+        rts
+acc_err:
+        moveq   #-1,d0
+        unlk    a6
+        rts
+
+**********************************************************
+* int _sys_findfirst(const char *path, int attr, void *dta) -> 0, or -1.
+* Point the DTA at the caller's find block (1Ah), then DOS 4Eh find-first
+* (A0=path, D2=attr) fills it: attr@15h, time@16h, date@18h, size@1Ah, name@1Eh
+* (multi-byte fields big-endian).
+**********************************************************
+_sys_findfirst:
+        link    a6,#0
+        movea.l 16(a6),a0          ; A0 = dta (find block)
+        move.w  #DOSF_SETDTA,d0
+        trap    #1
+        movea.l 8(a6),a0           ; A0 = path
+        move.l  12(a6),d2          ; D2 = attribute mask
+        move.w  #DOSF_FFIRST,d0
+        trap    #1
+        bcs     ff_err
+        moveq   #0,d0
+        unlk    a6
+        rts
+ff_err:
+        moveq   #-1,d0
+        unlk    a6
+        rts
+
+**********************************************************
+* int _sys_findnext(void *dta) -> 0, or -1.  Re-point the DTA at the caller's
+* find block (1Ah), then continue the search (4Fh).
+**********************************************************
+_sys_findnext:
+        link    a6,#0
+        movea.l 8(a6),a0           ; A0 = dta (holds the opaque search state)
+        move.w  #DOSF_SETDTA,d0
+        trap    #1
+        move.w  #DOSF_FNEXT,d0
+        trap    #1
+        bcs     fn_err
+        moveq   #0,d0
+        unlk    a6
+        rts
+fn_err:
+        moveq   #-1,d0
+        unlk    a6
+        rts
+
+**********************************************************
+* int _sys_getfiletime(int fd) -> (date<<16)|time, or -1.
+* DOS 57h/00: D1.W=handle -> D2=time, D3=date.
+**********************************************************
+_sys_getfiletime:
+        link    a6,#0
+        move.l  8(a6),d1           ; handle
+        move.w  #DOSF_FILETIME,d0  ; AL = 00 (get)
+        trap    #1
+        bcs     gft_err
+        moveq   #0,d0
+        move.w  d3,d0              ; d0 = date
+        swap    d0                 ; d0 = date << 16
+        move.w  d2,d0              ; d0 = (date<<16) | time
+        unlk    a6
+        rts
+gft_err:
+        moveq   #-1,d0
+        unlk    a6
+        rts
+
+**********************************************************
+* int _sys_setfiletime(int fd, long dtstamp) -> 0, or -1.
+* DOS 57h/01: D1.W=handle, D2.W=time, D3.W=date.  dtstamp = (date<<16)|time.
+**********************************************************
+_sys_setfiletime:
+        link    a6,#0
+        move.l  8(a6),d1           ; handle
+        move.l  12(a6),d2          ; D2 = dtstamp (low word = time)
+        move.l  d2,d3
+        swap    d3                 ; D3 low word = date
+        move.w  #DOSF_FILETIME+1,d0 ; AL = 01 (set)
+        trap    #1
+        bcs     stf_err
+        moveq   #0,d0
+        unlk    a6
+        rts
+stf_err:
+        moveq   #-1,d0
+        unlk    a6
+        rts
+
+**********************************************************
+* int _sys_mkdir(const char *path) -> 0, or -1.  DOS 39h.
+**********************************************************
+_sys_mkdir:
+        link    a6,#0
+        movea.l 8(a6),a0
+        move.w  #DOSF_MKDIR,d0
+        trap    #1
+        bcs     mkd_err
+        moveq   #0,d0
+        unlk    a6
+        rts
+mkd_err:
+        moveq   #-1,d0
+        unlk    a6
+        rts
+
+**********************************************************
+* int _sys_rmdir(const char *path) -> 0, or -1.  DOS 3Ah.
+**********************************************************
+_sys_rmdir:
+        link    a6,#0
+        movea.l 8(a6),a0
+        move.w  #DOSF_RMDIR,d0
+        trap    #1
+        bcs     rmd_err
+        moveq   #0,d0
+        unlk    a6
+        rts
+rmd_err:
+        moveq   #-1,d0
+        unlk    a6
+        rts
+
+**********************************************************
+* int _sys_chdir(const char *path) -> 0, or -1.  DOS 3Bh.
+**********************************************************
+_sys_chdir:
+        link    a6,#0
+        movea.l 8(a6),a0
+        move.w  #DOSF_CHDIR,d0
+        trap    #1
+        bcs     chd_err
+        moveq   #0,d0
+        unlk    a6
+        rts
+chd_err:
+        moveq   #-1,d0
+        unlk    a6
+        rts
+
+**********************************************************
+* int _sys_getcwd(char *buf) -> 0.  Writes "X:\" (current drive via 19h) then
+* the current directory path (47h fills buf+3; ASCIIZ, no leading backslash).
+* A1 keeps buf across the traps (the DOS epilogue preserves A1-A6/D2-D7).
+**********************************************************
+_sys_getcwd:
+        link    a6,#0
+        movea.l 8(a6),a1           ; A1 = buf (survives the traps)
+        move.w  #DOSF_CURDISK,d0   ; 19h -> D0.b = drive (0=A)
+        trap    #1
+        addi.b  #'A',d0
+        move.b  d0,(a1)            ; buf[0] = drive letter
+        move.b  #':',1(a1)         ; buf[1] = ':'
+        move.b  #$5C,2(a1)         ; buf[2] = backslash
+        lea     3(a1),a0           ; A0 = buf+3 (47h fills from here)
+        moveq   #0,d3              ; D3 = 0 = default drive
+        move.w  #DOSF_GETCWD,d0    ; 47h
+        trap    #1
+        moveq   #0,d0
+        unlk    a6
+        rts
+
+**********************************************************
+* int _sys_chmod(const char *path, int attr) -> 0, or -1.
+* DOS 43h/01 set attributes: A0=path, D2=attr.
+**********************************************************
+_sys_chmod:
+        link    a6,#0
+        movea.l 8(a6),a0
+        move.l  12(a6),d2          ; attribute
+        move.w  #DOSF_CHMOD+1,d0   ; AL = 01 (set)
+        trap    #1
+        bcs     chm_err
+        moveq   #0,d0
+        unlk    a6
+        rts
+chm_err:
+        moveq   #-1,d0
+        unlk    a6
+        rts
+
+**********************************************************
+* long _sys_fdsize(int fd) -> file size in bytes, or -1.
+* DOS 42h LSEEK method 2 (SEEK_END): returns the end position = size.  Moves
+* the file pointer to end; fstat restores it afterwards.
+**********************************************************
+_sys_fdsize:
+        link    a6,#0
+        move.l  8(a6),d1           ; handle
+        moveq   #0,d3              ; offset 0
+        move.w  #DOSF_LSEEK+2,d0   ; method 2 = SEEK_END
+        trap    #1
+        bcs     fds_err
+        unlk    a6
+        rts
+fds_err:
+        moveq   #-1,d0
+        unlk    a6
+        rts
+
+**********************************************************
+* int _sys_conin(void) -> raw console char (no echo), blocking.  DOS 07h.
+**********************************************************
+_sys_conin:
+        move.w  #$0700,d0
+        trap    #1
+        andi.l  #$FF,d0
+        rts
+
+**********************************************************
+* int _sys_constat(void) -> 1 if a key is ready, else 0.  DOS 0Bh.
+**********************************************************
+_sys_constat:
+        move.w  #$0B00,d0
+        trap    #1
+        andi.l  #$FF,d0            ; D0.b = FF ready / 00 none
+        beq     cst_ret
+        moveq   #1,d0
+cst_ret:
+        rts
+
+**********************************************************
+* long _sys_doscall(struct dosregs *r) -- generic DOS (TRAP #1) escape hatch.
+* r = { u32 d0,d1,d2,d3; void *a0,*a1; long cflag } at offsets 0,4,8,12,16,20,24.
+* Loads the registers from *r, traps, stores D0-D3/A0/A1 + the carry flag back,
+* and returns r->d0.  A2 (struct ptr) and the caller's D2-D4 are preserved.
+**********************************************************
+_sys_doscall:
+        link    a6,#0
+        movem.l d2-d4/a2,-(sp)
+        movea.l 8(a6),a2            ; A2 = struct (DOS preserves A2 across the trap)
+        move.l  0(a2),d0
+        move.l  4(a2),d1
+        move.l  8(a2),d2
+        move.l  12(a2),d3
+        movea.l 16(a2),a0
+        movea.l 20(a2),a1
+        trap    #1
+        bcc     dc_cc0             ; capture carry FIRST (before any CC-affecting op)
+        moveq   #1,d4
+        bra     dc_ccdone
+dc_cc0:
+        moveq   #0,d4
+dc_ccdone:
+        move.l  d0,0(a2)
+        move.l  d1,4(a2)
+        move.l  d2,8(a2)
+        move.l  d3,12(a2)
+        move.l  a0,16(a2)
+        move.l  a1,20(a2)
+        move.l  d4,24(a2)          ; cflag (0/1)
+        move.l  0(a2),d0           ; return r->d0
+        movem.l (sp)+,d2-d4/a2
+        unlk    a6
+        rts
+
+**********************************************************
+* long _cpm_bdos(int func, long param) -- CP/M BDOS is unavailable on Osiris.
+* Present so <cpm.h> bdos() links on Osiris; it just fails.
+**********************************************************
+_cpm_bdos:
+        moveq   #-1,d0
+        rts
+
+**********************************************************
+* int _sys_lasterror(void) -> the last DOS extended error code (0 if none).
+* DOS 59h (get extended error): D1 = version (ignored) -> D0.W = latched code.
+**********************************************************
+_sys_lasterror:
+        moveq   #0,d1
+        move.w  #$5900,d0
+        trap    #1
+        andi.l  #$FFFF,d0
+        rts
+
+**********************************************************
 * void *_sys_sbrk(int delta) -> old break, or (void*)-1 on OOM.
 **********************************************************
 _sys_sbrk:
@@ -460,6 +833,38 @@ _sys_getenv:
         trap    #1
         move.l  a0,d0              ; A0 = value ptr (0 = absent) -> return in D0
         unlk    a6
+        rts
+
+**********************************************************
+* int _sys_setenv(const char *name, const char *value) -> 0, or -1.
+* Osiris 64h.01 SET: A0 = name, A1 = value (empty string = delete).  The kernel
+* REBUILDS the process environment block (so cached pointers into it -- e.g.
+* environ[] -- must be refreshed afterwards) and updates PSP+30h.
+**********************************************************
+_sys_setenv:
+        link    a6,#0
+        movea.l 8(a6),a0            ; name
+        movea.l 12(a6),a1           ; value (ASCIIZ; empty = delete)
+        move.w  #DOSF_ENVSET,d0     ; 64h sub-fn 01 = SET
+        trap    #1
+        bcs     sev_err
+        moveq   #0,d0
+        unlk    a6
+        rts
+sev_err:
+        moveq   #-1,d0
+        unlk    a6
+        rts
+
+**********************************************************
+* char *_sys_getenvblk(void) -> the current environment block, or NULL.
+* Osiris 64h.02 GETBLK: -> A0 = block (a run of "NAME=VALUE" ASCIIZ strings
+* ending in an empty string).  No error return.
+**********************************************************
+_sys_getenvblk:
+        move.w  #DOSF_ENVGETBLK,d0  ; 64h sub-fn 02 = GETBLK
+        trap    #1
+        move.l  a0,d0              ; A0 = block ptr (0 = none) -> return in D0
         rts
 
 **********************************************************

@@ -16,7 +16,7 @@
 
         PUBLIC  _start
         PUBLIC  _cpm_bdos,_sys_exit,_sys_sbrk,_sys_heapavail
-        EXTERN  _main
+        EXTERN  _main,_envbuild
 
 * CP/M-68K base-page offsets.
 BP_HIGHTPA   equ  $04       ; first byte above the TPA (stack top)
@@ -62,8 +62,8 @@ bz_done:
         sub.l   d0,d1
         move.l  d1,c_heaplen
 
-        lea     c_envp,a0           ; main(argc, argv, envp)
-        move.l  a0,-(sp)
+        jsr     _envbuild           ; build environ[] (empty on CP/M) -> D0 = envp
+        move.l  d0,-(sp)            ; main(argc, argv, envp)
         lea     c_argv,a0
         move.l  a0,-(sp)
         bsr     build_argv          ; tokenise the command tail -> c_argv[]; D0 = argc

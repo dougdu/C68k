@@ -67,14 +67,14 @@ OS): `<float.h>`, `<iso646.h>`, `<limits.h>`, `<stdarg.h>`, `<stdbool.h>`,
 | `<assert.h>` | `assert` diagnostic macro | ✅ | `libc/include/assert.h`, `libc/core/assert.c` | Honours `NDEBUG`. Conforming. |
 | `<complex.h>` | Complex arithmetic (`_Complex`) | ❌ | — | Not provided; compiler has no `_Complex` support. |
 | `<ctype.h>` | Character classification | ✅ | `libc/include/ctype.h`, `libc/core/is*.c` | Complete (C/ASCII locale). |
-| `<errno.h>` | Error numbers | ✅ | `libc/include/errno.h`, `libc/core/errno.c` | `EDOM`/`ERANGE`/`EILSEQ` now defined (plus a POSIX subset). Math routines do not yet *set* them (Tier 2). |
-| `<fenv.h>` | Floating‑point environment | ❌ | — | No FP exception/rounding control (soft‑float is fixed round‑to‑nearest). |
+| `<errno.h>` | Error numbers | ✅ | `libc/include/errno.h`, `libc/core/errno.c` | `EDOM`/`ERANGE`/`EILSEQ` + a POSIX subset. Base double math now *sets* `EDOM`/`ERANGE`; seam wrappers map OS error codes via `__oserr_to_errno` (`oserr.c`, DOS 59h). |
+| `<fenv.h>` | Floating‑point environment | ⚠️ | `libc/include/fenv.h`, `libc/core/fenv.c` | Conforming‑but‑inert stubs: exception ops are no‑ops, only `FE_TONEAREST` selectable (soft‑float is fixed round‑to‑nearest). |
 | `<float.h>` | Floating‑type characteristics | ✅ | `include/float.h`, `libc/include/float.h` | Complete. |
 | `<inttypes.h>` | Integer format conversions | ✅ | `libc/include/inttypes.h`, `libc/core/imax*.c`, `strto[iu]max.c` | Full `PRI*`/`SCN*` set; `imaxabs`/`imaxdiv`/`strtoimax`/`strtoumax` present. |
 | `<iso646.h>` | Alternative operator spellings | ✅ | `libc/include/iso646.h` | Complete. |
 | `<limits.h>` | Integer‑type limits | ✅ | `include/limits.h`, `libc/include/limits.h` | Complete for ILP32. |
-| `<locale.h>` | Localization | ❌ | — | Only the "C" locale is implied; `setlocale`/`localeconv` absent. |
-| `<math.h>` | Mathematics | ⚠️ | `libc/include/math.h`, `libc/core/*.c` → **libm** | Base transcendentals inline (double); the full C99 function set + classification/constants added in C (Tier 2 2a/2b/2c, with `EDOM`/`ERANGE`), the `f`/`l` type variants, and native `asin`/`acos`. Underlying libm passed its initial defect sweep (29/30 resolved); `sqrt`/`atan`/`asin`/`acos` ~1–2 ULP double. Deviation: soft‑float fixed rounding (double transcendentals not correctly‑rounded), no `_Complex`. |
+| `<locale.h>` | Localization | ⚠️ | `libc/include/locale.h`, `libc/core/locale.c` | `setlocale`/`localeconv` present; only the "C" locale is supported (any other locale → `NULL`). |
+| `<math.h>` | Mathematics | ⚠️ | `libc/include/math.h`, `libc/core/*.c` → **libm** | Base transcendentals inline (double); the full C99 function set + classification/constants added in C (Tier 2 2a/2b/2c, with `EDOM`/`ERANGE`), the `f`/`l` type variants, and native `asin`/`acos`. Underlying libm passed its initial defect sweep (29/30 resolved); `sqrt`/`atan`/`asin`/`acos` ~1–2 ULP double. The double base functions now set `EDOM`/`ERANGE` on domain/range errors (float variants bind directly to libm and do not). Deviation: soft‑float fixed rounding (double transcendentals not correctly‑rounded), no `_Complex`. |
 | `<setjmp.h>` | Non‑local jumps | ✅ | `lib/runtime/rt68k.a68` + hdr | `setjmp`/`longjmp` asm shim; codegen spills temporaries across the `returns_twice` call so longjmp re‑entry is safe. |
 | `<signal.h>` | Signal handling | ⚠️ | `libc/include/signal.h`, `libc/core/signal.c` | Synchronous only — no async delivery on these OSes; `raise` calls handlers inline. |
 | `<stdarg.h>` | Variable arguments | ✅ | `include/stdarg.h` | m68k `va_list`. Conforming. |
@@ -82,17 +82,19 @@ OS): `<float.h>`, `<iso646.h>`, `<limits.h>`, `<stdarg.h>`, `<stdbool.h>`,
 | `<stddef.h>` | Common definitions | ✅ | `include/stddef.h` | `size_t`, `ptrdiff_t`, `wchar_t`, `NULL`, `offsetof`. |
 | `<stdint.h>` | Fixed‑width integers | ✅ | `include/stdint.h` | Complete (exact/least/fast/ptr/max + limits + `*_C` macros). |
 | `<stdio.h>` | Input/output | ⚠️ | `libc/include/stdio.h`, `libc/core/*.c` | Streaming scanf family, the `v*` variants, `ungetc`/`rewind`/`clearerr`/`perror`/`remove`/`rename`, `freopen`/`setbuf`/`setvbuf`/`fgetpos`/`fsetpos`/`tmpnam`/`tmpfile`, buffer‑aware `ftell`, byte‑level `fseek`, and `+` update modes (orientation‑tracked) on both OSes. Remaining: wide. See §stdio. |
-| `<stdlib.h>` | General utilities | ⚠️ | `libc/include/stdlib.h`, `libc/core/*.c` | Added `atoll`/`llabs`/`lldiv`/`strtof`/`_Exit`/`getenv`/`system`. Only the multibyte functions (`mblen`/`mbtowc`/…) remain absent (no wide‑char support). |
+| `<stdlib.h>` | General utilities | ⚠️ | `libc/include/stdlib.h`, `libc/core/*.c` | Added `atoll`/`llabs`/`lldiv`/`strtof`/`_Exit`/`getenv`/`system`; C11 `aligned_alloc`/`at_quick_exit`/`quick_exit` (+ POSIX `posix_memalign`). Only the `<stdlib.h>` multibyte functions (`mblen`/`mbtowc`/…) remain absent (no wide‑char support; UTF‑8 ↔ UTF‑16/32 lives in `<uchar.h>`). |
 | `<string.h>` | String handling | ⚠️ | `libc/include/string.h`, `libc/core/str*.c`, **rt** | Added `strspn`/`strcspn`/`strpbrk`. Only `strcoll`/`strxfrm` remain absent (no locale). |
 | `<tgmath.h>` | Type‑generic math | ❌ | — | Requires `<complex.h>` + `<math.h>` generic macros. |
-| `<time.h>` | Date and time | ⚠️ | `libc/include/time.h`, `libc/core/time.c` | `clock` stubbed; `localtime`==`gmtime` (no TZ/DST); `time_t` 32‑bit. |
+| `<time.h>` | Date and time | ⚠️ | `libc/include/time.h`, `libc/core/time.c` | C11 `timespec_get` (`TIME_UTC`, 1‑second resolution) present; `clock` stubbed; `localtime`==`gmtime` (no TZ/DST); `time_t` 32‑bit. |
 | `<wchar.h>` | Extended/wide characters | ❌ | — | Not provided. |
 | `<wctype.h>` | Wide‑character classification | ❌ | — | Not provided. |
 
 **Beyond C99:** C68K also ships the C11 freestanding headers `include/stdalign.h`,
-`include/stdatomic.h`, `include/stdnoreturn.h`. Non‑standard (POSIX‑ish)
-extension headers present: `libc/include/{strings.h, unistd.h, libgen.h,
-sys/stat.h, sys/types.h}`.
+`include/stdatomic.h`, `include/stdnoreturn.h`, plus the C11 *hosted* headers
+`libc/include/uchar.h` (UTF‑8 ↔ UTF‑16/32) and `libc/include/fenv.h` (inert
+soft‑float environment). Non‑standard (POSIX‑ish) extension headers present:
+`libc/include/{strings.h, unistd.h, fcntl.h, dirent.h, utime.h, conio.h,
+osiris.h, cpm.h, getopt.h, alloca.h, err.h, libgen.h, sys/stat.h, sys/types.h}`.
 
 ---
 
@@ -146,9 +148,21 @@ Also provided (POSIX numbers): `ENOENT`, `EIO`, `EBADF`, `ENOMEM`, `EACCES`,
 
 ### `<fenv.h>` — floating‑point environment
 
-Header absent. All ❌: `feclearexcept`, `fegetexceptflag`, `feraiseexcept`,
-`fesetexceptflag`, `fetestexcept`, `fegetround`, `fesetround`, `fegetenv`,
-`feholdexcept`, `fesetenv`, `feupdateenv`.
+Present as conforming‑but‑inert stubs (`libc/core/fenv.c`), because the soft‑float
+runtime has fixed round‑to‑nearest and no exception flags. `fegetround` returns
+`FE_TONEAREST`; `fesetround` succeeds only for `FE_TONEAREST` (else `-1`); the
+exception ops (`feclearexcept`, `fegetexceptflag`, `feraiseexcept`,
+`fesetexceptflag`, `fetestexcept`) are no‑ops returning 0; `fegetenv`/`feholdexcept`/
+`fesetenv`/`feupdateenv` zero/ignore the environment. (`math_errhandling` is
+`MATH_ERRNO`, so numeric errors surface via `errno`, not these flags.)
+
+### `<uchar.h>` — UTF‑16/UTF‑32 conversions (C11)
+
+Present (`libc/core/uchar.c`). `char16_t`/`char32_t` plus `mbrtoc32`/`c32rtomb`
+and `mbrtoc16`/`c16rtomb`, converting to/from the UTF‑8 multibyte encoding of the
+C locale with overlong/surrogate/out‑of‑range rejection. `mbrtoc16` yields a
+surrogate pair across two calls (the second returns `(size_t)-3`) and `c16rtomb`
+holds a high surrogate until its low half arrives.
 
 ### `<inttypes.h>` — integer format conversion
 
@@ -414,7 +428,9 @@ restartable multibyte conversion (`mbrtowc`, `wcrtomb`, `mbsrtowcs`,
 ## Non‑standard extensions currently provided
 
 These are present in C68K but are **not** part of C99 (mostly POSIX). They are
-listed for completeness so they are not mistaken for standard coverage.
+listed for completeness so they are not mistaken for standard coverage. The
+roadmap growing this set lives in
+[`posix-and-platform-plan.md`](posix-and-platform-plan.md).
 
 | Item | Header | Library / File |
 |---|---|---|
@@ -423,8 +439,23 @@ listed for completeness so they are not mistaken for standard coverage.
 | `dirname`, `basename` | `<libgen.h>` | libc / `dirname.c`,`basename.c` |
 | `open_memstream` | `<stdio.h>` (ext) | libc / `open_memstream.c` |
 | `ctime_r` | `<time.h>` (ext) | libc / `time.c` |
-| `unlink`, `close` | `<unistd.h>` | libc / `unlink.c`,`close.c` |
-| `stat`, `fstat` | `<sys/stat.h>` | libc / `stat.c` (stub: always fails) |
+| `open`, `creat`, `fcntl` | `<fcntl.h>` | libc / `open.c`,`fcntl.c` |
+| `read`, `write`, `lseek`, `dup`, `dup2`, `isatty`, `access`, `rmdir`, `chdir`, `getcwd`, `unlink`, `close` | `<unistd.h>` | libc / `read.c`,`write.c`,`lseek.c`,`dup.c`,`isatty.c`,`access.c`,`rmdir.c`,`chdir.c`,`getcwd.c`,`unlink.c`,`close.c` |
+| `fileno`, `fdopen` | `<stdio.h>` (ext) | libc / `fileno.c`,`fdopen.c` |
+| `stat`, `fstat`, `lstat`, `mkdir`, `chmod` | `<sys/stat.h>` | libc / `stat.c`,`mkdir.c`,`chmod.c` (real; DOS 4Eh/57h, CP/M F_SFIRST/F_ATTRIB) |
+| `opendir`, `readdir`, `closedir`, `rewinddir` | `<dirent.h>` | libc / `opendir.c` |
+| `utime` | `<utime.h>` | libc / `utime.c` (Osiris DOS 57h; CP/M has no timestamp) |
+| `setenv`, `putenv`, `unsetenv`, `clearenv` | `<stdlib.h>` | libc / `setenv.c`,`unsetenv.c` (Osiris DOS 64h; no-op on CP/M) |
+| `environ` | `<unistd.h>` | libc / `environ.c` (from the OS env block; `{ NULL }` on CP/M) |
+| `getch`, `getche`, `putch`, `kbhit`, `cputs`, `clrscr`, `gotoxy` | `<conio.h>` | libc / `conio.c` (raw console; ANSI for clrscr/gotoxy) |
+| `intdos`, `_dos_getdiskfree`, `_dos_getdrive`, `_dos_setdrive` | `<osiris.h>` | libc / `osiris_ext.c` (Osiris DOS escape hatch; −1 on CP/M) |
+| `bdos` | `<cpm.h>` | libc / `cpm_ext.c` (CP/M BDOS escape hatch; −1 on Osiris) |
+| `getopt`, `getopt_long` | `<unistd.h>`, `<getopt.h>` | libc / `getopt.c` |
+| `strlcpy`, `strlcat`, `strsep`, `memmem` | `<string.h>` (ext) | libc / `strlcpy.c`,`strsep.c`,`memmem.c` |
+| `strcasestr` | `<strings.h>` | libc / `strcasestr.c` |
+| `reallocarray`, `qsort_r`, `itoa`/`utoa`/`ltoa`/`ultoa`, `getprogname`/`setprogname` | `<stdlib.h>` (ext) | libc / `reallocarray.c`,`qsort.c`,`itoa.c`,`err.c` |
+| `err`, `errx`, `warn`, `warnx` (+ `v*`) | `<err.h>` | libc / `err.c` |
+| `alloca` | `<alloca.h>` | compiler builtin |
 
 ---
 
@@ -483,7 +514,7 @@ floats: `%a` parses hex or decimal on input and emits exact hex floats on output
 
 ### Tier 3 — large or blocked
 10. **`<wchar.h>` / `<wctype.h>`**: sizeable; needs a multibyte/wide strategy.
-11. **`<fenv.h>`**: limited by the soft‑float runtime (fixed rounding, no flags).
+11. **`<fenv.h>`**: present as inert stubs — fixed round‑to‑nearest, no exception flags (soft‑float runtime).
 12. **`<complex.h>` / `<tgmath.h>`**: blocked on **compiler** `_Complex` support;
     defer until the front end grows complex types.
 

@@ -35,6 +35,13 @@ $cases = @(
   @{ Run = 'TIMETEST'; Src = 'tests\lockstep\timetest.c'; Expect = @('TIME PASS') }
   @{ Run = 'SETJMP';   Src = 'tests\lockstep\setjmp.c';   Expect = @('SETJMP PASS 6/6') }
   @{ Run = 'IOTEST';   Src = 'tests\lockstep\iotest.c';   Expect = @('IOTEST PASS 37/37') }
+  @{ Run = 'FDTEST';   Src = 'tests\lockstep\fdtest.c';   Expect = @('FDTEST PASS 18/18') }
+  @{ Run = 'STATDIR';  Src = 'tests\lockstep\statdir.c';  Expect = @('STATDIR PASS 20/20') }
+  @{ Run = 'ENVTEST';  Src = 'tests\lockstep\envtest.c';  Expect = @('ENVTEST PASS 11/11') }
+  @{ Run = 'CONIOT';   Src = 'tests\lockstep\coniot.c';   Expect = @('CONIOT PASS 3/3') }
+  @{ Run = 'POLISH';   Src = 'tests\lockstep\polish.c';   Expect = @('POLISH PASS 13/13') }
+  @{ Run = 'CONVTEST'; Src = 'tests\lockstep\convtest.c'; Expect = @('CONVTEST PASS 26/26') }
+  @{ Run = 'C11TEST';  Src = 'tests\lockstep\c11test.c';  Expect = @('C11TEST PASS 18/18') }
   @{ Run = 'HEXDUMP';  Src = 'samples\hexdump.c';         Expect = @('hexdump of HEXTEST.BIN',
                                                                      '|c68k hexdump OK.|',
                                                                      '63 36 38 6b', '128 bytes') }

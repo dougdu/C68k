@@ -29,3 +29,22 @@ void exit(int code) {
 }
 
 void abort(void) { exit(1); }
+
+/* C11 quick_exit: run the at_quick_exit handlers (LIFO), then _Exit -- no
+ * atexit handlers and no stdio flush. */
+#define _QEXIT_MAX 32
+static void (*_qexit_fns[_QEXIT_MAX])(void);
+static int _qexit_n;
+
+int at_quick_exit(void (*fn)(void)) {
+  if (_qexit_n >= _QEXIT_MAX)
+    return -1;
+  _qexit_fns[_qexit_n++] = fn;
+  return 0;
+}
+
+void quick_exit(int code) {
+  while (_qexit_n > 0)
+    _qexit_fns[--_qexit_n]();
+  _Exit(code);
+}
