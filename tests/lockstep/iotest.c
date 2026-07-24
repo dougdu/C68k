@@ -88,6 +88,26 @@ int main(void) {
     CHECK(fclose(t) == 0);
   }
 
+  /* printf %n: stores the running output length; emits nothing itself. The
+     pointee width follows the length modifier (default int, hh/h/l/ll). */
+  {
+    char nb[16];
+    int n = -1;
+    CHECK(sprintf(nb, "abcd%n", &n) == 4 && n == 4);
+    int mid = -1;
+    CHECK(sprintf(nb, "AB%nCDE", &mid) == 5 && mid == 2); /* count mid-format */
+    int n2 = -1;
+    CHECK(snprintf(nb, sizeof nb, "%d%n!", 4200, &n2) == 5 && n2 == 4);
+    long ln = -1;
+    CHECK(sprintf(nb, "hi%ln", &ln) == 2 && ln == 2);
+    short sn = -1;
+    CHECK(sprintf(nb, "12345%hn", &sn) == 5 && sn == 5);
+    signed char cn = -1;
+    CHECK(sprintf(nb, "xyzzy%hhn", &cn) == 5 && cn == 5);
+    long long lln = -1;
+    CHECK(sprintf(nb, "%s%lln", "abcdef", &lln) == 6 && lln == 6);
+  }
+
   remove(name);
   remove(name2);
 

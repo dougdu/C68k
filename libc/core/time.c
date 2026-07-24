@@ -63,6 +63,223 @@ static const char _wday_abbr[7][4] = {"Sun", "Mon", "Tue", "Wed",
 static const char _mon_abbr[12][4] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
                                       "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
 
+/* ---- POSIX TZ support -------------------------------------------------
+ * The seam clock (Osiris/CP-M RTC) reads LOCAL wall time.  With no TZ set the
+ * library treats that as UTC (localtime()==gmtime()) -- byte-identical to the
+ * old behaviour.  When the TZ environment variable is present (Osiris only;
+ * CP/M has no environment) it is parsed as a POSIX zone
+ *   std offset [ dst [offset] [ ,start[/time],end[/time] ] ]
+ * and the RTC is interpreted as local time, from which UTC is computed.  The
+ * convention used internally: `off` = seconds to ADD to local time to reach
+ * UTC (i.e. west of UTC is positive), matching the POSIX `offset` field. */
+long timezone = 0; /* seconds: UTC = local_standard + timezone */
+int daylight = 0;
+static char _tzn_std[8] = "UTC";
+static char _tzn_dst[8] = "";
+char *tzname[2] = {_tzn_std, _tzn_dst};
+
+struct __tzrule {
+  char type;           /* 'M', 'J', 'D', or 0 (none) */
+  int mon, week, wday; /* for 'M': month 1-12, week 1-5, weekday 0-6 (Sun=0) */
+  int yday;            /* for 'J' (1-365) or 'D' (0-365) */
+  long secs;           /* seconds after local midnight; default 02:00:00 */
+};
+static struct {
+  int inited;
+  int has_dst;
+  long std_off, dst_off; /* add to local to get UTC */
+  struct __tzrule start, end;
+} _tz;
+
+static const char *_tz_off(const char *p, long *out) {
+  int sign = 1;
+  if (*p == '+')
+    p++;
+  else if (*p == '-') {
+    sign = -1;
+    p++;
+  }
+  long h = 0, m = 0, s = 0;
+  while (*p >= '0' && *p <= '9')
+    h = h * 10 + (*p++ - '0');
+  if (*p == ':') {
+    p++;
+    while (*p >= '0' && *p <= '9')
+      m = m * 10 + (*p++ - '0');
+    if (*p == ':') {
+      p++;
+      while (*p >= '0' && *p <= '9')
+        s = s * 10 + (*p++ - '0');
+    }
+  }
+  *out = sign * (h * 3600 + m * 60 + s);
+  return p;
+}
+
+static const char *_tz_name(const char *p, char *out) {
+  int n = 0;
+  if (*p == '<') {
+    p++;
+    while (*p && *p != '>') {
+      if (n < 7)
+        out[n++] = *p;
+      p++;
+    }
+    if (*p == '>')
+      p++;
+  } else {
+    while ((*p >= 'A' && *p <= 'Z') || (*p >= 'a' && *p <= 'z')) {
+      if (n < 7)
+        out[n++] = *p;
+      p++;
+    }
+  }
+  out[n] = 0;
+  return p;
+}
+
+static const char *_tz_rule(const char *p, struct __tzrule *r) {
+  r->secs = 7200; /* default 02:00:00 local */
+  if (*p == 'M') {
+    p++;
+    r->type = 'M';
+    r->mon = r->week = r->wday = 0;
+    while (*p >= '0' && *p <= '9')
+      r->mon = r->mon * 10 + (*p++ - '0');
+    if (*p == '.')
+      p++;
+    while (*p >= '0' && *p <= '9')
+      r->week = r->week * 10 + (*p++ - '0');
+    if (*p == '.')
+      p++;
+    while (*p >= '0' && *p <= '9')
+      r->wday = r->wday * 10 + (*p++ - '0');
+  } else if (*p == 'J') {
+    p++;
+    r->type = 'J';
+    r->yday = 0;
+    while (*p >= '0' && *p <= '9')
+      r->yday = r->yday * 10 + (*p++ - '0');
+  } else {
+    r->type = 'D';
+    r->yday = 0;
+    while (*p >= '0' && *p <= '9')
+      r->yday = r->yday * 10 + (*p++ - '0');
+  }
+  if (*p == '/') {
+    p++;
+    long t;
+    p = _tz_off(p, &t);
+    r->secs = t;
+  }
+  return p;
+}
+
+void tzset(void) {
+  _tz.inited = 1;
+  _tz.has_dst = 0;
+  _tz.std_off = _tz.dst_off = 0;
+  _tz.start.type = _tz.end.type = 0;
+  strcpy(_tzn_std, "UTC");
+  _tzn_dst[0] = 0;
+  const char *tz = getenv("TZ");
+  if (!tz || !*tz) {
+    timezone = 0;
+    daylight = 0;
+    return;
+  }
+  char nm[16];
+  const char *p = _tz_name(tz, nm);
+  if (!nm[0]) { /* malformed -> stay UTC */
+    timezone = 0;
+    daylight = 0;
+    return;
+  }
+  strcpy(_tzn_std, nm);
+  long off = 0;
+  p = _tz_off(p, &off);
+  _tz.std_off = off; /* POSIX: local + off = UTC */
+  if (*p) {          /* a DST zone name follows */
+    p = _tz_name(p, nm);
+    strcpy(_tzn_dst, nm);
+    _tz.has_dst = 1;
+    if (*p && *p != ',') {
+      long doff;
+      p = _tz_off(p, &doff);
+      _tz.dst_off = doff;
+    } else {
+      _tz.dst_off = _tz.std_off - 3600; /* default: one hour less */
+    }
+    if (*p == ',') {
+      p++;
+      p = _tz_rule(p, &_tz.start);
+      if (*p == ',') {
+        p++;
+        p = _tz_rule(p, &_tz.end);
+      }
+    } else {
+      /* No rules given -> US default: DST 2nd Sun Mar .. 1st Sun Nov, 02:00. */
+      _tz.start.type = 'M';
+      _tz.start.mon = 3;
+      _tz.start.week = 2;
+      _tz.start.wday = 0;
+      _tz.start.secs = 7200;
+      _tz.end.type = 'M';
+      _tz.end.mon = 11;
+      _tz.end.week = 1;
+      _tz.end.wday = 0;
+      _tz.end.secs = 7200;
+    }
+  }
+  timezone = _tz.std_off;
+  daylight = _tz.has_dst;
+}
+
+static void tz_ensure(void) {
+  if (!_tz.inited)
+    tzset();
+}
+
+/* days-since-epoch of a DST transition rule in `year`. */
+static long tz_trans_days(const struct __tzrule *r, int year) {
+  if (r->type == 'M') {
+    int first = (int)(((__days_from_civil(year, r->mon, 1) % 7) + 4) % 7);
+    if (first < 0)
+      first += 7; /* 0 = Sunday */
+    int day = 1 + ((r->wday - first + 7) % 7) + (r->week - 1) * 7;
+    static const int mdays[13] = {0,  31, 28, 31, 30, 31, 30,
+                                  31, 31, 30, 31, 30, 31};
+    int dim = mdays[r->mon];
+    if (r->mon == 2 && ((year % 4 == 0 && year % 100 != 0) || year % 400 == 0))
+      dim = 29;
+    while (day > dim)
+      day -= 7; /* week 5 or overflow -> last occurrence */
+    return __days_from_civil(year, r->mon, day);
+  }
+  int leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+  int doy = (r->type == 'J') ? (r->yday - 1 + ((leap && r->yday >= 60) ? 1 : 0))
+                             : r->yday;
+  return __days_from_civil(year, 1, 1) + doy;
+}
+
+/* Is a LOCAL instant (seconds since epoch, and its calendar year) in DST? */
+static int tz_isdst_local(long localsec, int year) {
+  if (!_tz.has_dst)
+    return 0;
+  long s = tz_trans_days(&_tz.start, year) * 86400L + _tz.start.secs;
+  long e = tz_trans_days(&_tz.end, year) * 86400L + _tz.end.secs;
+  if (s <= e)
+    return localsec >= s && localsec < e;
+  return localsec >= s || localsec < e; /* southern hemisphere */
+}
+
+/* Offset (seconds to add to local to reach UTC) for a local instant. Exported
+ * so stat.c can convert local FAT timestamps to a UTC time_t consistently. */
+long __tz_local_offset(long localsec, int year) {
+  tz_ensure();
+  return tz_isdst_local(localsec, year) ? _tz.dst_off : _tz.std_off;
+}
+
 time_t time(time_t *timer) {
   struct __sysdt dt;
   if (sys_time(&dt) != 0) {
@@ -70,8 +287,10 @@ time_t time(time_t *timer) {
       *timer = (time_t)-1;
     return (time_t)-1;
   }
+  tz_ensure();
   long days = __days_from_civil((int)dt.year, (int)dt.mon, (int)dt.mday);
-  time_t t = days * 86400L + dt.hour * 3600L + dt.min * 60L + dt.sec;
+  long local = days * 86400L + dt.hour * 3600L + dt.min * 60L + dt.sec;
+  time_t t = (time_t)(local + __tz_local_offset(local, (int)dt.year));
   if (timer)
     *timer = t;
   return t;
@@ -115,9 +334,27 @@ struct tm *gmtime(const time_t *timer) {
   return &_tm_buf;
 }
 
-struct tm *localtime(const time_t *timer) { return gmtime(timer); }
+struct tm *localtime(const time_t *timer) {
+  tz_ensure();
+  time_t utc = *timer;
+  /* Two-pass: approximate the local instant with the standard offset, test the
+     DST rule, then break down with the resolved offset. */
+  time_t guess = utc - _tz.std_off;
+  long gdays = guess / 86400L;
+  if (guess % 86400L < 0)
+    gdays -= 1;
+  int gy, gm, gd;
+  __civil_from_days(gdays, &gy, &gm, &gd);
+  int dst = tz_isdst_local((long)guess, gy);
+  long off = dst ? _tz.dst_off : _tz.std_off;
+  time_t loc = utc - off;
+  struct tm *r = gmtime(&loc); /* fills _tm_buf with the local breakdown */
+  r->tm_isdst = (dst && _tz.has_dst) ? 1 : 0;
+  return r;
+}
 
 time_t mktime(struct tm *tm) {
+  tz_ensure();
   int y = tm->tm_year + 1900;
   int mo = tm->tm_mon; /* 0-based; may be out of range */
   int yadj = mo / 12;
@@ -128,9 +365,14 @@ time_t mktime(struct tm *tm) {
     y -= 1;
   }
   long days = __days_from_civil(y, mo + 1, tm->tm_mday);
-  time_t t =
+  long local =
       days * 86400L + tm->tm_hour * 3600L + tm->tm_min * 60L + tm->tm_sec;
-  *tm = *gmtime(&t); /* normalize the caller's struct */
+  int dst = (tm->tm_isdst > 0)   ? 1
+            : (tm->tm_isdst == 0) ? 0
+                                  : tz_isdst_local(local, y);
+  long off = dst ? _tz.dst_off : _tz.std_off;
+  time_t t = (time_t)(local + off);
+  *tm = *localtime(&t); /* normalize the caller's struct */
   return t;
 }
 
@@ -164,6 +406,7 @@ size_t strftime(char *s, size_t max, const char *fmt, const struct tm *tm) {
   size_t n = 0;
   char tmp[16];
   const char *p;
+  tz_ensure();
 #define _PUT(ch)                                                               \
   do {                                                                         \
     if (n + 1 < max)                                                           \
@@ -228,6 +471,21 @@ size_t strftime(char *s, size_t max, const char *fmt, const struct tm *tm) {
     case 'p':
       _PUTS(tm->tm_hour < 12 ? "AM" : "PM");
       break;
+    case 'Z': {
+      const char *z = (tm->tm_isdst > 0) ? tzname[1] : tzname[0];
+      if (z && *z)
+        _PUTS(z);
+      break;
+    }
+    case 'z': {
+      long off = (tm->tm_isdst > 0) ? _tz.dst_off : _tz.std_off;
+      long disp = -off; /* %z is east-of-UTC positive */
+      char sgn = disp < 0 ? '-' : '+';
+      long a = disp < 0 ? -disp : disp;
+      sprintf(tmp, "%c%02ld%02ld", sgn, a / 3600, (a % 3600) / 60);
+      _PUTS(tmp);
+      break;
+    }
     case '%':
       _PUT('%');
       break;

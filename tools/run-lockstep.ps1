@@ -34,7 +34,7 @@ $cases = @(
   @{ Run = 'MEMTEST';  Src = 'tests\lockstep\memtest.c';  Expect = @('MEM PASS 15/15') }
   @{ Run = 'TIMETEST'; Src = 'tests\lockstep\timetest.c'; Expect = @('TIME PASS') }
   @{ Run = 'SETJMP';   Src = 'tests\lockstep\setjmp.c';   Expect = @('SETJMP PASS 6/6') }
-  @{ Run = 'IOTEST';   Src = 'tests\lockstep\iotest.c';   Expect = @('IOTEST PASS 37/37') }
+  @{ Run = 'IOTEST';   Src = 'tests\lockstep\iotest.c';   Expect = @('IOTEST PASS 44/44') }
   @{ Run = 'FDTEST';   Src = 'tests\lockstep\fdtest.c';   Expect = @('FDTEST PASS 18/18') }
   @{ Run = 'STATDIR';  Src = 'tests\lockstep\statdir.c';  Expect = @('STATDIR PASS 20/20') }
   @{ Run = 'ENVTEST';  Src = 'tests\lockstep\envtest.c';  Expect = @('ENVTEST PASS 11/11') }
@@ -42,6 +42,8 @@ $cases = @(
   @{ Run = 'POLISH';   Src = 'tests\lockstep\polish.c';   Expect = @('POLISH PASS 13/13') }
   @{ Run = 'CONVTEST'; Src = 'tests\lockstep\convtest.c'; Expect = @('CONVTEST PASS 26/26') }
   @{ Run = 'C11TEST';  Src = 'tests\lockstep\c11test.c';  Expect = @('C11TEST PASS 18/18') }
+  @{ Run = 'WCHART';   Src = 'tests\lockstep\wchart.c';   Expect = @('WCHART PASS 32/32') }
+  @{ Run = 'TZTEST';   Src = 'tests\lockstep\tztime.c';   Expect = @('TZTEST PASS 10/10') }
   @{ Run = 'HEXDUMP';  Src = 'samples\hexdump.c';         Expect = @('hexdump of HEXTEST.BIN',
                                                                      '|c68k hexdump OK.|',
                                                                      '63 36 38 6b', '128 bytes') }

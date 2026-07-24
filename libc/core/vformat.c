@@ -258,8 +258,11 @@ int _vformat(_psink *s, const char *fmt, va_list ap) {
       lng++;
       fmt++;
     }
-    while (*fmt == 'h')
+    int hsh = 0;
+    while (*fmt == 'h') {
+      hsh++;
       fmt++;
+    }
 
     char numbuf[64];
     const char *str = numbuf;
@@ -362,6 +365,22 @@ int _vformat(_psink *s, const char *fmt, va_list ap) {
       else
         slen = fmt_fixed(dv, p, numbuf);
       break;
+    }
+    case 'n': {
+      /* %n: store the count of characters written so far; emits nothing.
+         The pointee width follows the length modifiers (hh/h/(none)/l/ll). */
+      int written = s->len;
+      if (lng >= 2)
+        *va_arg(ap, long long *) = written;
+      else if (lng == 1)
+        *va_arg(ap, long *) = written;
+      else if (hsh >= 2)
+        *va_arg(ap, signed char *) = (signed char)written;
+      else if (hsh == 1)
+        *va_arg(ap, short *) = (short)written;
+      else
+        *va_arg(ap, int *) = written;
+      continue;
     }
     case '%':
       _emit(s, '%');

@@ -82,12 +82,12 @@ OS): `<float.h>`, `<iso646.h>`, `<limits.h>`, `<stdarg.h>`, `<stdbool.h>`,
 | `<stddef.h>` | Common definitions | ✅ | `include/stddef.h` | `size_t`, `ptrdiff_t`, `wchar_t`, `NULL`, `offsetof`. |
 | `<stdint.h>` | Fixed‑width integers | ✅ | `include/stdint.h` | Complete (exact/least/fast/ptr/max + limits + `*_C` macros). |
 | `<stdio.h>` | Input/output | ⚠️ | `libc/include/stdio.h`, `libc/core/*.c` | Streaming scanf family, the `v*` variants, `ungetc`/`rewind`/`clearerr`/`perror`/`remove`/`rename`, `freopen`/`setbuf`/`setvbuf`/`fgetpos`/`fsetpos`/`tmpnam`/`tmpfile`, buffer‑aware `ftell`, byte‑level `fseek`, and `+` update modes (orientation‑tracked) on both OSes. Remaining: wide. See §stdio. |
-| `<stdlib.h>` | General utilities | ⚠️ | `libc/include/stdlib.h`, `libc/core/*.c` | Added `atoll`/`llabs`/`lldiv`/`strtof`/`_Exit`/`getenv`/`system`; C11 `aligned_alloc`/`at_quick_exit`/`quick_exit` (+ POSIX `posix_memalign`). Only the `<stdlib.h>` multibyte functions (`mblen`/`mbtowc`/…) remain absent (no wide‑char support; UTF‑8 ↔ UTF‑16/32 lives in `<uchar.h>`). |
+| `<stdlib.h>` | General utilities | ⚠️ | `libc/include/stdlib.h`, `libc/core/*.c` | Added `atoll`/`llabs`/`lldiv`/`strtof`/`_Exit`/`getenv`/`system`; C11 `aligned_alloc`/`at_quick_exit`/`quick_exit` (+ POSIX `posix_memalign`); the multibyte functions (`mblen`/`mbtowc`/`wctomb`/`mbstowcs`/`wcstombs`) over UTF‑8↔UTF‑32. Remaining deviations are the platform‑limited `getenv`/`system`. |
 | `<string.h>` | String handling | ⚠️ | `libc/include/string.h`, `libc/core/str*.c`, **rt** | Added `strspn`/`strcspn`/`strpbrk`. Only `strcoll`/`strxfrm` remain absent (no locale). |
 | `<tgmath.h>` | Type‑generic math | ❌ | — | Requires `<complex.h>` + `<math.h>` generic macros. |
-| `<time.h>` | Date and time | ⚠️ | `libc/include/time.h`, `libc/core/time.c` | C11 `timespec_get` (`TIME_UTC`, 1‑second resolution) present; `clock` stubbed; `localtime`==`gmtime` (no TZ/DST); `time_t` 32‑bit. |
-| `<wchar.h>` | Extended/wide characters | ❌ | — | Not provided. |
-| `<wctype.h>` | Wide‑character classification | ❌ | — | Not provided. |
+| `<time.h>` | Date and time | ⚠️ | `libc/include/time.h`, `libc/core/time.c` | C11 `timespec_get` (`TIME_UTC`, 1‑second resolution) present; `clock` stubbed; a POSIX `TZ` env var (Osiris) drives `localtime`/`mktime`/`gmtime` + `tzset` (std/DST offset & rules); with no `TZ`, `localtime`==`gmtime`; `time_t` 32‑bit. |
+| `<wchar.h>` | Extended/wide characters | ⚠️ | `libc/include/wchar.h`, `libc/core/wchar.c` | Wide strings, restartable UTF‑8↔UTF‑32 conversion, wide `strto*`, and `wcsftime` present (`wchar_t` is 32‑bit UTF‑32). Wide **stream I/O** (`fwprintf`/`fgetwc`/…) not yet provided. |
+| `<wctype.h>` | Wide‑character classification | ✅ | `libc/include/wctype.h`, `libc/core/wctype.c` | Complete for the "C" locale (ASCII via `<ctype.h>`; ≥ 0x80 unclassified). |
 
 **Beyond C99:** C68K also ships the C11 freestanding headers `include/stdalign.h`,
 `include/stdatomic.h`, `include/stdnoreturn.h`, plus the C11 *hosted* headers
@@ -172,13 +172,18 @@ holds a high surrogate until its low half arrives.
 | `imaxdiv` | `intmax_t` div/rem | ✅ | libc / `imaxdiv.c` | `imaxdiv_t` in `<inttypes.h>`. |
 | `strtoimax` | string → `intmax_t` | ✅ | libc / `strtoimax.c` | wraps `strtoll`. |
 | `strtoumax` | string → `uintmax_t` | ✅ | libc / `strtoumax.c` | wraps `strtoull`. |
-| `wcstoimax` | wide string → `intmax_t` | ❌ | — | Needs `<wchar.h>`. |
-| `wcstoumax` | wide string → `uintmax_t` | ❌ | — | Needs `<wchar.h>`. |
+| `wcstoimax` | wide string → `intmax_t` | ✅ | libc / `wchar.c` | wraps `wcstoll`. |
+| `wcstoumax` | wide string → `uintmax_t` | ✅ | libc / `wchar.c` | wraps `wcstoull`. |
 | `PRI*` / `SCN*` macros | `printf`/`scanf` format macros | ✅ | hdr | Full set: `d/i/o/u/x/X` (PRI) and `d/i/o/u/x` (SCN) for 8/16/32/64/`LEAST`/`FAST`/`MAX`/`PTR`. |
 
 ### `<locale.h>` — localization
 
-Header absent. `setlocale` ❌, `localeconv` ❌, `struct lconv` ❌.
+Present (`libc/include/locale.h`, `libc/core/locale.c`) but **"C"‑locale only**.
+`setlocale` accepts `"C"`, `"POSIX"`, or `""` (all map to `"C"`) plus a `NULL`
+query, returning `"C"`; any other locale name returns `NULL`. `localeconv`
+returns a static `"C"` `struct lconv` (`decimal_point="."`, the other string
+members empty, every numeric/char member `CHAR_MAX`). `struct lconv` is fully
+defined (all 24 members). Collation (`strcoll`/`strxfrm`) is still absent.
 
 ### `<math.h>` — mathematics
 
@@ -311,7 +316,7 @@ integer set with limits and `INT*_C`/`UINT*_C` constructors. ✅
 | `rename` | Rename file | ✅ | libc / `rename.c` + seam | `sys_rename`: Osiris DOS 56h (A0=old, A1=new); CP/M BDOS 23 (combined FCB). |
 | `tmpnam` | Temp name | ✅ | libc / `tmpnam.c` | 8.3‑friendly `TMPnnnnn`, probed for non‑existence. |
 | `tmpfile` | Temp file | ✅ | libc / `tmpfile.c` | `tmpnam` + `fopen(name,"wb+")`; the FILE carries `_SF_TMP` so `fclose` auto‑unlinks. |
-| `printf` | Formatted stdout | ⚠️ | libc / `printf.c`,`vformat.c` | Int/str/char, `%f/%e/%g/%a` (`%a`/`%A` hex float, exact by default), width/prec/flags; no `%n`, wide. |
+| `printf` | Formatted stdout | ⚠️ | libc / `printf.c`,`vformat.c` | Int/str/char, `%f/%e/%g/%a` (`%a`/`%A` hex float, exact by default), width/prec/flags, `%n` (`hh`/`h`/`l`/`ll`). Only wide output remains. |
 | `fprintf` | Formatted to stream | ⚠️ | libc / `fprintf.c` | as `printf`. |
 | `sprintf` | Formatted to buffer | ⚠️ | libc / `sprintf.c` | as `printf`. |
 | `snprintf` | Bounded to buffer | ✅ | libc / `snprintf.c` | |
@@ -367,7 +372,7 @@ and the `fpos_t` type are present.  Missing: wide‑character I/O (`<wchar.h>`).
 | `_Exit` | Exit w/o cleanup | ✅ | libc / `_Exit.c` | No `atexit`/flush. |
 | `getenv` | Environment lookup | ⚠️ | libc / `getenv.c` + seam | Osiris: real lookup via DOS `64h` (e.g. `COMSPEC`); returns `NULL` for an unset name. CP/M‑68K has no environment, so every lookup returns `NULL`. Read‑only (no `setenv`/`putenv`; the string is OS‑owned). |
 | `system` | Run command | ⚠️ | libc / `system.c` + seam | Osiris: spawns `COMSPEC` with a `/C <command>` tail (DOS `4Bh` EXEC) and returns the command's exit code; `system(NULL)`→nonzero (processor available). CP/M‑68K has no command processor: `system(NULL)`→0, any command→−1. The crt0 leaves a capped memory reserve so a child can load. |
-| `mblen` `mbtowc` `wctomb` `mbstowcs` `wcstombs` | Multibyte/wide | ❌ | — | No wide‑char support. |
+| `mblen` `mbtowc` `wctomb` `mbstowcs` `wcstombs` | Multibyte/wide | ✅ | libc / `multibyte.c` | UTF‑8 ↔ UTF‑32 (`wchar_t`); `MB_CUR_MAX`=4. |
 
 ### `<string.h>` — string handling
 
@@ -404,24 +409,36 @@ type‑generic macros ❌.
 | `difftime` | Seconds between | ✅ | libc / `time.c` | via soft float. |
 | `mktime` | `struct tm` → `time_t` | ✅ | libc / `time.c` | Normalizes fields. |
 | `gmtime` | `time_t` → UTC `tm` | ✅ | libc / `time.c` | |
-| `localtime` | `time_t` → local `tm` | ⚠️ | libc / `time.c` | Identical to `gmtime` (no TZ/DST). |
+| `localtime` | `time_t` → local `tm` | ✅ | libc / `time.c` | Applies the `TZ` zone (std/DST) when set; `==gmtime` when unset. |
 | `asctime` | `tm` → string | ✅ | libc / `time.c` | |
 | `ctime` | `time_t` → string | ✅ | libc / `time.c` | |
-| `strftime` | Formatted time | ⚠️ | libc / `time.c` | Subset of specifiers (`%Y%y%m%d%e%H%M%S%j%a%b%h%p%%`). |
+| `strftime` | Formatted time | ⚠️ | libc / `time.c` | Subset of specifiers (`%Y%y%m%d%e%H%M%S%j%a%b%h%p%z%Z%%`). |
 
-`time_t`/`clock_t` are 32‑bit signed (valid through 2038).
+`time_t`/`clock_t` are 32‑bit signed (valid through 2038). POSIX `tzset`/`timezone`/
+`daylight`/`tzname` are provided; the RTC is read as local time and converted to
+UTC via the `TZ` zone (no `TZ` → RTC treated as UTC).
 
 ### `<wchar.h>` and `<wctype.h>` — wide characters
 
-Both headers absent. **All** wide‑stream I/O (`fwprintf`, `wprintf`, `fwscanf`,
-`getwc`, `putwc`, `fgetws`, `fputws`, `ungetwc`, …), wide string/number
-conversion (`wcstod/f/l`, `wcstol/ul/ll/ull`, `wcscpy`, `wcscmp`, `wcschr`,
-`wcsstr`, `wcstok`, `wcslen`, `wmemcpy`, `wmemcmp`, `wmemset`, `wcsftime`, …),
-restartable multibyte conversion (`mbrtowc`, `wcrtomb`, `mbsrtowcs`,
-`wcsrtombs`, `mbrlen`, `mbsinit`, `btowc`, `wctob`), and wide classification
-(`iswalnum`, `iswalpha`, `iswblank`, `iswcntrl`, `iswdigit`, `iswgraph`,
-`iswlower`, `iswprint`, `iswpunct`, `iswspace`, `iswupper`, `iswxdigit`,
-`towlower`, `towupper`, `wctype`, `iswctype`, `wctrans`, `towctrans`) are ❌.
+Present (`libc/core/wchar.c`, `libc/core/wctype.c`). `wchar_t` is 32‑bit UTF‑32
+and the multibyte encoding is UTF‑8, so the conversions reuse the `<uchar.h>`
+codec (`mbrtowc`==`mbrtoc32`, `wcrtomb`==`c32rtomb`).  Provided: the wide string
+ops (`wcscpy`, `wcsncpy`, `wcscat`, `wcscmp`, `wcsncmp`, `wcschr`, `wcsrchr`,
+`wcsstr`, `wcstok`, `wcsspn`, `wcscspn`, `wcspbrk`, `wcslen`, `wcscoll`/`wcsxfrm`),
+the wide memory ops (`wmemcpy`, `wmemmove`, `wmemset`, `wmemcmp`, `wmemchr`),
+restartable conversion (`mbrtowc`, `wcrtomb`, `mbsrtowcs`, `wcsrtombs`, `mbrlen`,
+`mbsinit`, `btowc`, `wctob`), wide number conversion (`wcstol`/`ul`/`ll`/`ull`,
+`wcstod`/`f`/`ld`, plus `wcstoimax`/`wcstoumax`), `wcsftime`, and the full wide
+classification set (`iswalnum`…`iswxdigit`, `towlower`/`towupper`, `wctype`,
+`iswctype`, `wctrans`, `towctrans`) for the "C" locale.
+
+Remaining ❌: wide **stream I/O** (`fwprintf`, `wprintf`, `fwscanf`, `getwc`,
+`putwc`, `fgetws`, `fputws`, `ungetwc`, …).
+
+> **Compiler note:** this work fixed a latent codegen bug — wide / UTF‑16 /
+> UTF‑32 string literals (`L"…"`, `u"…"`, `U"…"`) were emitted in host
+> (little‑endian) byte order; they are now emitted big‑endian to match the
+> big‑endian m68k target.
 
 ---
 
@@ -484,7 +501,8 @@ All Tier 1 items are complete, including a true character‑streaming
 string and stream entry points), the `%[`/`%[^]` scanset, and `%a` hexadecimal‑
 float input.  Both the scanf and printf families are now conversion‑complete for
 floats: `%a` parses hex or decimal on input and emits exact hex floats on output
-(`printf`/`scanf` round‑trip).  The remaining printf gap is `%n` (and wide).
+(`printf`/`scanf` round‑trip).  `%n` is now supported (with `hh`/`h`/`l`/`ll`
+length modifiers); the remaining printf gap is wide output only.
 
 ### Tier 2 — moderate
 7. **`<math.h>`** — Phase 2a ✅ DONE (2026‑07‑22): added `HUGE_VAL`/`INFINITY`/
@@ -513,13 +531,13 @@ floats: `%a` parses hex or decimal on input and emits exact hex floats on output
 9. **`<locale.h>`**: minimal "C"‑only `setlocale`/`localeconv`.
 
 ### Tier 3 — large or blocked
-10. **`<wchar.h>` / `<wctype.h>`**: sizeable; needs a multibyte/wide strategy.
+10. **`<wchar.h>` / `<wctype.h>`**: ✅ present (`wchar_t` = 32‑bit UTF‑32, multibyte = UTF‑8, reusing the `<uchar.h>` codec). Wide **stream I/O** (`fwprintf`/`fgetwc`/…) is the one remaining piece.
 11. **`<fenv.h>`**: present as inert stubs — fixed round‑to‑nearest, no exception flags (soft‑float runtime).
 12. **`<complex.h>` / `<tgmath.h>`**: blocked on **compiler** `_Complex` support;
     defer until the front end grows complex types.
 
 ### Known behavioural deviations to document (not necessarily "fix")
-- `localtime` == `gmtime` (no timezone database).
+- `localtime` follows the POSIX `TZ` environment variable when set (Osiris); with no `TZ` it `==gmtime`. Only the POSIX `TZ` string is understood (no zoneinfo database).
 - `clock()` returns `-1` (no CPU‑time counter on target).
 - `signal`/`raise` are synchronous only (no async delivery).
 - `abort()` runs `atexit` handlers and flushes streams and does not raise `SIGABRT` (it is `exit(1)`).

@@ -298,6 +298,14 @@ static Token *read_utf16_string_literal(char *start, char *quote) {
 
   Token *tok = new_token(TK_STR, start, end + 1);
   tok->ty = array_of(ty_ushort, len + 1);
+  // The target (m68k) is big-endian; `buf` was filled in host order. Rewrite
+  // each 16-bit unit MSB-first so the emitted bytes are in target order.
+  unsigned char *be16 = (unsigned char *)buf;
+  for (int i = 0; i <= len; i++) {
+    uint16_t v = buf[i];
+    be16[i * 2] = (unsigned char)(v >> 8);
+    be16[i * 2 + 1] = (unsigned char)v;
+  }
   tok->str = (char *)buf;
   return tok;
 }
@@ -320,6 +328,16 @@ static Token *read_utf32_string_literal(char *start, char *quote, Type *ty) {
 
   Token *tok = new_token(TK_STR, start, end + 1);
   tok->ty = array_of(ty, len + 1);
+  // The target (m68k) is big-endian; `buf` was filled in host order. Rewrite
+  // each 32-bit unit MSB-first so the emitted bytes are in target order.
+  unsigned char *be32 = (unsigned char *)buf;
+  for (int i = 0; i <= len; i++) {
+    uint32_t v = buf[i];
+    be32[i * 4] = (unsigned char)(v >> 24);
+    be32[i * 4 + 1] = (unsigned char)(v >> 16);
+    be32[i * 4 + 2] = (unsigned char)(v >> 8);
+    be32[i * 4 + 3] = (unsigned char)v;
+  }
   tok->str = (char *)buf;
   return tok;
 }

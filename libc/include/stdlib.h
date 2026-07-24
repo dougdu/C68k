@@ -65,6 +65,16 @@ int putenv(char *string);
 int clearenv(void);
 int system(const char *command);
 
+/* Multibyte / wide-character conversion. The execution charset is UTF-8 and
+ * wchar_t is 32-bit UTF-32; MB_CUR_MAX is constant (a single locale). The
+ * restartable forms and wide string ops live in <wchar.h>. */
+#define MB_CUR_MAX ((size_t)4)
+int mblen(const char *s, size_t n);
+int mbtowc(wchar_t *pwc, const char *s, size_t n);
+int wctomb(char *s, wchar_t wc);
+size_t mbstowcs(wchar_t *dst, const char *src, size_t n);
+size_t wcstombs(char *dst, const wchar_t *src, size_t n);
+
 /* Non-standard but ubiquitous integer->string helpers (base 2..36; base 10
  * treats the value as signed, other bases as unsigned). */
 char *itoa(int value, char *buf, int base);

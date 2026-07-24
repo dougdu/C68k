@@ -2,6 +2,7 @@
 #define _INTTYPES_H
 
 #include <stdint.h>
+#include <stddef.h> /* wchar_t, for wcstoimax/wcstoumax */
 
 /* imaxdiv() result. */
 typedef struct {
@@ -13,6 +14,8 @@ intmax_t imaxabs(intmax_t n);
 imaxdiv_t imaxdiv(intmax_t num, intmax_t den);
 intmax_t strtoimax(const char *s, char **end, int base);
 uintmax_t strtoumax(const char *s, char **end, int base);
+intmax_t wcstoimax(const wchar_t *s, wchar_t **end, int base);
+uintmax_t wcstoumax(const wchar_t *s, wchar_t **end, int base);
 
 /* ---- fprintf / fscanf conversion-specifier macros ----------------------
  * ILP32 model: int8_t=signed char, int16_t=short, int32_t=int,

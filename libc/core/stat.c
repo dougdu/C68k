@@ -3,10 +3,13 @@
 #include "libc_internal.h"
 
 extern long __days_from_civil(int y, int m, int d);
+extern long __tz_local_offset(long localsec, int year);
 
 /* FAT/DOS packed date+time -> Unix time_t (UTC).
  *   date: bits 15-9 = year-1980, 8-5 = month, 4-0 = day
- *   time: bits 15-11 = hour, 10-5 = minute, 4-0 = seconds/2 */
+ *   time: bits 15-11 = hour, 10-5 = minute, 4-0 = seconds/2
+ * FAT timestamps are LOCAL wall time; __tz_local_offset() converts to UTC
+ * (0 when no TZ is set, so this stays byte-identical to the old behaviour). */
 static time_t dosdt_to_time(unsigned date, unsigned time) {
   if (!date && !time)
     return 0;
@@ -20,8 +23,8 @@ static time_t dosdt_to_time(unsigned date, unsigned time) {
     mo = 1;
   if (dy < 1)
     dy = 1;
-  return (time_t)(__days_from_civil(y, mo, dy) * 86400L + hh * 3600L +
-                  mi * 60L + ss);
+  long local = __days_from_civil(y, mo, dy) * 86400L + hh * 3600L + mi * 60L + ss;
+  return (time_t)(local + __tz_local_offset(local, y));
 }
 
 static void fill_common(struct stat *st) {
