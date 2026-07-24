@@ -73,7 +73,7 @@ OS): `<float.h>`, `<iso646.h>`, `<limits.h>`, `<stdarg.h>`, `<stdbool.h>`,
 | `<inttypes.h>` | Integer format conversions | ✅ | `libc/include/inttypes.h`, `libc/core/imax*.c`, `strto[iu]max.c` | Full `PRI*`/`SCN*` set; `imaxabs`/`imaxdiv`/`strtoimax`/`strtoumax` present. |
 | `<iso646.h>` | Alternative operator spellings | ✅ | `libc/include/iso646.h` | Complete. |
 | `<limits.h>` | Integer‑type limits | ✅ | `include/limits.h`, `libc/include/limits.h` | Complete for ILP32. |
-| `<locale.h>` | Localization | ⚠️ | `libc/include/locale.h`, `libc/core/locale.c` | `setlocale`/`localeconv` present; only the "C" locale is supported (any other locale → `NULL`). |
+| `<locale.h>` | Localization | ⚠️ | `libc/include/locale.h`, `libc/core/locale.c` | `setlocale`/`localeconv` present; the native (`""`) locale adopts the OS country on Osiris (DOS `38h` — real `decimal_point`/`thousands_sep`/currency), `"C"` elsewhere. Collation is byte order (`strcoll`==`strcmp`). |
 | `<math.h>` | Mathematics | ⚠️ | `libc/include/math.h`, `libc/core/*.c` → **libm** | Base transcendentals inline (double); the full C99 function set + classification/constants added in C (Tier 2 2a/2b/2c, with `EDOM`/`ERANGE`), the `f`/`l` type variants, and native `asin`/`acos`. Underlying libm passed its initial defect sweep (29/30 resolved); `sqrt`/`atan`/`asin`/`acos` ~1–2 ULP double. The double base functions now set `EDOM`/`ERANGE` on domain/range errors (float variants bind directly to libm and do not). Deviation: soft‑float fixed rounding (double transcendentals not correctly‑rounded), no `_Complex`. |
 | `<setjmp.h>` | Non‑local jumps | ✅ | `lib/runtime/rt68k.a68` + hdr | `setjmp`/`longjmp` asm shim; codegen spills temporaries across the `returns_twice` call so longjmp re‑entry is safe. |
 | `<signal.h>` | Signal handling | ⚠️ | `libc/include/signal.h`, `libc/core/signal.c` | Synchronous only — no async delivery on these OSes; `raise` calls handlers inline. |
@@ -83,7 +83,7 @@ OS): `<float.h>`, `<iso646.h>`, `<limits.h>`, `<stdarg.h>`, `<stdbool.h>`,
 | `<stdint.h>` | Fixed‑width integers | ✅ | `include/stdint.h` | Complete (exact/least/fast/ptr/max + limits + `*_C` macros). |
 | `<stdio.h>` | Input/output | ⚠️ | `libc/include/stdio.h`, `libc/core/*.c` | Streaming scanf family, the `v*` variants, `ungetc`/`rewind`/`clearerr`/`perror`/`remove`/`rename`, `freopen`/`setbuf`/`setvbuf`/`fgetpos`/`fsetpos`/`tmpnam`/`tmpfile`, buffer‑aware `ftell`, byte‑level `fseek`, and `+` update modes (orientation‑tracked) on both OSes. Remaining: wide. See §stdio. |
 | `<stdlib.h>` | General utilities | ⚠️ | `libc/include/stdlib.h`, `libc/core/*.c` | Added `atoll`/`llabs`/`lldiv`/`strtof`/`_Exit`/`getenv`/`system`; C11 `aligned_alloc`/`at_quick_exit`/`quick_exit` (+ POSIX `posix_memalign`); the multibyte functions (`mblen`/`mbtowc`/`wctomb`/`mbstowcs`/`wcstombs`) over UTF‑8↔UTF‑32. Remaining deviations are the platform‑limited `getenv`/`system`. |
-| `<string.h>` | String handling | ⚠️ | `libc/include/string.h`, `libc/core/str*.c`, **rt** | Added `strspn`/`strcspn`/`strpbrk`. Only `strcoll`/`strxfrm` remain absent (no locale). |
+| `<string.h>` | String handling | ✅ | `libc/include/string.h`, `libc/core/str*.c`, **rt** | Complete: added `strspn`/`strcspn`/`strpbrk` and `strcoll`/`strxfrm` (C-locale byte order). |
 | `<tgmath.h>` | Type‑generic math | ❌ | — | Requires `<complex.h>` + `<math.h>` generic macros. |
 | `<time.h>` | Date and time | ⚠️ | `libc/include/time.h`, `libc/core/time.c` | C11 `timespec_get` (`TIME_UTC`, 1‑second resolution) present; `clock` stubbed; a POSIX `TZ` env var (Osiris) drives `localtime`/`mktime`/`gmtime` + `tzset` (std/DST offset & rules); with no `TZ`, `localtime`==`gmtime`; `time_t` 32‑bit. |
 | `<wchar.h>` | Extended/wide characters | ⚠️ | `libc/include/wchar.h`, `libc/core/wchar.c` | Wide strings, restartable UTF‑8↔UTF‑32 conversion, wide `strto*`, and `wcsftime` present (`wchar_t` is 32‑bit UTF‑32). Wide **stream I/O** (`fwprintf`/`fgetwc`/…) not yet provided. |
@@ -178,12 +178,17 @@ holds a high surrogate until its low half arrives.
 
 ### `<locale.h>` — localization
 
-Present (`libc/include/locale.h`, `libc/core/locale.c`) but **"C"‑locale only**.
-`setlocale` accepts `"C"`, `"POSIX"`, or `""` (all map to `"C"`) plus a `NULL`
-query, returning `"C"`; any other locale name returns `NULL`. `localeconv`
-returns a static `"C"` `struct lconv` (`decimal_point="."`, the other string
-members empty, every numeric/char member `CHAR_MAX`). `struct lconv` is fully
-defined (all 24 members). Collation (`strcoll`/`strxfrm`) is still absent.
+Present (`libc/include/locale.h`, `libc/core/locale.c`). `setlocale` accepts
+`"C"`, `"POSIX"`, and the native `""` locale (plus a `NULL` query); any other
+name returns `NULL`. On **Osiris**, `setlocale(LC_*, "")` adopts the OS-configured
+country via the DOS country service (`38h`), so `localeconv` then reports that
+country's real `decimal_point`, `thousands_sep`, `grouping`, `currency_symbol`,
+`frac_digits`, and currency placement (the default US country → `","` thousands,
+`"$"`). On **CP/M-68K** (no country service) `""` falls back to the `"C"` locale.
+The `"C"`/`"POSIX"` locale is the fixed `struct lconv` (`decimal_point="."`, other
+string members empty, char members `CHAR_MAX`); `struct lconv` is fully defined
+(all 24 members). Collation (`strcoll`/`strxfrm`) uses the `"C"` byte order for
+every locale (no locale-specific collating sequence is wired yet).
 
 ### `<math.h>` — mathematics
 
@@ -386,8 +391,8 @@ and the `fpos_t` type are present.  Missing: wide‑character I/O (`<wchar.h>`).
 | `strcpy` `strncpy` | Copy string | ✅ | libc / `strcpy.c`,`strncpy.c` | |
 | `strcat` `strncat` | Concatenate | ✅ | libc / `strcat.c`,`strncat.c` | |
 | `strcmp` `strncmp` | Compare | ✅ | libc / `strcmp.c`,`strncmp.c` | |
-| `strcoll` | Locale compare | ❌ | — | No locale. |
-| `strxfrm` | Locale transform | ❌ | — | No locale. |
+| `strcoll` | Locale compare | ✅ | libc / `strcoll.c` | C-locale byte order (== `strcmp`). |
+| `strxfrm` | Locale transform | ✅ | libc / `strcoll.c` | Identity copy; keys order as `strcoll`. |
 | `strchr` `strrchr` | Find char | ✅ | libc / `strchr.c`,`strrchr.c` | |
 | `strspn` `strcspn` `strpbrk` | Span/find‑set | ✅ | libc / `strspn.c`,`strcspn.c`,`strpbrk.c` | |
 | `strstr` | Find substring | ✅ | libc / `strstr.c` | |
@@ -528,7 +533,7 @@ length modifiers); the remaining printf gap is wide output only.
 8. **`<setjmp.h>`**: ✅ done — `setjmp`/`longjmp` asm shim plus a
    `returns_twice` codegen pass that spills SP‑stack temporaries to frame slots
    around the call so longjmp re‑entry (retry loops) is safe.
-9. **`<locale.h>`**: minimal "C"‑only `setlocale`/`localeconv`.
+9. **`<locale.h>`**: `setlocale`/`localeconv` with a real native (`""`) locale on Osiris (NLS country block `38h`); `strcoll`/`strxfrm` present (C-locale order). Locale-specific collation is the remaining refinement.
 
 ### Tier 3 — large or blocked
 10. **`<wchar.h>` / `<wctype.h>`**: ✅ present (`wchar_t` = 32‑bit UTF‑32, multibyte = UTF‑8, reusing the `<uchar.h>` codec). Wide **stream I/O** (`fwprintf`/`fgetwc`/…) is the one remaining piece.

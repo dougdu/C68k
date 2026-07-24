@@ -43,6 +43,7 @@ extern int sys_constat(void);     /* 1 if a key is ready, else 0 */
 extern long sys_doscall(void *r); /* Osiris TRAP #1 escape hatch; -1 on CP/M */
 extern long cpm_bdos(int func, long param); /* CP/M TRAP #2; -1 stub on Osiris */
 extern int sys_lasterror(void);   /* Osiris DOS 59h extended error code; 0 on CP/M */
+extern int sys_getcountry(int code, void *buf); /* Osiris DOS 38h country block; -1 on CP/M */
 int __oserr_to_errno(int code);   /* map a DOS/OS error code to an errno value */
 int __oserrno(void);              /* __oserr_to_errno(sys_lasterror()); for seam wrappers */
 extern int sys_exec(const char *path, void *parmblk); /* Osiris DOS 4Bh EXEC; -1 on CP/M */

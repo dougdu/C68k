@@ -524,6 +524,13 @@ int sys_setenv(const char *name, const char *value) {
 }
 char *sys_getenvblk(void) { return 0; }
 
+/* No national-language / country services on CP/M-68K. */
+int sys_getcountry(int code, void *buf) {
+  (void)code;
+  (void)buf;
+  return -1;
+}
+
 /* conio raw console I/O over BDOS direct console functions. */
 int sys_conin(void) {
   int c;

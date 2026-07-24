@@ -22,7 +22,7 @@
         PUBLIC  _sys_mkdir,_sys_rmdir,_sys_chdir,_sys_getcwd,_sys_chmod,_sys_fdsize
         PUBLIC  _sys_setenv,_sys_getenvblk
         PUBLIC  _sys_conin,_sys_constat,_sys_doscall,_cpm_bdos
-        PUBLIC  _sys_lasterror
+        PUBLIC  _sys_lasterror,_sys_getcountry
         EXTERN  _main,_envbuild
 
 * DOS TRAP #1 function selectors (AH, high byte of D0.W).
@@ -51,6 +51,7 @@ DOSF_FILETIME equ $5700       ; 57h get/set file date-time (D1=handle)
 DOSF_ALLOC   equ  $4800
 DOSF_GETDATE equ  $2A00
 DOSF_GETTIME equ  $2C00
+DOSF_COUNTRY equ  $3800       ; 38h country info (D1=code, A0=34-byte buffer)
 DOSF_ENVGET  equ  $6400       ; 64h env access, sub-fn 00 (GET): A0=name -> A0=value/0
 DOSF_ENVSET  equ  $6401       ; 64h.01 SET: A0=name, A1=value (empty = delete)
 DOSF_ENVGETBLK equ $6402      ; 64h.02 GETBLK: -> A0 = env block (0 = none)
@@ -628,6 +629,27 @@ _sys_getcwd:
         move.w  #DOSF_GETCWD,d0    ; 47h
         trap    #1
         moveq   #0,d0
+        unlk    a6
+        rts
+
+**********************************************************
+* int _sys_getcountry(int code, void *buf) -> 0, or -1.
+* DOS 38h country info: D1.w = country code (0 = current), A0 -> 34-byte
+* buffer (filled big-endian; see dos-api.md 3.8).  The buffer must be even-
+* aligned (DOS writes a longword case-map address at offset 12h).
+**********************************************************
+_sys_getcountry:
+        link    a6,#0
+        move.l  8(a6),d1           ; D1.w = country code (0 = current)
+        movea.l 12(a6),a0          ; A0 = buffer
+        move.w  #DOSF_COUNTRY,d0
+        trap    #1
+        bcs     ctry_err
+        moveq   #0,d0
+        unlk    a6
+        rts
+ctry_err:
+        moveq   #-1,d0
         unlk    a6
         rts
 
