@@ -58,6 +58,13 @@ char *ctime_r(const time_t *timep, char *buf);
 // it. fclose() is therefore routed through our finalizer.
 FILE *open_memstream(char **ptr, size_t *sizeloc);
 int c68k_fclose(FILE *fp);
+
+// A per-process-unique temp path under %TMP% (falls back to %TEMP%, then ".").
+// _tempnam is counter-based, so concurrently-spawned c68k processes get the
+// SAME first name and clobber each other's temp files under a parallel build;
+// keying on the PID + a per-process counter removes the collision. `ext`
+// includes the leading dot; the returned string is malloc'd (free-able).
+char *c68k_tmpname(const char *prefix, const char *ext);
 #define fclose(f) c68k_fclose(f)
 
 #elif defined(C68K_SELFHOST)

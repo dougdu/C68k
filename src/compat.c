@@ -101,8 +101,25 @@ typedef struct MemStream {
 
 static MemStream *g_memstreams;
 
+// See compat.h. Built with snprintf -- NOT chibicc's format(), which itself
+// uses open_memstream -- so it is safe to call from within open_memstream.
+char *c68k_tmpname(const char *prefix, const char *ext) {
+  const char *tmp = getenv("TMP");
+  if (!tmp)
+    tmp = getenv("TEMP");
+  if (!tmp || !*tmp)
+    tmp = ".";
+  static long counter = 0;
+  size_t n = strlen(tmp) + strlen(prefix) + strlen(ext) + 64;
+  char *path = malloc(n);
+  if (path)
+    snprintf(path, n, "%s\\%s_%d_%ld%s", tmp, prefix, (int)_getpid(),
+             ++counter, ext);
+  return path;
+}
+
 FILE *open_memstream(char **ptr, size_t *sizeloc) {
-  char *path = _tempnam(NULL, "c68"); // honors %TMP%; heap-allocated
+  char *path = c68k_tmpname("c68m", ".tmp"); // per-process-unique; malloc'd
   if (!path)
     return NULL;
 

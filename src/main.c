@@ -517,14 +517,16 @@ static char *create_tmpfile(void) {
   // the intermediate assembly is sufficient (between cc1() and assemble_to_elf).
   char *path = "CC_TMP.S";
 #elif defined(_WIN32)
-  // On Windows asm68K reads a leading '/' as a switch, so temp source paths
-  // must be native (backslashed, under %TMP%). _tempnam honors %TMP% and
-  // returns a Windows path; a `.a68` extension keeps it a conventional source.
-  char *base = _tempnam(NULL, "c68k");
-  if (!base)
+  // On Windows asm68K reads a leading '/' as a switch, so the intermediate
+  // source path must be native (backslashed, under %TMP%) with a `.a68`
+  // extension.  c68k_tmpname keys the name on the PID so two concurrently
+  // spawned c68k processes (a parallel build) never share one .a68 -- the old
+  // _tempnam was counter-based and handed both processes the same first name,
+  // which they then clobbered (truncated intermediate -> asm68K A2088 /
+  // emit_elf parse error / "cannot open").
+  char *path = c68k_tmpname("c68k", ".a68");
+  if (!path)
     error("failed to create a temporary file");
-  char *path = format("%s.a68", base);
-  free(base);
   FILE *fp = fopen(path, "wb");
   if (!fp)
     error("cannot open temporary file: %s", path);
