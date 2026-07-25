@@ -46,6 +46,7 @@ $cases = @(
   @{ Run = 'TZTEST';   Src = 'tests\lockstep\tztime.c';   Expect = @('TZTEST PASS 10/10') }
   @{ Run = 'LOCTEST';  Src = 'tests\lockstep\loctest.c';  Expect = @('LOCTEST PASS 16/16') }
   @{ Run = 'WCIO';     Src = 'tests\lockstep\wcio.c';     Expect = @('WCIO PASS 19/19') }
+  @{ Run = 'WPRINTF';  Src = 'tests\lockstep\wprintf.c';  Expect = @('WPRINTF PASS 48/48') }
   @{ Run = 'HEXDUMP';  Src = 'samples\hexdump.c';         Expect = @('hexdump of HEXTEST.BIN',
                                                                      '|c68k hexdump OK.|',
                                                                      '63 36 38 6b', '128 bytes') }

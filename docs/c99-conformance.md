@@ -81,12 +81,12 @@ OS): `<float.h>`, `<iso646.h>`, `<limits.h>`, `<stdarg.h>`, `<stdbool.h>`,
 | `<stdbool.h>` | Boolean type/values | ✅ | `include/stdbool.h`, `libc/include/stdbool.h` | Complete. |
 | `<stddef.h>` | Common definitions | ✅ | `include/stddef.h` | `size_t`, `ptrdiff_t`, `wchar_t`, `NULL`, `offsetof`. |
 | `<stdint.h>` | Fixed‑width integers | ✅ | `include/stdint.h` | Complete (exact/least/fast/ptr/max + limits + `*_C` macros). |
-| `<stdio.h>` | Input/output | ⚠️ | `libc/include/stdio.h`, `libc/core/*.c` | Streaming scanf family, the `v*` variants, `ungetc`/`rewind`/`clearerr`/`perror`/`remove`/`rename`, `freopen`/`setbuf`/`setvbuf`/`fgetpos`/`fsetpos`/`tmpnam`/`tmpfile`, buffer‑aware `ftell`, byte‑level `fseek`, and `+` update modes (orientation‑tracked) on both OSes. Wide char I/O + `fwide` present; wide **formatted** I/O (`fwprintf`/`fwscanf`) remaining. See §stdio. |
+| `<stdio.h>` | Input/output | ⚠️ | `libc/include/stdio.h`, `libc/core/*.c` | Streaming scanf family, the `v*` variants, `ungetc`/`rewind`/`clearerr`/`perror`/`remove`/`rename`, `freopen`/`setbuf`/`setvbuf`/`fgetpos`/`fsetpos`/`tmpnam`/`tmpfile`, buffer‑aware `ftell`, byte‑level `fseek`, and `+` update modes (orientation‑tracked) on both OSes. Wide char I/O + `fwide` and wide **formatted output** (`fwprintf`/`wprintf`/`swprintf` + `v*`) present; wide formatted **input** (`fwscanf`) remaining. See §stdio. |
 | `<stdlib.h>` | General utilities | ⚠️ | `libc/include/stdlib.h`, `libc/core/*.c` | Added `atoll`/`llabs`/`lldiv`/`strtof`/`_Exit`/`getenv`/`system`; C11 `aligned_alloc`/`at_quick_exit`/`quick_exit` (+ POSIX `posix_memalign`); the multibyte functions (`mblen`/`mbtowc`/`wctomb`/`mbstowcs`/`wcstombs`) over UTF‑8↔UTF‑32. Remaining deviations are the platform‑limited `getenv`/`system`. |
 | `<string.h>` | String handling | ✅ | `libc/include/string.h`, `libc/core/str*.c`, **rt** | Complete: added `strspn`/`strcspn`/`strpbrk` and `strcoll`/`strxfrm` (C-locale byte order). |
 | `<tgmath.h>` | Type‑generic math | ❌ | — | Requires `<complex.h>` + `<math.h>` generic macros. |
 | `<time.h>` | Date and time | ⚠️ | `libc/include/time.h`, `libc/core/time.c` | C11 `timespec_get` (`TIME_UTC`, 1‑second resolution) present; `clock` stubbed; a POSIX `TZ` env var (Osiris) drives `localtime`/`mktime`/`gmtime` + `tzset` (std/DST offset & rules); with no `TZ`, `localtime`==`gmtime`; `time_t` 32‑bit. |
-| `<wchar.h>` | Extended/wide characters | ⚠️ | `libc/include/wchar.h`, `libc/core/wchar.c` | Wide strings, restartable UTF‑8↔UTF‑32 conversion, wide `strto*`, `wcsftime`, and wide **character** stream I/O + `fwide` present (`wchar_t` is 32‑bit UTF‑32). Wide **formatted** I/O (`fwprintf`/`fwscanf`) is the remaining piece. |
+| `<wchar.h>` | Extended/wide characters | ⚠️ | `libc/include/wchar.h`, `libc/core/wchar.c` | Wide strings, restartable UTF‑8↔UTF‑32 conversion, wide `strto*`, `wcsftime`, wide **character** stream I/O + `fwide`, and wide **formatted output** (`fwprintf`/`wprintf`/`swprintf` + `v*`) present (`wchar_t` is 32‑bit UTF‑32). Wide formatted **input** (`fwscanf` family) is the remaining piece. |
 | `<wctype.h>` | Wide‑character classification | ✅ | `libc/include/wctype.h`, `libc/core/wctype.c` | Complete for the "C" locale (ASCII via `<ctype.h>`; ≥ 0x80 unclassified). |
 
 **Beyond C99:** C68K also ships the C11 freestanding headers `include/stdalign.h`,
@@ -440,9 +440,16 @@ classification set (`iswalnum`…`iswxdigit`, `towlower`/`towupper`, `wctype`,
 Wide character stream I/O + orientation are present (`libc/core/wchar_io.c`):
 `fwide`, `fgetwc`/`getwc`/`getwchar`/`fgetws`, `fputwc`/`putwc`/`putwchar`/
 `fputws`, and `ungetwc` — each transcoding UTF‑8 bytes through the codec above,
-with byte/wide stream orientation tracked in `FILE`.  Remaining ❌: wide
-**formatted** I/O only (`fwprintf`/`wprintf`/`swprintf` and `fwscanf`/`wscanf`/
-`swscanf`, plus their `v*` variants).
+with byte/wide stream orientation tracked in `FILE`.
+
+Wide **formatted output** is present (`libc/core/vwformat.c`): `fwprintf`,
+`wprintf`, `swprintf`, and the `v*` variants.  `_vwformat` mirrors the narrow
+`_vformat`, reusing its numeric/float primitives (`_u64toa`/`_fmt_*`, shared via
+`libc_internal.h`) and widening each ASCII digit; `%c`/`%s` take a byte/multibyte
+string, `%lc`/`%ls` a `wchar_t`/wide string; `swprintf` returns negative on
+truncation.  It lives in its own object so narrow‑printf programs never link the
+wide engine (dead‑stripping).  Remaining ❌: wide formatted **input**
+(`fwscanf`/`wscanf`/`swscanf` + `v*`).
 
 > **Compiler note:** this work fixed a latent codegen bug — wide / UTF‑16 /
 > UTF‑32 string literals (`L"…"`, `u"…"`, `U"…"`) were emitted in host
@@ -540,7 +547,7 @@ length modifiers); the remaining printf gap is wide output only.
 9. **`<locale.h>`**: `setlocale`/`localeconv` with a real native (`""`) locale on Osiris (NLS country block `38h`); `strcoll`/`strxfrm` present (C-locale order). Locale-specific collation is the remaining refinement.
 
 ### Tier 3 — large or blocked
-10. **`<wchar.h>` / `<wctype.h>`**: ✅ present (`wchar_t` = 32‑bit UTF‑32, multibyte = UTF‑8, reusing the `<uchar.h>` codec). Wide **character** stream I/O + `fwide` present; wide **formatted** I/O (`fwprintf`/`fwscanf` families) is the remaining piece.
+10. **`<wchar.h>` / `<wctype.h>`**: ✅ present (`wchar_t` = 32‑bit UTF‑32, multibyte = UTF‑8, reusing the `<uchar.h>` codec). Wide **character** stream I/O + `fwide` and wide **formatted output** (`fwprintf`/`wprintf`/`swprintf` + `v*`) present; wide formatted **input** (`fwscanf` family) is the remaining piece.
 11. **`<fenv.h>`**: present as inert stubs — fixed round‑to‑nearest, no exception flags (soft‑float runtime).
 12. **`<complex.h>` / `<tgmath.h>`**: blocked on **compiler** `_Complex` support;
     defer until the front end grows complex types.

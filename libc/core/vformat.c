@@ -17,7 +17,7 @@ static void _emit(_psink *s, int c) {
   s->len++;
 }
 
-static int _u64toa(unsigned long long v, int base, int upper, char *out) {
+int _u64toa(unsigned long long v, int base, int upper, char *out) {
   const char *digs = upper ? "0123456789ABCDEF" : "0123456789abcdef";
   char tmp[24];
   int n = 0;
@@ -33,7 +33,7 @@ static int _u64toa(unsigned long long v, int base, int upper, char *out) {
 
 /* Fixed-point (%f): format v >= 0 with `prec` fractional digits. The integer
    part is assumed to fit a 32-bit long (fpdtol truncates). */
-static int fmt_fixed(double v, int prec, char *buf) {
+int _fmt_fixed(double v, int prec, char *buf) {
   double r = 0.5;
   for (int i = 0; i < prec; i++)
     r = r / 10.0;
@@ -66,7 +66,7 @@ static int fmt_fixed(double v, int prec, char *buf) {
 }
 
 /* Scientific (%e): d.ddde+XX with `prec` fractional digits. */
-static int fmt_sci(double v, int prec, char *buf) {
+int _fmt_sci(double v, int prec, char *buf) {
   int exp = 0;
   if (v != 0.0) {
     while (v >= 10.0) {
@@ -78,7 +78,7 @@ static int fmt_sci(double v, int prec, char *buf) {
       exp--;
     }
   }
-  int n = fmt_fixed(v, prec, buf);
+  int n = _fmt_fixed(v, prec, buf);
   buf[n++] = 'e';
   buf[n++] = (char)(exp < 0 ? '-' : '+');
   int ae = exp < 0 ? -exp : exp;
@@ -89,7 +89,7 @@ static int fmt_sci(double v, int prec, char *buf) {
 }
 
 /* General (%g): pick %e for very large/small magnitudes, else %f. */
-static int fmt_gen(double v, int prec, char *buf) {
+int _fmt_gen(double v, int prec, char *buf) {
   if (prec <= 0)
     prec = 1;
   int exp = 0;
@@ -105,9 +105,9 @@ static int fmt_gen(double v, int prec, char *buf) {
     }
   }
   if (exp < -4 || exp >= prec)
-    return fmt_sci(v, prec - 1, buf);
+    return _fmt_sci(v, prec - 1, buf);
   int fp = prec - 1 - exp;
-  return fmt_fixed(v, fp > 0 ? fp : 0, buf);
+  return _fmt_fixed(v, fp > 0 ? fp : 0, buf);
 }
 
 /* Hexadecimal float (%a): v >= 0 formatted as "0xH.HHHHp±D", the exact inverse
@@ -116,7 +116,7 @@ static int fmt_gen(double v, int prec, char *buf) {
    the leading digit is 1 (normal) or 0 (zero/subnormal).  prec < 0 emits as many
    fraction digits as needed (trailing zeros dropped, exact); otherwise exactly
    prec digits, round-to-nearest-even. */
-static int fmt_hex(double v, int prec, int upper, char *buf) {
+int _fmt_hex(double v, int prec, int upper, char *buf) {
   union {
     double d;
     struct {
@@ -357,13 +357,13 @@ int _vformat(_psink *s, const char *fmt, va_list ap) {
         sign = plus ? '+' : (space ? ' ' : 0);
       }
       if (*fmt == 'a' || *fmt == 'A')
-        slen = fmt_hex(dv, prec, *fmt == 'A', numbuf);
+        slen = _fmt_hex(dv, prec, *fmt == 'A', numbuf);
       else if (*fmt == 'e' || *fmt == 'E')
-        slen = fmt_sci(dv, p, numbuf);
+        slen = _fmt_sci(dv, p, numbuf);
       else if (*fmt == 'g' || *fmt == 'G')
-        slen = fmt_gen(dv, p, numbuf);
+        slen = _fmt_gen(dv, p, numbuf);
       else
-        slen = fmt_fixed(dv, p, numbuf);
+        slen = _fmt_fixed(dv, p, numbuf);
       break;
     }
     case 'n': {

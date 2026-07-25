@@ -2,6 +2,7 @@
 #define _WCHAR_H
 
 #include <stddef.h> /* size_t, wchar_t, NULL */
+#include <stdarg.h> /* va_list, for the v*wprintf family */
 
 #ifndef __WINT_T_DEFINED
 #define __WINT_T_DEFINED
@@ -92,5 +93,18 @@ wint_t putwc(wchar_t wc, FILE *fp);
 wint_t putwchar(wchar_t wc);
 int fputws(const wchar_t *s, FILE *fp);
 wint_t ungetwc(wint_t wc, FILE *fp);
+
+/* --- wide formatted output (Tier B) ---
+ * Same conversions as printf, written as wide characters.  %c/%s take a
+ * (multibyte) char / int by default and a wchar_t / wint_t under the l
+ * modifier (%lc/%ls); every numeric conversion emits the same digits as the
+ * narrow engine, widened to the stream.  swprintf returns a negative value on
+ * truncation (unlike snprintf). */
+int fwprintf(FILE *fp, const wchar_t *fmt, ...);
+int wprintf(const wchar_t *fmt, ...);
+int swprintf(wchar_t *s, size_t n, const wchar_t *fmt, ...);
+int vfwprintf(FILE *fp, const wchar_t *fmt, va_list ap);
+int vwprintf(const wchar_t *fmt, va_list ap);
+int vswprintf(wchar_t *s, size_t n, const wchar_t *fmt, va_list ap);
 
 #endif /* _WCHAR_H */

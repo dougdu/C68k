@@ -86,6 +86,25 @@ typedef struct {
 } _psink;
 int _vformat(_psink *s, const char *fmt, va_list ap);
 
+/* Numeric/float formatting primitives shared by the narrow (_vformat) and wide
+ * (_vwformat) engines; defined in vformat.c. */
+int _u64toa(unsigned long long v, int base, int upper, char *out);
+int _fmt_fixed(double v, int prec, char *buf);
+int _fmt_sci(double v, int prec, char *buf);
+int _fmt_gen(double v, int prec, char *buf);
+int _fmt_hex(double v, int prec, int upper, char *buf);
+
+/* Wide formatted output (Tier B): the same engine over a wchar_t sink that is
+ * either a wide-oriented FILE (fputwc) or a wchar_t buffer.  Numeric
+ * conversions reuse the narrow fmt_* helpers (ASCII) and widen each digit. */
+typedef struct {
+  FILE *fp;
+  wchar_t *buf;
+  int cap;
+  int len;
+} _pwsink;
+int _vwformat(_pwsink *s, const wchar_t *fmt, va_list ap);
+
 /* ---- scanf/fscanf/sscanf core (vsscanf.c) -------------------------------
  * The scanner runs over a _scan source that is either a FILE stream
  * (scanf/fscanf) or a NUL-terminated string (sscanf), reading one character
