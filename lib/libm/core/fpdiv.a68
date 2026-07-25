@@ -17,6 +17,8 @@
 	include	ieee754.inc
 
 	public	_fpdiv, _fpdivf
+	extern	_fe_status		; D1 sticky exception flags
+	extern	_fe_round, _fe_dirup, _fe_ovf_maxf	; D4 directed rounding
 
 	.code
 
@@ -53,28 +55,50 @@ _fpdivf:
 	move.l	d7,d0
 	andi.l	#$7FFFFFFF,d0		; |divisor|
 	bne.s	_div_divisor_ok
-	; divisor is 0:  0/0 -> NaN,  finite/0 -> inf
+	; divisor is 0:  0/0 -> NaN (INVALID),  finite/0 -> inf (DIVBYZERO)
 	move.l	d6,d0
 	andi.l	#$7FFFFFFF,d0		; |dividend|
-	beq	_div_nan		; 0 / 0 = NaN
-	bra	_div_return_inf		; finite / 0 = inf
+	beq	_div_invalid		; 0 / 0 = NaN (invalid)
+	bra	_div_byzero		; finite / 0 = inf (divide by zero)
 _div_divisor_ok:
 	move.l	d6,d0
 	andi.l	#$7FFFFFFF,d0		; |dividend|
 	beq	_div_return_zero	; 0 / finite = 0
 
-	; --- Result exponent = ea - eb + bias ---
-	sub.l	d3,d2
-	addi.l	#IEEE754_SNG_EXP_BIAS,d2
-
-	; --- Extract mantissas with implied bit ---
+	; --- Extract mantissas; pre-normalize subnormal inputs (D3) ---
 	move.l	d6,d4
 	andi.l	#IEEE754_SNG_MANT_MASK,d4
+	tst.l	d2
+	bne.s	_div_a_haveimp
+	moveq	#1,d2
+_div_a_nloop:
+	subq.l	#1,d2
+	lsl.l	#1,d4
+	btst.l	#IEEE754_SNG_MANT_BITS,d4
+	beq.s	_div_a_nloop
+	bra.s	_div_a_done
+_div_a_haveimp:
 	ori.l	#IEEE754_SNG_IMPLIED_BIT,d4 ; d4 = dividend mantissa
+_div_a_done:
 
 	move.l	d7,d5
 	andi.l	#IEEE754_SNG_MANT_MASK,d5
+	tst.l	d3
+	bne.s	_div_b_haveimp
+	moveq	#1,d3
+_div_b_nloop:
+	subq.l	#1,d3
+	lsl.l	#1,d5
+	btst.l	#IEEE754_SNG_MANT_BITS,d5
+	beq.s	_div_b_nloop
+	bra.s	_div_b_done
+_div_b_haveimp:
 	ori.l	#IEEE754_SNG_IMPLIED_BIT,d5 ; d5 = divisor mantissa
+_div_b_done:
+
+	; --- Result exponent = ea - eb + bias ---
+	sub.l	d3,d2
+	addi.l	#IEEE754_SNG_EXP_BIAS,d2
 
 	; --- Check if dividend < divisor (need to adjust) ---
 	cmp.l	d5,d4
@@ -104,34 +128,131 @@ _div_no_sub:
 	; d0 = 24-bit quotient with implied bit at bit 23
 	; d4 = remainder, d5 = divisor
 
-	; --- Round to nearest: if remainder >= divisor/2, round up ---
+	; --- Exponent bounds: overflow -> inf; subnormal -> gradual underflow (D3) ---
+	cmpi.l	#255,d2
+	bge	_div_overflow
+	tst.l	d2
+	ble	_div_subnormal
+
+	; --- Round to nearest even: guard = (2*remainder >= divisor) ---
+	; D1: a nonzero remainder (d4 != 0) means the quotient is inexact.
+	tst.l	d4
+	beq.s	_div_exact_n
+	ori.l	#FE_INEXACT,_fe_status
+_div_exact_n:
+	tst.l	_fe_round
+	bne	_div_round_dir		; D4 directed rounding
 	cmp.l	d5,d4			; compare remainder with divisor
 	blt.s	_div_no_round		; remainder < divisor → next bit is 0
+_div_round_up:
 	addq.l	#1,d0			; round up
-	; Check if rounding caused carry past implied bit
-	btst.l	#24,d0
+	btst.l	#24,d0			; carried past the implied bit?
 	beq.s	_div_no_round
 	lsr.l	#1,d0			; shift back
 	addq.l	#1,d2			; increment exponent
-_div_no_round:
-
-	; --- Check exponent bounds ---
-	tst.l	d2
-	ble	_div_underflow
 	cmpi.l	#255,d2
 	bge	_div_overflow
-
-	; --- Pack result ---
+_div_no_round:
 	andi.l	#IEEE754_SNG_MANT_MASK,d0
 	INSERT_EXP d2
 	or.l	d2,d0			; combine exponent
 	move.l	a0,d1
 	or.l	d1,d0			; apply sign
+	bra.s	_div_done
+
+_div_subnormal:
+	; D3 gradual underflow: quotient d0 (24-bit, implied@23), d4 = 2*remainder,
+	; d2 <= 0.  Right-shift by k = 1 - d2 to the subnormal grid; guard from the
+	; shifted-out bits, sticky = those bits below the guard | (division inexact).
+	moveq	#0,d1			; sticky = division inexact?
+	tst.l	d4
+	beq.s	_div_sub_k
+	moveq	#1,d1
+_div_sub_k:
+	moveq	#1,d3
+	sub.l	d2,d3			; d3 = k (>= 1)
+	moveq	#0,d2			; exp field 0
+	cmpi.l	#25,d3			; below 1/2 ULP of the min subnormal -> +/-0
+	bge	_div_underflow
+	move.l	d0,d6			; save quotient
+	lsr.l	d3,d0			; d0 = shifted mantissa
+	moveq	#1,d4
+	move.l	d3,d5
+	subq.l	#1,d5
+	lsl.l	d5,d4			; d4 = half = 1 << (k-1)
+	move.l	d4,d5
+	subq.l	#1,d5			; d5 = half - 1 (mask below guard)
+	and.l	d6,d5			; sticky bits below guard
+	or.l	d5,d1			; d1 = full sticky
+	and.l	d4,d6			; d6 = guard bit
+	move.l	d6,d7			; D1: inexact = guard | sticky
+	or.l	d1,d7
+	beq.s	_div_sub_flags_done	; exact subnormal -> no flags
+	ori.l	#FE_UNDERFLOW+FE_INEXACT,_fe_status ; tininess-before: tiny + inexact
+_div_sub_flags_done:
+	tst.l	_fe_round
+	bne	_div_sub_dir		; D4 directed rounding
+	tst.l	d6			; reload guard for the round decision
+	beq.s	_div_sub_pack		; guard 0 -> down
+	tst.l	d1
+	bne.s	_div_sub_up		; guard 1, sticky -> up
+	btst.l	#0,d0			; guard 1, no sticky -> round to even
+	beq.s	_div_sub_pack
+_div_sub_up:
+	addq.l	#1,d0
+_div_sub_pack:
+	btst.l	#IEEE754_SNG_MANT_BITS,d0 ; carried up to the min normal?
+	beq.s	_div_sub_store
+	andi.l	#IEEE754_SNG_MANT_MASK,d0
+	moveq	#1,d2
+	INSERT_EXP d2
+	or.l	d2,d0
+	move.l	a0,d1
+	or.l	d1,d0
+	bra.s	_div_done
+_div_sub_store:
+	andi.l	#IEEE754_SNG_MANT_MASK,d0 ; subnormal mantissa (exp field 0)
+	move.l	a0,d1
+	or.l	d1,d0
 
 _div_done:
 	movem.l	(sp)+,d2-d7/a0
 	unlk	a6
 	rts
+
+_div_round_dir:
+	; D4 directed normal round: d4 = 2*remainder (inexact if nonzero),
+	; d0 = quotient, a0 = sign.
+	tst.l	d4
+	beq	_div_no_round		; exact -> truncate
+	move.l	d0,d6			; save quotient
+	move.l	a0,d1			; sign
+	moveq	#1,d0			; inexact
+	bsr	_fe_dirup
+	tst.l	d0
+	beq.s	_div_rd_dn
+	move.l	d6,d0
+	bra	_div_round_up
+_div_rd_dn:
+	move.l	d6,d0
+	bra	_div_no_round
+
+_div_sub_dir:
+	; D4 directed subnormal round: d7 = guard|sticky (inexact), d0 = quotient,
+	; a0 = sign.
+	tst.l	d7
+	beq	_div_sub_pack		; exact -> truncate
+	move.l	d0,d6			; save quotient
+	move.l	a0,d1			; sign
+	moveq	#1,d0			; inexact
+	bsr	_fe_dirup
+	tst.l	d0
+	beq.s	_div_sub_dir_dn
+	move.l	d6,d0
+	bra	_div_sub_up
+_div_sub_dir_dn:
+	move.l	d6,d0
+	bra	_div_sub_pack
 
 ; --- Special cases ---
 
@@ -139,6 +260,8 @@ _div_return_zero:
 	move.l	a0,d0			; signed zero
 	bra.s	_div_done
 
+_div_byzero:
+	ori.l	#FE_DIVBYZERO,_fe_status ; D1: finite / 0
 _div_return_inf:
 	move.l	#SNG_INF,d0
 	move.l	a0,d1
@@ -146,23 +269,47 @@ _div_return_inf:
 	bra.s	_div_done
 
 _div_underflow:
+	ori.l	#FE_UNDERFLOW+FE_INEXACT,_fe_status ; D1: tiny nonzero quotient -> 0
+	move.l	a0,d1			; sign
+	moveq	#1,d0			; inexact (tiny nonzero)
+	bsr	_fe_dirup		; RU-of-pos / RD-of-neg -> up to min subnormal
+	tst.l	d0
+	beq.s	_div_unf_zero
 	move.l	a0,d0
-	bra.s	_div_done
+	andi.l	#$80000000,d0
+	ori.l	#1,d0			; sign | min-subnormal
+	bra	_div_done
+_div_unf_zero:
+	move.l	a0,d0			; signed zero
+	bra	_div_done
 
 _div_overflow:
-	move.l	#SNG_INF,d0
+	ori.l	#FE_OVERFLOW+FE_INEXACT,_fe_status ; D1: overflow implies inexact
 	move.l	a0,d1
-	or.l	d1,d0
-	bra.s	_div_done
+	andi.l	#$80000000,d1		; sign
+	bsr	_fe_ovf_maxf		; d0 = 1 max-finite / 0 inf ; d1 = sign
+	tst.l	d0
+	bne.s	_div_ovf_max
+	move.l	d1,d0
+	ori.l	#SNG_INF,d0
+	bra	_div_done
+_div_ovf_max:
+	move.l	d1,d0
+	ori.l	#$7F7FFFFF,d0		; signed max-finite (directed)
+	bra	_div_done
 
 _div_a_special:
 	move.l	d6,d0
 	andi.l	#IEEE754_SNG_MANT_MASK,d0
-	bne.s	_div_nan		; a is NaN
+	bne.s	_div_nan		; a is NaN (propagate)
 	; a is inf
 	cmpi.l	#255,d3
-	beq.s	_div_nan		; inf / inf = NaN
-	bra.s	_div_return_inf		; inf / finite = inf
+	bne.s	_div_return_inf		; b finite -> inf / finite = inf
+	; b is inf or NaN
+	move.l	d7,d0
+	andi.l	#IEEE754_SNG_MANT_MASK,d0
+	bne.s	_div_nan		; b is NaN -> propagate (no invalid)
+	bra.s	_div_invalid		; b is inf -> inf / inf (invalid)
 
 _div_b_special:
 	move.l	d7,d0
@@ -171,6 +318,8 @@ _div_b_special:
 	; b is inf: finite / inf = 0
 	bra.s	_div_return_zero
 
+_div_invalid:
+	ori.l	#FE_INVALID,_fe_status	; D1: 0/0 or inf/inf (signaled invalid)
 _div_nan:
 	move.l	#SNG_QNAN,d0
 	bra	_div_done

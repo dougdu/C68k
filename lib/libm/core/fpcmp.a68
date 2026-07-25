@@ -6,6 +6,9 @@
 ;  Sets CCR flags as if (dest - src):
 ;    N = dest < src
 ;    Z = dest == src
+;    V = 1 when a NaN operand makes the compare UNORDERED (also D0 = 2); the
+;        ordered paths always leave V = 0, so a caller can BVS to an unordered
+;        handler before the ordered BEQ/BNE/BGT/BLT branches (delta D9).
 ;
 ;  Arguments: 4(SP)=dest, 8(SP)=src
 ;
@@ -27,6 +30,17 @@ _fpcmpf:
 	movem.l	d2-d3,-(sp)		; save scratch
 	move.l	12(sp),d0		; d0 = dest (adjusted for saved regs)
 	move.l	16(sp),d1		; d1 = src
+
+	; --- NaN in either operand?  comparison is UNORDERED (delta D9) ---
+	; A NaN has |x| > +inf bits.  Signal unordered instead of a bogus verdict.
+	move.l	d0,d2
+	andi.l	#$7FFFFFFF,d2
+	cmpi.l	#SNG_INF,d2
+	bhi.s	_cmp_unordered
+	move.l	d1,d2
+	andi.l	#$7FFFFFFF,d2
+	cmpi.l	#SNG_INF,d2
+	bhi.s	_cmp_unordered
 
 	; --- Both zero? (±0 == ±0) ---
 	move.l	d0,d2
@@ -76,6 +90,19 @@ _cmp_diff_sign:
 	rts
 _cmp_ds_dest_neg:
 	moveq	#-1,d0			; dest < 0 <= src   => dest < src  (N=1, Z=0)
+	rts
+
+_cmp_unordered:
+	; A NaN operand => the comparison is UNORDERED (IEEE 754 5.11): every ordered
+	; relation (<, <=, =, >, >=) is false.  A single CCR verdict cannot encode
+	; that for the total-order branch instructions, so signal it out of band:
+	; V (overflow) = 1, N = 0, Z = 0, and D0 = 2 (distinct from ordered -1/0/+1).
+	; A NaN-aware caller / code generator tests it first (BVS, or D0 == 2);
+	; a caller reading only N/Z sees "neither less nor equal".  Ordered paths
+	; always leave V = 0, so BVS is a reliable unordered test.
+	movem.l	(sp)+,d2-d3		; (movem does not affect CCR)
+	moveq	#2,d0			; 2 = unordered sentinel
+	move.w	#2,ccr			; X=0 N=0 Z=0 V=1 C=0
 	rts
 
 	end

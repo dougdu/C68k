@@ -61,6 +61,34 @@ int main(void) {
   chkb(z != p, 1);  /* 0.0 != 1.5                                             */
   chkb(p == z, 0);  /* 1.5 == 0.0                                             */
 
+  /* NaN comparisons are UNORDERED (IEEE 754 5.11, delta D9): every ordered
+     relation (<, <=, >, >=, ==) is false; only != is true -- for double and
+     single. The NaN is produced at runtime (volatile 0.0/0.0 via _fpdivd /
+     _fpdiv) so the compare runs through the library instead of being folded. */
+  volatile double dz2 = 0.0;
+  double dn = dz2 / dz2;            /* 0.0/0.0 -> NaN (double) */
+  chkb(dn <  p, 0);   /* NaN <  1.5                                           */
+  chkb(dn <= p, 0);   /* NaN <= 1.5                                           */
+  chkb(dn >  p, 0);   /* NaN >  1.5  (lowered to 1.5 < NaN)                   */
+  chkb(dn >= p, 0);   /* NaN >= 1.5  (lowered to 1.5 <= NaN)                  */
+  chkb(dn == p, 0);   /* NaN == 1.5                                           */
+  chkb(dn != p, 1);   /* NaN != 1.5                                           */
+  chkb(dn == dn, 0);  /* NaN == NaN -> false                                  */
+  chkb(dn != dn, 1);  /* NaN != NaN -> true                                   */
+  chkb(p <  dn, 0);   /* 1.5 <  NaN                                           */
+  chkb(p <= dn, 0);   /* 1.5 <= NaN                                           */
+
+  volatile float fz = 0.0f, fq = 1.5f;
+  float fn = fz / fz;              /* 0.0f/0.0f -> NaN (single) */
+  chkb(fn <  fq, 0);  /* single NaN <  1.5f                                   */
+  chkb(fn <= fq, 0);  /* single NaN <= 1.5f                                   */
+  chkb(fn >  fq, 0);  /* single NaN >  1.5f                                   */
+  chkb(fn >= fq, 0);  /* single NaN >= 1.5f                                   */
+  chkb(fn == fq, 0);  /* single NaN == 1.5f                                   */
+  chkb(fn != fq, 1);  /* single NaN != 1.5f                                   */
+  chkb(fn == fn, 0);  /* single NaN == NaN -> false                           */
+  chkb(fn != fn, 1);  /* single NaN != NaN -> true                            */
+
   if (g_fail == 0)
     printf("MATH PASS %d/%d\n", g_pass, g_pass);
   else

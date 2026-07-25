@@ -516,10 +516,11 @@ static void gen_flonum_binop(Node *node) {
   case ND_MUL: println("  jsr _fpmult%s", suf); break;
   case ND_DIV: println("  jsr _fpdiv%s", suf); break;
   case ND_EQ: case ND_NE: case ND_LT: case ND_LE:
-    // _fpcmp (single) and _fpcmpd (double) both set the CCR for (lhs - rhs):
-    // N = lhs<rhs, Z = lhs==rhs, V = 0 -- so the signed Scc below reads the
-    // flags directly (no tst). _fpcmpd was fixed to honour this contract for a
-    // zero-high-word operand (e.g. `0.0 < x`); see worm68k core/dpcmp.a68.
+    // _fpcmp (single) / _fpcmpd (double) set the CCR as (lhs - rhs):
+    // N = lhs<rhs, Z = lhs==rhs, V = 0 for an ORDERED compare. A NaN operand
+    // makes the compare UNORDERED (IEEE 754 5.11, delta D9): the routine then
+    // sets V=1 (N=0, Z=0) and returns D0=2, so the signed Scc below must
+    // special-case `<`/`<=` (see the cmp block); ordered paths keep V=0.
     println("  jsr %s", dbl ? "_fpcmpd" : "_fpcmp");
     cmp = true;
     break;
@@ -529,11 +530,21 @@ static void gen_flonum_binop(Node *node) {
   depth -= (sz * 2) / 4;
 
   if (cmp) {
-    // _fpcmp / _fpcmpd set N/Z (V=0) for (lhs - rhs); reuse the signed conds.
+    // Ordered compare: the signed Scc reads (lhs-rhs)'s N/Z/V directly. A NaN
+    // operand is UNORDERED (delta D9): _fpcmp/_fpcmpd set V=1 (N=0, Z=0). For
+    // == / != that is already C-correct (seq reads Z=0 -> false; sne -> true),
+    // but slt/sle fold in V (slt=N^V, sle=Z|(N^V)), so an unordered `<`/`<=`
+    // would wrongly read true -- guard those back to false on V=1 (BVS).
     char *cc = node->kind == ND_EQ ? "seq" :
                node->kind == ND_NE ? "sne" :
                node->kind == ND_LT ? "slt" : "sle";
     println("  %s d0", cc);
+    if (node->kind == ND_LT || node->kind == ND_LE) {
+      int c = count();
+      println("  bvc L_ord_%d", c);   // V=0: ordered -> keep the Scc result
+      println("  moveq #0,d0");        // V=1: unordered -> `<`/`<=` are false
+      println("L_ord_%d:", c);
+    }
     println("  andi.l #1,d0");
   }
 }

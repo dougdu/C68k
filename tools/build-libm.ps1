@@ -9,8 +9,13 @@
   single libm.a (single + double precision). The target link steps consume it via
   -lm; archive member selection means non-float programs pull nothing.
 
-  PROVENANCE: vendored 2026-07-21 from the worm68k IEEE-754 float library
-    C:\git\worm68k\68kTools\libraries\float\ieee754   (28 .a68 sources + 2 .inc)
+  PROVENANCE: vendored 2026-07-25 from the worm68k IEEE-754 float library
+    C:\git\worm68k\68kTools\libraries\float\ieee754   (33 .a68 sources + 2 .inc)
+  This drop lands the conformance roadmap Phases A-D: NaN-unordered compare
+  (delta D9), correctly-rounded sqrtd, single/double FMA (core/fma.a68 +
+  core/dpfma.a68), an <fenv.h>-style status/rounding ABI (core/fenv.a68),
+  gradual underflow (subnormals), directed rounding, sticky exception flags,
+  and <=1-3 ULP double transcendentals (pow/log/sin/cos/exp).
   libm.a is the double-capable archive, equivalent to the upstream libieee754d.a
   (ALL_OBJS = single + double). Rebuild after syncing the vendored sources.
 

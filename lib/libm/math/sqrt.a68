@@ -13,6 +13,8 @@
 
 	public	_sqrt, _sqrtf
 	extern	_fpadd, _fpdiv, _fpmult
+	extern	_fe_status		; D1 sticky exception flags
+	extern	_fe_round		; D4 directed rounding mode
 
 	.code
 
@@ -20,6 +22,19 @@ _sqrt:
 _sqrtf:
 	link	a6,#0
 	movem.l	d2-d7,-(sp)
+
+	; D1: save the caller's sticky flags.  The Newton iteration calls the core
+	; ops (which now raise flags), so their pollution is discarded at exit and
+	; only sqrt's own flags are raised: INVALID for x<0, INEXACT if x is not a
+	; perfect square.
+	move.l	_fe_status,d0
+	move.l	d0,sqrt_fe
+	clr.l	sqrt_flags
+	; D4: run the Newton iteration in round-to-nearest; the final residual test
+	; applies the caller's directed mode (sqrt is positive: RZ=RD=floor, RU=ceil).
+	move.l	_fe_round,d0
+	move.l	d0,sqrt_rmode
+	clr.l	_fe_round
 
 	move.l	8(a6),d2		; d2 = x
 
@@ -36,6 +51,36 @@ _sqrtf:
 	cmpi.l	#SNG_INF,d2
 	beq	_sqrt_inf
 
+	; --- Subnormal input (D3): pre-scale to a normal value ---
+	;  x is subnormal (exp field 0, mantissa != 0; zero handled above).
+	;  Normalise the significand up to bit 23 and multiply by 2^152 so the
+	;  operand is normal; sqrt(x) = sqrt(x*2^152) * 2^-76 (both are exact
+	;  powers of two, so the correctly-rounded sqrt(x*2^152) yields the
+	;  correctly-rounded sqrt(x)).  Record the -76 field adjustment.
+	clr.l	sqrt_dn			; default: input already normal
+	move.l	d2,d0
+	andi.l	#$7F800000,d0
+	bne.s	_sqrt_est		; normal input -> straight to the estimate
+	move.l	d2,d0
+	andi.l	#$007FFFFF,d0		; subnormal significand (no implied bit)
+	moveq	#0,d1			; shift count s
+_sqrt_sub_shl:
+	addq.l	#1,d1
+	lsl.l	#1,d0
+	btst	#23,d0
+	beq.s	_sqrt_sub_shl		; stop once the leading 1 reaches bit 23
+	move.l	#153,d3
+	sub.l	d1,d3			; exp field = 153 - s  (130..152)
+	lsl.l	#8,d3
+	lsl.l	#8,d3
+	lsl.l	#7,d3			; << 23
+	andi.l	#$007FFFFF,d0		; drop the implied bit
+	or.l	d3,d0
+	move.l	d0,d2			; d2 = x * 2^152 (normal)
+	moveq	#76,d0
+	move.l	d0,sqrt_dn		; result exponent field must drop by 76
+
+_sqrt_est:
 	; --- Initial estimate: halve the exponent ---
 	; y0 = reinterpret((ieee + (127 << 23)) >> 1)
 	; This is the "fast inverse sqrt" trick adapted for sqrt
@@ -83,11 +128,11 @@ _sqrt_iter:
 	;  via an EXACT residual test on the significands (BUG-0012 fix):
 	;  y is correctly rounded iff (2Ys-1)^2 <= Xs<<(k+2) <= (2Ys+1)^2,
 	;  where k = Xe - 2Ye + 150 (biased exp fields).  Ties round to even.
-	;  Only for normal x + normal y; subnormal x keeps the estimate.
+	;  x is normal here (subnormal inputs were pre-scaled above).
 	; ============================================================
 	move.l	d2,d0
 	andi.l	#$7F800000,d0
-	beq	sqrt_result		; x subnormal -> skip (ledgered)
+	beq	sqrt_result		; x subnormal (defensive) -> skip
 	move.l	d3,d0
 	andi.l	#$7F800000,d0
 	beq	sqrt_result		; y subnormal / 0 -> skip
@@ -129,6 +174,21 @@ sqrt_shl:
 	move.l	d3,d6
 	andi.l	#$007FFFFF,d6
 	ori.l	#$00800000,d6		; Ys (24-bit)
+	; --- INEXACT (D1): sqrt is exact iff XX == (2Ys)^2 (x a perfect square) ---
+	move.l	d6,d0
+	add.l	d0,d0			; 2Ys
+	bsr	sqrt_sqr25		; d0:d1 = (2Ys)^2  (preserves d5/d6)
+	move.l	xx_lo,d4
+	move.l	xx_hi,d5
+	sub.l	d1,d4			; XX - (2Ys)^2
+	subx.l	d0,d5
+	move.l	d5,d0
+	or.l	d4,d0
+	beq.s	sqrt_is_exact
+	ori.l	#FE_INEXACT,sqrt_flags
+sqrt_is_exact:
+	tst.l	sqrt_rmode
+	bne	sqrt_dir		; D4 directed rounding (uses D = XX-(2Ys)^2)
 	; --- upper bound U = (2Ys+1)^2 ---
 	move.l	d6,d0
 	add.l	d0,d0
@@ -200,6 +260,22 @@ sqrt_dec:
 	bcc.s	sqrt_keep		; still >= 2^23
 	move.l	#$00FFFFFF,d6		; 0x7FFFFF -> 0xFFFFFF, drop exponent
 	subq.l	#1,ye_f
+	bra.s	sqrt_keep
+sqrt_dir:
+	; D4 directed: d5:d4 = D = XX - (2Ys)^2.  D==0 exact; D>0 true>y; D<0 true<y.
+	; sqrt >= 0: RZ(1)/RD(3) = floor, RU(2) = ceil.
+	move.l	d5,d0
+	or.l	d4,d0
+	beq	sqrt_keep		; exact -> keep y
+	tst.l	d5			; sign of D
+	bmi.s	sqrt_dir_below
+	cmpi.l	#2,sqrt_rmode		; D > 0 (true in (y,y+1)): RU -> inc, else keep
+	beq	sqrt_inc
+	bra	sqrt_keep
+sqrt_dir_below:
+	cmpi.l	#2,sqrt_rmode		; D < 0 (true in (y-1,y)): RU -> keep, else dec
+	beq	sqrt_keep
+	bra	sqrt_dec
 sqrt_keep:
 	move.l	ye_f,d0
 	lsl.l	#8,d0
@@ -211,8 +287,19 @@ sqrt_keep:
 	move.l	d0,d3			; corrected result (positive)
 sqrt_result:
 	move.l	d3,d0			; result
+	; --- Undo the subnormal pre-scale (D3): multiply by 2^-76 ---
+	move.l	sqrt_dn,d1
+	beq.s	_sqrt_done		; input was normal, nothing to undo
+	lsl.l	#8,d1
+	lsl.l	#8,d1
+	lsl.l	#7,d1			; dn << 23
+	sub.l	d1,d0			; result exp field -= 76 (stays normal)
 
 _sqrt_done:
+	move.l	sqrt_fe,d1		; D1: restore caller flags | sqrt's own flags
+	or.l	sqrt_flags,d1
+	move.l	d1,_fe_status
+	move.l	sqrt_rmode,_fe_round	; D4: restore the directed mode
 	movem.l	(sp)+,d2-d7
 	unlk	a6
 	rts
@@ -248,6 +335,18 @@ _sqrt_zero:
 	bra	_sqrt_done
 
 _sqrt_nan:
+	; sign bit set: negative finite / -inf -> INVALID; a (negative) NaN input
+	; just propagates (no INVALID -- sNaN is D6).
+	move.l	d2,d0
+	andi.l	#$7F800000,d0
+	cmpi.l	#$7F800000,d0		; exp all-ones?
+	bne.s	_sqrt_nan_inv		; finite negative -> invalid
+	move.l	d2,d0
+	andi.l	#$007FFFFF,d0
+	bne.s	_sqrt_nan_ret		; NaN input -> propagate (no flag)
+_sqrt_nan_inv:
+	ori.l	#FE_INVALID,sqrt_flags	; sqrt(negative) / sqrt(-inf)
+_sqrt_nan_ret:
 	move.l	#SNG_QNAN,d0
 	bra	_sqrt_done
 
@@ -259,5 +358,9 @@ _sqrt_inf:
 ye_f		ds.l	1		; result exponent field (mutable during rounding)
 xx_hi		ds.l	1		; 4 * Xs << k  (64-bit)
 xx_lo		ds.l	1
+sqrt_dn		ds.l	1		; subnormal-input scale-down (0 or 76)
+sqrt_fe		ds.l	1		; D1: saved caller _fe_status
+sqrt_flags	ds.l	1		; D1: sqrt's own raised flags
+sqrt_rmode	ds.l	1		; D4: saved directed rounding mode
 
 	end

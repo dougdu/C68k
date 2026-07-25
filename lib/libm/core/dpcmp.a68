@@ -8,8 +8,8 @@
 ;  Sets CCR flags as if (dest - src):
 ;    N = dest < src
 ;    Z = dest == src
-;    V = 0
-;  (and returns the three-way result -1/0/+1 in D0)
+;    V = 0  (V = 1 iff a NaN operand makes the compare UNORDERED -- delta D9)
+;  (returns the three-way result -1/0/+1 in D0, or 2 when unordered)
 ;
 ;  Uses the IEEE ordering property, extended to 64-bit:
 ;   - +0 and -0 compare equal
@@ -34,6 +34,25 @@ _fpcmpd:
 	movem.l	d2-d3,-(sp)		; save scratch; args now shifted by +8
 	move.l	12(sp),d0		; d0 = dest_hi
 	move.l	20(sp),d1		; d1 = src_hi
+
+	; ---- NaN in either operand?  comparison is UNORDERED (delta D9) ----
+	; NaN: exp field all ones (|hi| >= $7FF00000) AND mantissa != 0.
+	move.l	d0,d2
+	andi.l	#$7FFFFFFF,d2		; |dest_hi|
+	cmpi.l	#$7FF00000,d2
+	bhi.s	_dcmp_unordered		; mant_hi != 0 -> NaN
+	bcs.s	_dcmp_dest_ok		; exp < all-ones -> dest finite/inf
+	tst.l	16(sp)			; exp all-ones: NaN iff dest_lo != 0
+	bne.s	_dcmp_unordered
+_dcmp_dest_ok:
+	move.l	d1,d2
+	andi.l	#$7FFFFFFF,d2		; |src_hi|
+	cmpi.l	#$7FF00000,d2
+	bhi.s	_dcmp_unordered
+	bcs.s	_dcmp_ordered
+	tst.l	24(sp)
+	bne.s	_dcmp_unordered
+_dcmp_ordered:
 
 	; ---- both +/-0 ?  (|dest| == 0) and (|src| == 0) ----
 	move.l	d0,d2
@@ -102,6 +121,15 @@ _dcmp_eq:
 	movem.l	(sp)+,d2-d3
 	moveq	#0,d0
 	tst.l	d0			; Z=1 -> equal
+	rts
+
+_dcmp_unordered:
+	; NaN operand => UNORDERED (mirror of single _fpcmp): V=1, N=0, Z=0 and the
+	; three-way D0 = 2 (distinct from ordered -1/0/+1).  Ordered paths leave
+	; V=0, so a caller can BVS to an unordered handler.
+	movem.l	(sp)+,d2-d3
+	moveq	#2,d0			; 2 = unordered sentinel
+	move.w	#2,ccr			; X=0 N=0 Z=0 V=1 C=0
 	rts
 
 	end

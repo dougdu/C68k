@@ -13,6 +13,8 @@
 	include	ieee754d.inc
 
 	public	_fpaddd, _fpsubd
+	extern	_fe_status		; D1 sticky exception flags
+	extern	_fe_round, _fe_dirup, _fe_ovf_maxf	; D4 directed rounding
 
 	.code
 
@@ -70,12 +72,25 @@ _dpadd_entry:
 	move.l	d2,a0			; a0 = a sign (in bit 31)
 	move.l	d4,a1			; a1 = b sign
 
-	; --- Extract mantissas with implied bit ---
+	; --- Extract mantissas; subnormal inputs (exp 0) have no implied bit and
+	;     an effective biased exponent of 1 (D3 gradual underflow) ---
 	andi.l	#IEEE754_DBL_MANT_MASK_HI,d2
+	tst.l	d6
+	bne.s	_dpadd_a_norm
+	moveq	#1,d6			; subnormal a: eff exp 1, no implied bit
+	bra.s	_dpadd_a_mdone
+_dpadd_a_norm:
 	ori.l	#IEEE754_DBL_IMPLIED_BIT_HI,d2 ; d2:d3 = a mantissa (53 bits)
+_dpadd_a_mdone:
 
 	andi.l	#IEEE754_DBL_MANT_MASK_HI,d4
+	tst.l	d7
+	bne.s	_dpadd_b_norm
+	moveq	#1,d7
+	bra.s	_dpadd_b_mdone
+_dpadd_b_norm:
 	ori.l	#IEEE754_DBL_IMPLIED_BIT_HI,d4 ; d4:d5 = b mantissa (53 bits)
+_dpadd_b_mdone:
 
 	; --- Ensure a has larger exponent (swap if needed) ---
 	cmp.l	d7,d6
@@ -93,7 +108,14 @@ _dpadd_no_swap:
 	sub.l	d7,d6			; d6 = exponent difference
 
 	cmpi.l	#55,d6			; shift >= 55 -> smaller below guard+sticky
-	bge	_dpadd_result_a
+	blt.s	_dpadd_shift_go
+	tst.l	_fe_round
+	beq	_dpadd_result_a		; RN -> result is just the larger operand
+	moveq	#0,d4			; D4: aligned smaller mantissa = 0
+	moveq	#0,d5
+	moveq	#1,d7			; guard = 0 (bit31 clear), sticky = 1
+	bra	_dpadd_shifted
+_dpadd_shift_go:
 
 	; --- Shift smaller mantissa right by d6, capturing guard+sticky in d7 ---
 	; [d4:d5:d7] >> d6.  d7 bit31 = guard, lower bits = round/sticky; a 1
@@ -165,19 +187,74 @@ _dpadd_normalize:
 _dpadd_norm_loop:
 	btst.l	#20,d2			; implied bit position
 	bne	_dpadd_pack
+	move.l	a2,d6
+	cmpi.l	#1,d6			; exponent at min -> subnormal (D3)
+	ble.s	_dpadd_subnormal
 	lsl.l	#1,d7			; shift guard up into the mantissa
 	roxl.l	#1,d3
 	roxl.l	#1,d2
-	move.l	a2,d6
 	subq.l	#1,d6
 	move.l	d6,a2
-	tst.l	d6
-	ble	_dpadd_return_zero	; underflow
 	bra.s	_dpadd_norm_loop
+
+_dpadd_subnormal:
+	; D3 gradual underflow: a2 == 1, bit 20 clear -> subnormal (exp field 0).
+	; Round to nearest even from the guard d7; a round-up may carry into the
+	; implied bit, promoting to the min normal (exp field 1).
+	; D1 (tininess before rounding): the pre-rounding value is tiny, so any
+	; inexactness (d7 != 0) raises UNDERFLOW as well as INEXACT.
+	tst.l	d7
+	beq.s	_dpadd_sub_round	; exact subnormal -> no flags
+	ori.l	#FE_UNDERFLOW+FE_INEXACT,_fe_status
+	tst.l	_fe_round
+	bne.s	_dpadd_sub_dir		; D4 directed rounding
+	tst.l	d7			; reload guard sign (ori touched CCR)
+_dpadd_sub_round:
+	bpl.s	_dpadd_sub_pack		; guard clear -> round down
+	move.l	d7,d6
+	andi.l	#$7FFFFFFF,d6		; sticky bits below the guard
+	bne.s	_dpadd_sub_up
+	btst.l	#0,d3			; halfway -> round to even
+	beq.s	_dpadd_sub_pack
+_dpadd_sub_up:
+	addq.l	#1,d3
+	bcc.s	_dpadd_sub_pack
+	addq.l	#1,d2			; carry into the high word
+_dpadd_sub_pack:
+	btst.l	#20,d2			; carried up to the implied bit?
+	beq.s	_dpadd_sub_store
+	andi.l	#IEEE754_DBL_MANT_MASK_HI,d2 ; rounded up to min normal (exp field 1)
+	moveq	#1,d6
+	INSERT_DBL_EXP d6
+	or.l	d6,d2
+	bra.s	_dpadd_sub_sign
+_dpadd_sub_store:
+	andi.l	#IEEE754_DBL_MANT_MASK_HI,d2 ; subnormal mantissa (exp field 0)
+_dpadd_sub_sign:
+	move.l	a0,d6
+	andi.l	#IEEE754_DBL_SIGN_MASK_HI,d6
+	or.l	d6,d2			; combine sign
+	move.l	d2,d0
+	move.l	d3,d1
+	bra	_dpadd_done
+
+_dpadd_sub_dir:
+	; D4 directed subnormal round: inexact (d7 != 0), sign in a0, mag in d2:d3.
+	move.l	a0,d1			; sign (bit31) -> d1
+	moveq	#1,d0			; inexact = 1
+	bsr	_fe_dirup		; d0 = round-up; d2:d3, a0 preserved
+	tst.l	d0
+	beq.s	_dpadd_sub_pack
+	bra.s	_dpadd_sub_up
 
 _dpadd_pack:
 	; --- Round to nearest even using guard/sticky in d7 ---
 	tst.l	d7
+	beq.s	_dpadd_rounded		; d7 == 0 -> exact, no INEXACT
+	ori.l	#FE_INEXACT,_fe_status	; bits dropped -> inexact
+	tst.l	_fe_round
+	bne.s	_dpadd_pack_dir		; D4 directed rounding
+	tst.l	d7			; (ori touched CCR) reload the guard sign
 	bpl.s	_dpadd_rounded		; guard (bit31) clear -> round down
 	move.l	d7,d6
 	andi.l	#$7FFFFFFF,d6		; sticky bits below the guard
@@ -218,6 +295,15 @@ _dpadd_done:
 	unlk	a6
 	rts
 
+_dpadd_pack_dir:
+	; D4 directed normal round: inexact (d7 != 0), sign in a0, mag in d2:d3.
+	move.l	a0,d1			; sign (bit31) -> d1
+	moveq	#1,d0			; inexact = 1
+	bsr	_fe_dirup		; d0 = round-up; d2:d3, a0 preserved
+	tst.l	d0
+	beq.s	_dpadd_rounded
+	bra.s	_dpadd_roundup
+
 ; --- Special cases ---
 
 _dpadd_return_a:
@@ -231,7 +317,9 @@ _dpadd_return_b:
 	bra.s	_dpadd_done
 
 _dpadd_result_a:
-	; Reconstruct a from mantissa and exponent
+	; Reconstruct a from mantissa and exponent.  The smaller operand is nonzero
+	; (zeros handled early) so the true sum differs from a -> INEXACT (D1).
+	ori.l	#FE_INEXACT,_fe_status
 	andi.l	#IEEE754_DBL_MANT_MASK_HI,d2
 	move.l	a2,d6
 	INSERT_DBL_EXP d6
@@ -249,11 +337,20 @@ _dpadd_return_zero:
 	bra	_dpadd_done
 
 _dpadd_overflow:
-	move.l	#DBL_INF_HI,d0
+	ori.l	#FE_OVERFLOW+FE_INEXACT,_fe_status ; D1: overflow implies inexact
+	move.l	a0,d1
+	andi.l	#$80000000,d1		; sign
+	bsr	_fe_ovf_maxf		; d0 = 1 max-finite / 0 inf ; d1 = sign
+	tst.l	d0
+	bne.s	_dpadd_ovf_max
+	move.l	d1,d0
+	ori.l	#DBL_INF_HI,d0		; signed inf
 	moveq	#0,d1
-	move.l	a0,d6
-	andi.l	#IEEE754_DBL_SIGN_MASK_HI,d6
-	or.l	d6,d0
+	bra	_dpadd_done
+_dpadd_ovf_max:
+	move.l	d1,d0
+	ori.l	#$7FEFFFFF,d0		; signed max-finite (hi)
+	moveq	#-1,d1			; max-finite lo = 0xFFFFFFFF
 	bra	_dpadd_done
 
 _dpadd_a_special:
@@ -277,9 +374,11 @@ _dpadd_a_special:
 	bne	_dpadd_ret_nan		; b is NaN -> NaN
 	; both inf: opposite signs -> inf + (-inf) = NaN
 	eor.l	d0,d2
-	bmi	_dpadd_ret_nan
+	bmi	_dpadd_invalid
 	bra	_dpadd_done		; same sign -> inf
 
+_dpadd_invalid:
+	ori.l	#FE_INVALID,_fe_status	; D1: inf + (-inf) (signaled invalid)
 _dpadd_ret_nan:
 	move.l	#$7FF80000,d0
 	moveq	#0,d1

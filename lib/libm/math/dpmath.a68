@@ -13,10 +13,47 @@
 	include	ieee754d.inc
 
 	public	_sqrtd, _sind, _cosd, _atand, _expd, _logd, _powd
+	public	_sqd_umul32
 	public	_floord, _ceild, _modfd, _fmodd
+	public	__rem_pio2_big, rp_r
 	extern	_fpaddd, _fpsubd, _fpmultd, _fpdivd
 	extern	_fpdtof, _fpftod, _fpltod, _fpdtol
 	extern	_sqrt
+	extern	_fmad
+	extern	_fe_status		; D1 sticky exception flags
+	extern	_fe_round		; D4 directed rounding mode
+
+; one Horner step for the powd log tail series P2:  s = coeff + (pw_t2 hi)*s
+; (s in d0:d1 on entry and exit).  Defined here (not inline in the code stream)
+; because asm68K miscounts an inline macro body's length when resolving forward
+; branch displacements, skewing every forward bsr past the definition point.
+PW_HORN	macro	coeff
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	move.l	pw_t2+4,-(sp)
+	move.l	pw_t2,-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	coeff+4(pc),-(sp)
+	move.l	coeff(pc),-(sp)
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpaddd
+	lea	16(sp),sp
+	endm
+
+; dst = op(sa, sb) for a double binary op, all operands ABSOLUTE (bss/const)
+; addresses.  Defined at file top (never inline) -- see PW_HORN note above.
+DBINOP	macro	op,dst,sa,sb
+	move.l	sb+4,-(sp)
+	move.l	sb,-(sp)
+	move.l	sa+4,-(sp)
+	move.l	sa,-(sp)
+	jsr	op
+	lea	16(sp),sp
+	move.l	d0,dst
+	move.l	d1,dst+4
+	endm
 
 	.code
 
@@ -36,20 +73,27 @@ _d_pio2_hi	dc.l	$3FF921FB,$54400000
 _d_pio2_lo	dc.l	$3DD0B461,$1A626331
 _d_two_over_pi	dc.l	$3FE45F30,$6DC9C883
 
+; Scaling powers of two for the Payne-Hanek reduction (BUG-0021 large-arg)
+_d_2m32		dc.l	$3DF00000,$00000000	; 2^-32
+_d_2m64		dc.l	$3BF00000,$00000000	; 2^-64
+_d_2m96		dc.l	$39F00000,$00000000	; 2^-96
+_d_2m128	dc.l	$37F00000,$00000000	; 2^-128
+_d_2p32		dc.l	$41F00000,$00000000	; 2^32 (unsigned-32 -> double fixup)
+
 ; Sin coefficients: x*(1 + x²*(s1 + x²*(s2 + ...)))
-_d_s1		dc.l	$BFC55555,$55555549	; -1/3!
-_d_s2		dc.l	$3F811111,$1110F8A6	;  1/5!
-_d_s3		dc.l	$BF2A01A0,$19C161D5	; -1/7!
+_d_s1		dc.l	$BFC55555,$55555555	; -1/3! (exact -- Phase C)
+_d_s2		dc.l	$3F811111,$11111111	;  1/5! (exact)
+_d_s3		dc.l	$BF2A01A0,$1A01A01A	; -1/7! (exact)
 _d_s4		dc.l	$3EC71DE3,$A556C734	;  1/9!
-_d_s5		dc.l	$BE5AE5E6,$8A2B9CEB	; -1/11!
+_d_s5		dc.l	$BE5AE645,$67F544E4	; -1/11! (exact -- Phase C)
 _d_s6		dc.l	$3DE61246,$13A86D09	;  1/13! (BUG-0021: extend to ~1 ULP)
 _d_s7		dc.l	$BD6AE7F3,$E733B81F	; -1/15!
 
 ; Cos coefficients: 1 + x²*(c1 + x²*(c2 + ...))
 _d_c1		dc.l	$BFE00000,$00000000	; -1/2!
 _d_c2		dc.l	$3FA55555,$55555555	;  1/4!
-_d_c3		dc.l	$BF56C16C,$16C15177	; -1/6!
-_d_c4		dc.l	$3EFA01A0,$19CB1590	;  1/8!
+_d_c3		dc.l	$BF56C16C,$16C16C17	; -1/6! (exact -- Phase C)
+_d_c4		dc.l	$3EFA01A0,$1A01A01A	;  1/8! (exact)
 _d_c5		dc.l	$BE927E4F,$B7789F5C	; -1/10!
 _d_c6		dc.l	$3E21EED8,$EFF8D898	;  1/12! (BUG-0021: extend to ~1 ULP)
 _d_c7		dc.l	$BDA93974,$A8C07C9D	; -1/14!
@@ -74,6 +118,8 @@ _d_at11		dc.l	$BF90AD3A,$E322DA11	; -aT[10]
 ; Exp constants
 _d_inv_ln2	dc.l	$3FF71547,$652B82FE	; 1/ln(2)
 _d_ln2		dc.l	$3FE62E42,$FEFA39EF	; ln(2)
+_d_ln2hi	dc.l	$3FE62E42,$FEE00000	; ln2 high (low 21 mantissa bits 0)
+_d_ln2lo	dc.l	$3DEA39EF,$35793C76	; ln2 - ln2hi (Cody-Waite low part)
 _d_e1		dc.l	$3FE00000,$00000000	; 1/2!
 _d_e2		dc.l	$3FC55555,$55555555	; 1/3!
 _d_e3		dc.l	$3FA55555,$55555555	; 1/4!
@@ -94,6 +140,13 @@ _d_l2		dc.l	$3FC99999,$9999999A	; 1/5
 _d_l3		dc.l	$3FC24924,$92492492	; 1/7
 _d_l4		dc.l	$3FBC71C7,$1C71C71C	; 1/9
 _d_l5		dc.l	$3FB745D1,$745D1746	; 1/11
+_d_l6		dc.l	$3FB3B13B,$13B13B14	; 1/13
+_d_l7		dc.l	$3FB11111,$11111111	; 1/15
+_d_l8		dc.l	$3FAE1E1E,$1E1E1E1E	; 1/17
+_d_l9		dc.l	$3FAAF286,$BCA1AF28	; 1/19
+_d_l10		dc.l	$3FA86186,$18618618	; 1/21
+_d_23hi		dc.l	$3FE55555,$55555555	; 2/3 hi (dd, for powd log)
+_d_23lo		dc.l	$3C855555,$55555555	; 2/3 lo (dd)
 
 
 ; ============================================================
@@ -364,8 +417,8 @@ _dptrunc_ret:
 ;  _expd — e^x  (7-term Horner on reduced r)
 ; ============================================================
 _expd:
-	link	a6,#-12
-	movem.l	d2-d5,-(sp)
+	link	a6,#-20
+	movem.l	d2-d7,-(sp)
 	move.l	DBL_ARG1_HI(a6),d2
 	move.l	DBL_ARG1_LO(a6),d3
 
@@ -402,26 +455,59 @@ _expd:
 	addq.l	#8,sp
 	move.l	d0,-4(a6)
 
-	; r = x - n*ln2
-	move.l	d0,-(sp)
+	; r = x - n*ln2  as (r, rlo) via FMA Cody-Waite (Phase C: 481 -> <=1 ULP).
+	; d2:d3 = x (preserved across the calls).  Frame: -8/-12 = rhi, -16/-20 = rlo.
+	move.l	-4(a6),-(sp)		; nf = (double)n -> d6:d7
 	jsr	_fpltod
 	addq.l	#4,sp
-	move.l	_d_ln2+4(pc),-(sp)
-	move.l	_d_ln2(pc),-(sp)
-	move.l	d1,-(sp)
+	move.l	d0,d6
+	move.l	d1,d7
+	; rhi = fma(-nf, ln2hi, x)
+	move.l	d3,-(sp)		; c.lo = x.lo
+	move.l	d2,-(sp)		; c.hi = x.hi
+	move.l	_d_ln2hi+4(pc),-(sp)	; b.lo
+	move.l	_d_ln2hi(pc),-(sp)	; b.hi
+	move.l	d7,-(sp)		; a.lo = nf.lo
+	move.l	d6,d0
+	eori.l	#IEEE754_DBL_SIGN_MASK_HI,d0	; a.hi = -nf.hi
 	move.l	d0,-(sp)
-	jsr	_fpmultd
-	lea	16(sp),sp
-	move.l	d1,-(sp)
+	jsr	_fmad
+	lea	24(sp),sp
+	move.l	d0,-8(a6)		; rhi.hi
+	move.l	d1,-12(a6)		; rhi.lo
+	; r = fma(-nf, ln2lo, rhi)  -> d4:d5
+	move.l	-12(a6),-(sp)		; c.lo = rhi.lo
+	move.l	-8(a6),-(sp)		; c.hi = rhi.hi
+	move.l	_d_ln2lo+4(pc),-(sp)	; b.lo
+	move.l	_d_ln2lo(pc),-(sp)	; b.hi
+	move.l	d7,-(sp)		; a.lo = nf.lo
+	move.l	d6,d0
+	eori.l	#IEEE754_DBL_SIGN_MASK_HI,d0	; a.hi = -nf.hi
 	move.l	d0,-(sp)
-	move.l	d3,-(sp)
-	move.l	d2,-(sp)
-	jsr	_fpsubd
-	lea	16(sp),sp
-	move.l	d0,-12(a6)
-	move.l	d1,-8(a6)
-	move.l	d0,d4
+	jsr	_fmad
+	lea	24(sp),sp
+	move.l	d0,d4			; d4:d5 = r
 	move.l	d1,d5
+	; rlo = fma(-nf, ln2lo, rhi - r)
+	move.l	d5,-(sp)		; (rhi - r) arg2 = r
+	move.l	d4,-(sp)
+	move.l	-12(a6),-(sp)		; arg1 = rhi
+	move.l	-8(a6),-(sp)
+	jsr	_fpsubd
+	lea	16(sp),sp		; d0:d1 = rhi - r
+	move.l	d1,-(sp)		; c.lo = (rhi-r).lo
+	move.l	d0,-(sp)		; c.hi
+	move.l	_d_ln2lo+4(pc),-(sp)	; b.lo
+	move.l	_d_ln2lo(pc),-(sp)	; b.hi
+	move.l	d7,-(sp)		; a.lo = nf.lo
+	move.l	d6,d0
+	eori.l	#IEEE754_DBL_SIGN_MASK_HI,d0	; a.hi = -nf.hi
+	move.l	d0,-(sp)
+	jsr	_fmad
+	lea	24(sp),sp
+	move.l	d0,-16(a6)		; rlo.hi
+	move.l	d1,-20(a6)		; rlo.lo
+	; d4:d5 = r (survives to the Horner; _fmad preserves d2-d7)
 
 	; Horner (Taylor to r^13, ~1 ULP for |r|<=ln2/2) -- BUG-0021
 	; 1+r*(1+r*(e1+r*(e2+r*(e3+r*(e4+r*(e5+r*(e6+...+r*(e11+r*e12))))))))
@@ -613,6 +699,13 @@ _expd:
 	move.l	d5,-(sp)
 	move.l	d4,-(sp)
 	jsr	_fpmultd
+	lea	16(sp),sp		; d0:d1 = u = r*t2
+	; fold the reduction low part before the final 1+ : u = u + rlo (Phase C)
+	move.l	-20(a6),-(sp)
+	move.l	-16(a6),-(sp)
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpaddd
 	lea	16(sp),sp
 	move.l	_d_one+4(pc),-(sp)
 	move.l	_d_one(pc),-(sp)
@@ -631,7 +724,7 @@ _expd:
 	asl.l	#4,d2			; n << 20
 	add.l	d2,d0
 _expd_ret:
-	movem.l	(sp)+,d2-d5
+	movem.l	(sp)+,d2-d7
 	unlk	a6
 	rts
 _expd_one:
@@ -670,7 +763,7 @@ _expd_nan:
 ; ============================================================
 _logd:
 	link	a6,#-8
-	movem.l	d2-d5,-(sp)
+	movem.l	d2-d7,-(sp)
 	move.l	DBL_ARG1_HI(a6),d2
 	move.l	DBL_ARG1_LO(a6),d3
 
@@ -753,9 +846,74 @@ _logd_no_halve:
 	move.l	d0,d4
 	move.l	d1,d5
 
-	; Horner: 1/11
-	move.l	_d_l5(pc),d0
-	move.l	_d_l5+4(pc),d1
+	; Horner extended to 1/21 (Phase C: ~3966 -> <=2 ULP): s = l10, +l9..+l5
+	move.l	_d_l10(pc),d0
+	move.l	_d_l10+4(pc),d1
+	; 1/19 + t²*s
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	move.l	d5,-(sp)
+	move.l	d4,-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	_d_l9+4(pc),-(sp)
+	move.l	_d_l9(pc),-(sp)
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpaddd
+	lea	16(sp),sp
+	; 1/17 + t²*s
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	move.l	d5,-(sp)
+	move.l	d4,-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	_d_l8+4(pc),-(sp)
+	move.l	_d_l8(pc),-(sp)
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpaddd
+	lea	16(sp),sp
+	; 1/15 + t²*s
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	move.l	d5,-(sp)
+	move.l	d4,-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	_d_l7+4(pc),-(sp)
+	move.l	_d_l7(pc),-(sp)
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpaddd
+	lea	16(sp),sp
+	; 1/13 + t²*s
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	move.l	d5,-(sp)
+	move.l	d4,-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	_d_l6+4(pc),-(sp)
+	move.l	_d_l6(pc),-(sp)
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpaddd
+	lea	16(sp),sp
+	; 1/11 + t²*s
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	move.l	d5,-(sp)
+	move.l	d4,-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	_d_l5+4(pc),-(sp)
+	move.l	_d_l5(pc),-(sp)
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpaddd
+	lea	16(sp),sp
 	; 1/9+t²*s
 	move.l	d1,-(sp)
 	move.l	d0,-(sp)
@@ -838,17 +996,39 @@ _logd_no_halve:
 	move.l	d0,d4
 	move.l	d1,d5
 
-	; e*ln(2)+ln(m)
+	; ln(x) = e*ln2 + ln(m) with e*ln2 as a double-double: e*ln2hi is EXACT
+	; (e is a small integer, ln2hi has low mantissa bits 0), so the large term
+	; carries no rounding.  result = ehi + (elo + ln(m))  (Phase C).
 	move.l	-4(a6),d0
 	move.l	d0,-(sp)
 	jsr	_fpltod
 	addq.l	#4,sp
-	move.l	_d_ln2+4(pc),-(sp)
-	move.l	_d_ln2(pc),-(sp)
-	move.l	d1,-(sp)
-	move.l	d0,-(sp)
+	move.l	d0,d6			; d6:d7 = ef = (double)e
+	move.l	d1,d7
+	; elo = ef * ln2lo
+	move.l	_d_ln2lo+4(pc),-(sp)
+	move.l	_d_ln2lo(pc),-(sp)
+	move.l	d7,-(sp)
+	move.l	d6,-(sp)
 	jsr	_fpmultd
 	lea	16(sp),sp
+	; tmp = elo + ln(m)   [ln(m) in d4:d5]
+	move.l	d5,-(sp)
+	move.l	d4,-(sp)
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpaddd
+	lea	16(sp),sp
+	move.l	d0,d4			; d4:d5 = tmp
+	move.l	d1,d5
+	; ehi = ef * ln2hi   (exact)
+	move.l	_d_ln2hi+4(pc),-(sp)
+	move.l	_d_ln2hi(pc),-(sp)
+	move.l	d7,-(sp)
+	move.l	d6,-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	; result = ehi + tmp
 	move.l	d5,-(sp)
 	move.l	d4,-(sp)
 	move.l	d1,-(sp)
@@ -856,7 +1036,7 @@ _logd_no_halve:
 	jsr	_fpaddd
 	lea	16(sp),sp
 _logd_ret:
-	movem.l	(sp)+,d2-d5
+	movem.l	(sp)+,d2-d7
 	unlk	a6
 	rts
 _logd_nan:
@@ -874,35 +1054,49 @@ _logd_pinf:
 
 
 ; ============================================================
-;  _cosd — cos(x) = sin(x + pi/2)
+;  _cosd — cos(x): reduces x directly and shifts the quadrant by 1
+;  (cos x = sin(x + pi/2) reduces to the SAME r with k+1), avoiding the lossy
+;  x + pi/2 pre-add that made cosd ~4733 ULP.  Shares _sind's body.
 ; ============================================================
 _cosd:
-	link	a6,#0
-	move.l	_d_pi_2+4(pc),-(sp)
-	move.l	_d_pi_2(pc),-(sp)
-	move.l	DBL_ARG1_LO(a6),-(sp)
-	move.l	DBL_ARG1_HI(a6),-(sp)
-	jsr	_fpaddd
-	lea	16(sp),sp
-	move.l	d0,DBL_ARG1_HI(a6)
-	move.l	d1,DBL_ARG1_LO(a6)
-	unlk	a6
-	; fall through to _sind
+	link	a6,#-16
+	movem.l	d2-d7,-(sp)
+	moveq	#1,d0
+	move.l	d0,-16(a6)		; qoff = 1
+	bra.s	_sincos_body
 
 ; ============================================================
-;  _sind — sin(x)
+;  _sind — sin(x)  (cosd shares the body via the quadrant offset at -16(a6))
 ; ============================================================
 _sind:
-	link	a6,#-12
+	link	a6,#-16
 	movem.l	d2-d7,-(sp)
+	clr.l	-16(a6)			; qoff = 0
+_sincos_body:
 	move.l	DBL_ARG1_HI(a6),d2
 	move.l	DBL_ARG1_LO(a6),d3
 
 	move.l	d2,d0
 	andi.l	#$7FFFFFFF,d0
 	or.l	d3,d0
+	bne.s	_sincos_nz
+	tst.l	-16(a6)			; x==0: sin(0)=0 shortcut only for sin (qoff=0)
 	beq	_sind_retx
+_sincos_nz:
 
+	; |x| >= 2^20 : Cody-Waite k*pi/2 loses bits -> Payne-Hanek (BUG-0021)
+	move.l	d2,d0
+	andi.l	#$7FFFFFFF,d0
+	cmpi.l	#$41300000,d0
+	blt.s	_sincos_cw
+	bsr	__rem_pio2_big		; d0 = quadrant; rp_r = reduced r
+	move.l	d0,-4(a6)
+	move.l	rp_r,d4
+	move.l	rp_r+4,d5
+	move.l	d4,-12(a6)
+	move.l	d5,-8(a6)
+	bra	_sincos_haveR
+_sincos_cw:
 	; k=round(x*2/pi)
 	move.l	_d_two_over_pi+4(pc),-(sp)
 	move.l	_d_two_over_pi(pc),-(sp)
@@ -964,6 +1158,7 @@ _sind:
 	move.l	d0,d4
 	move.l	d1,d5
 
+_sincos_haveR:
 	; x²
 	move.l	d5,-(sp)
 	move.l	d4,-(sp)
@@ -975,6 +1170,8 @@ _sind:
 	move.l	d1,d3
 
 	move.l	-4(a6),d4
+	add.l	-16(a6),d4		; k += qoff (cos x uses sin's quadrant + 1)
+	move.l	d4,-4(a6)		; store adjusted quadrant for the sign step
 	andi.l	#3,d4
 	btst.l	#0,d4
 	bne	_sind_cpoly
@@ -1201,6 +1398,251 @@ _sind_retx:
 	move.l	d2,d0
 	move.l	d3,d1
 	bra.s	_sind_ret
+
+
+; ============================================================
+;  __rem_pio2_big -- Payne-Hanek argument reduction for |x| >= 2^20.
+;  In:  d2:d3 = x (double, any sign, finite normal).
+;  Out: d0 = quadrant n = round(x*2/pi) mod 4 (0..3); r (double) in rp_r.
+;  x = n*(pi/2) + r, |r| <= pi/4, correct over the whole double range.
+;  Modeled/validated in test/tools/rempio2_model.py (BUG-0021 large-arg).
+;  Method: f = x*2/pi via a windowed 53-bit x 7-word (2/pi) fixed-point
+;  multiply; n = the 2 integer bits, r = fraction * pi/2 (dd).
+; ============================================================
+__rem_pio2_big:
+	movem.l	d2-d7/a2-a6,-(sp)
+	; sign + |x|
+	move.l	d2,d0
+	andi.l	#$80000000,d0
+	move.l	d0,rp_sgn
+	bclr.l	#31,d2
+	; E = exp - 1075
+	move.l	d2,d0
+	swap	d0
+	lsr.w	#4,d0
+	andi.l	#$7FF,d0
+	subi.l	#1075,d0
+	move.l	d0,rp_E
+	; M = Mhi:Mlo (53-bit significand)
+	move.l	d2,d0
+	andi.l	#$000FFFFF,d0
+	ori.l	#$00100000,d0
+	move.l	d0,rp_Mhi
+	move.l	d3,rp_Mlo
+	; off=(E-2)&31, k=off+2, w0=floor((E-2)/32)
+	move.l	rp_E,d0
+	subq.l	#2,d0
+	move.l	d0,d1
+	asr.l	#5,d1
+	move.l	d1,rp_w0
+	andi.l	#31,d0
+	addq.l	#2,d0
+	move.l	d0,rp_k
+	; Mpp = M << k  (mpp[0..2])
+	move.l	rp_Mlo,d0
+	move.l	rp_Mhi,d1
+	moveq	#0,d2
+	move.l	rp_k,d3
+_rp_shl:
+	lsl.l	#1,d0
+	roxl.l	#1,d1
+	roxl.l	#1,d2
+	subq.l	#1,d3
+	bne.s	_rp_shl
+	move.l	d0,rp_mpp+0
+	move.l	d1,rp_mpp+4
+	move.l	d2,rp_mpp+8
+	; S[0..6] = 2opi[w0+6 .. w0] stored LSW-first (s[0]=2opi[w0+6]) so the
+	; LSW-first multiply weights match the window (top word = 2opi[w0])
+	move.l	rp_w0,d0
+	addq.l	#6,d0
+	lea	rp_s,a0
+	lea	_rp_2opi,a1
+	moveq	#6,d3
+_rp_sload:
+	moveq	#0,d1
+	tst.l	d0
+	bmi.s	_rp_sstore
+	cmpi.l	#56,d0
+	bge.s	_rp_sstore
+	move.l	d0,d2
+	lsl.l	#2,d2
+	move.l	0(a1,d2.l),d1
+_rp_sstore:
+	move.l	d1,(a0)+
+	subq.l	#1,d0
+	dbra	d3,_rp_sload
+	; zero P[0..10]
+	lea	rp_P,a0
+	moveq	#10,d0
+_rp_pz:
+	clr.l	(a0)+
+	dbra	d0,_rp_pz
+	; P = mpp(3) * s(7)
+	lea	rp_s,a3
+	lea	rp_P,a4
+	moveq	#6,d6
+_rp_mul_j:
+	move.l	(a3)+,d7		; s[j]
+	lea	rp_mpp,a2
+	movea.l	a4,a5
+	moveq	#0,d4			; carry
+	moveq	#0,d5			; zero
+	move.l	(a2)+,d0		; i=0
+	move.l	d7,d1
+	bsr	_sqd_umul32
+	add.l	d4,d1
+	addx.l	d5,d0
+	add.l	(a5),d1
+	addx.l	d5,d0
+	move.l	d1,(a5)+
+	move.l	d0,d4
+	move.l	(a2)+,d0		; i=1
+	move.l	d7,d1
+	bsr	_sqd_umul32
+	add.l	d4,d1
+	addx.l	d5,d0
+	add.l	(a5),d1
+	addx.l	d5,d0
+	move.l	d1,(a5)+
+	move.l	d0,d4
+	move.l	(a2)+,d0		; i=2
+	move.l	d7,d1
+	bsr	_sqd_umul32
+	add.l	d4,d1
+	addx.l	d5,d0
+	add.l	(a5),d1
+	addx.l	d5,d0
+	move.l	d1,(a5)+
+	move.l	d0,d4
+	add.l	d4,(a5)+		; P[j+3] += carry, ripple
+	bcc.s	_rp_mul_jn
+_rp_mul_rip:
+	addq.l	#1,(a5)+
+	bcs.s	_rp_mul_rip
+_rp_mul_jn:
+	addq.l	#4,a4
+	dbra	d6,_rp_mul_j
+	; quadrant + roundup from the product (point at bit 224 = word 7)
+	move.l	rp_P+28,d0		; P[7]
+	andi.l	#3,d0
+	move.l	d0,rp_q0
+	clr.l	rp_rsgn
+	move.l	rp_P+24,d0		; P[6] (top fraction word)
+	bpl.s	_rp_noround		; bit31 clear -> fraction < 0.5
+	; roundup: mag = 2^224 - frac(P[0..6]); q0++ ; r negative
+	lea	rp_P,a0
+	lea	rp_mag,a1
+	move.l	(a0)+,d0
+	neg.l	d0
+	move.l	d0,(a1)+
+	moveq	#5,d1
+_rp_neg:
+	move.l	(a0)+,d0
+	negx.l	d0
+	move.l	d0,(a1)+
+	dbra	d1,_rp_neg
+	move.l	rp_mag+24,rp_t1
+	move.l	rp_mag+20,rp_t2
+	move.l	rp_mag+16,rp_t3
+	move.l	rp_mag+12,rp_t4
+	addq.l	#1,rp_q0
+	moveq	#1,d0
+	move.l	d0,rp_rsgn
+	bra.s	_rp_haveT
+_rp_noround:
+	move.l	rp_P+24,rp_t1		; P[6]
+	move.l	rp_P+20,rp_t2		; P[5]
+	move.l	rp_P+16,rp_t3		; P[4]
+	move.l	rp_P+12,rp_t4		; P[3]
+_rp_haveT:
+	; r = (t1*2^-32 + t2*2^-64 + t3*2^-96 + t4*2^-128) * pi/2  (dd; two_sum a,b)
+	move.l	rp_t1,d0
+	bsr	_rp_u32tod
+	move.l	d0,rp_a
+	move.l	d1,rp_a+4
+	DBINOP	_fpmultd,rp_a,rp_a,_d_2m32
+	move.l	rp_t2,d0
+	bsr	_rp_u32tod
+	move.l	d0,rp_b
+	move.l	d1,rp_b+4
+	DBINOP	_fpmultd,rp_b,rp_b,_d_2m64
+	DBINOP	_fpaddd,rp_shi,rp_a,rp_b
+	DBINOP	_fpsubd,rp_bb,rp_shi,rp_a
+	DBINOP	_fpsubd,rp_tmp,rp_shi,rp_bb
+	DBINOP	_fpsubd,rp_tmp,rp_a,rp_tmp
+	DBINOP	_fpsubd,rp_tmp2,rp_b,rp_bb
+	DBINOP	_fpaddd,rp_e,rp_tmp,rp_tmp2
+	move.l	rp_t3,d0
+	bsr	_rp_u32tod
+	move.l	d0,rp_clo
+	move.l	d1,rp_clo+4
+	DBINOP	_fpmultd,rp_clo,rp_clo,_d_2m96
+	move.l	rp_t4,d0
+	bsr	_rp_u32tod
+	move.l	d0,rp_tmp
+	move.l	d1,rp_tmp+4
+	DBINOP	_fpmultd,rp_tmp,rp_tmp,_d_2m128
+	DBINOP	_fpaddd,rp_clo,rp_clo,rp_tmp
+	DBINOP	_fpaddd,rp_rlo,rp_e,rp_clo
+	DBINOP	_fpmultd,rp_hi,rp_shi,_d_pio2_hi
+	DBINOP	_fpmultd,rp_lo,rp_shi,_d_pio2_lo
+	DBINOP	_fpmultd,rp_tmp,rp_rlo,_d_pio2_hi
+	DBINOP	_fpaddd,rp_lo,rp_lo,rp_tmp
+	DBINOP	_fpaddd,rp_r,rp_hi,rp_lo
+	; quadrant: n = q0 (x>0) or -q0 (x<0), mod 4
+	move.l	rp_q0,d0
+	tst.l	rp_sgn
+	beq.s	_rp_qpos
+	neg.l	d0
+_rp_qpos:
+	andi.l	#3,d0
+	; r sign: negate iff roundup XOR (x<0)
+	move.l	rp_rsgn,d1
+	tst.l	rp_sgn
+	beq.s	_rp_nx
+	eori.l	#1,d1
+_rp_nx:
+	andi.l	#1,d1
+	beq.s	_rp_rdone
+	eori.l	#$80000000,rp_r
+_rp_rdone:
+	movem.l	(sp)+,d2-d7/a2-a6
+	rts
+
+; _rp_u32tod -- unsigned 32-bit d0 -> double d0:d1.  Clobbers d2/d0/d1/a0/a1.
+_rp_u32tod:
+	move.l	d0,d2
+	move.l	d0,-(sp)
+	jsr	_fpltod
+	addq.l	#4,sp
+	tst.l	d2
+	bpl.s	_rp_u32d_ret
+	move.l	_d_2p32+4(pc),-(sp)
+	move.l	_d_2p32(pc),-(sp)
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpaddd
+	lea	16(sp),sp
+_rp_u32d_ret:
+	rts
+
+; 2/pi as 56 x 32-bit fractional words (MSB-first, bit j = 32*i+1..32*i+32)
+_rp_2opi:
+	dc.l	$A2F9836E,$4E441529,$FC2757D1,$F534DDC0
+	dc.l	$DB629599,$3C439041,$FE5163AB,$DEBBC561
+	dc.l	$B7246E3A,$424DD2E0,$06492EEA,$09D1921C
+	dc.l	$FE1DEB1C,$B129A73E,$E88235F5,$2EBB4484
+	dc.l	$E99C7026,$B45F7E41,$3991D639,$835339F4
+	dc.l	$9C845F8B,$BDF9283B,$1FF897FF,$DE05980F
+	dc.l	$EF2F118B,$5A0A6D1F,$6D367ECF,$27CB09B7
+	dc.l	$4F463F66,$9E5FEA2D,$7527BAC7,$EBE5F17B
+	dc.l	$3D0739F7,$8A5292EA,$6BFB5FB1,$1F8D5D08
+	dc.l	$56033046,$FC7B6BAB,$F0CFBC20,$9AF4361D
+	dc.l	$A9E39161,$5EE61B08,$6599855F,$14A06840
+	dc.l	$8DFFD880,$4D732731,$06061556,$CA73A8C9
+	dc.l	$60E27BC0,$8C6B47C4,$19C367CD,$DCE8092A
+	dc.l	$8359C476,$8B961CA6,$DDAF44D1,$5719053E
 
 
 ; ============================================================
@@ -1512,10 +1954,21 @@ _atand_inf:
 ;  _sqrtd — Newton-Raphson (3 iterations from single seed)
 ; ============================================================
 _sqrtd:
-	link	a6,#-4			; -4(a6) = half_e (survives the Newton calls)
+	link	a6,#-32			; -4=half_e; -8=Ye -12=YsH -16=YsL -20=k+2 -24=XsL -28=XsH -32=sub_adj
 	movem.l	d2-d7,-(sp)
 	move.l	DBL_ARG1_HI(a6),d2
 	move.l	DBL_ARG1_LO(a6),d3
+
+	; D1: save caller flags; the Newton iteration calls the core ops (which now
+	; raise flags), so their pollution is discarded at exit and only sqrt's own
+	; flags are raised: INVALID for x<0, INEXACT if x is not a perfect square.
+	move.l	_fe_status,d0
+	move.l	d0,sqrtd_fe
+	clr.l	sqrtd_flags
+	; D4: Newton in round-to-nearest; directed mode applied at the residual test.
+	move.l	_fe_round,d0
+	move.l	d0,sqd_rmode
+	clr.l	_fe_round
 
 	; --- special values (BUG-0017) ---
 	move.l	d2,d0
@@ -1538,6 +1991,32 @@ _sqrtd_finite:
 	tst.l	d2
 	bmi	_sqrtd_nan		; negative finite -> NaN
 
+	; --- subnormal input (D3): pre-scale to a normal value ---
+	;  x subnormal (exp field 0, mantissa != 0; zero handled above).
+	;  Normalise the 52-bit significand up to hi bit 20 and multiply by
+	;  2^1076 so the operand is normal; sqrt(x) = sqrt(x*2^1076) * 2^-538
+	;  (exact powers of two), the 2^-538 folded into half_e below.
+	clr.l	-32(a6)			; default: no subnormal adjustment
+	move.l	d2,d0
+	andi.l	#$7FF00000,d0
+	bne.s	_sqrtd_reduce		; normal input
+	moveq	#0,d0			; shift count s
+_sqrtd_sub_shl:
+	addq.l	#1,d0
+	lsl.l	#1,d3
+	roxl.l	#1,d2
+	btst	#20,d2
+	beq.s	_sqrtd_sub_shl		; stop when the leading 1 reaches hi bit 20
+	move.l	#1077,d1
+	sub.l	d0,d1			; exp field F = 1077 - s  (1025..1076)
+	lsl.l	#8,d1
+	lsl.l	#8,d1
+	lsl.l	#4,d1			; F << 20
+	andi.l	#$000FFFFF,d2		; drop the implied bit
+	or.l	d1,d2			; d2 = (x * 2^1076) hi   (d3 = lo, unchanged)
+	move.l	#538,-32(a6)		; half_e must drop by 538
+
+_sqrtd_reduce:
 	; --- reduce x = m * 2^e, m in [1,4), e even ---
 	move.l	d2,d0
 	andi.l	#$7FF00000,d0
@@ -1547,6 +2026,7 @@ _sqrtd_finite:
 	subi.l	#1023,d0		; d0 = e' (unbiased)
 	move.l	d0,d6
 	asr.l	#1,d6			; d6 = half_e = floor(e'/2)
+	sub.l	-32(a6),d6		; D3: undo subnormal pre-scale (0 or 538)
 	move.l	d6,-4(a6)		; stash half_e
 	andi.l	#1,d0			; d0 = e' & 1
 	addi.l	#1023,d0		; d0 = m exponent field (1023 or 1024)
@@ -1595,6 +2075,191 @@ _sqrtd_nl:
 	bne.s	_sqrtd_nl
 	addq.l	#4,sp
 
+	; ===== correctly round s to nearest (BUG-0017 -> 0 ULP) =====
+	; s (d4:d5) is within 1 ULP of sqrt(m) (d2:d3); nudge +/-1 ULP by the exact
+	; residual W = XX - 4*Ys^2 where XX = Xs << (k+2), k = m_field - 971.
+	; s in [1,2) so k+2 in {54,55}; |W| < 2^54 so only the low 64 bits matter.
+	move.l	d4,d0
+	lsr.l	#8,d0
+	lsr.l	#8,d0
+	lsr.l	#4,d0
+	andi.l	#$7FF,d0
+	move.l	d0,-8(a6)		; Ye
+	move.l	d4,d0
+	andi.l	#$000FFFFF,d0
+	ori.l	#$00100000,d0
+	move.l	d0,-12(a6)		; YsH (implicit bit set)
+	move.l	d5,-16(a6)		; YsL
+	move.l	d2,d0
+	lsr.l	#8,d0
+	lsr.l	#8,d0
+	lsr.l	#4,d0
+	andi.l	#$7FF,d0			; m exponent field (1023/1024)
+	subi.l	#969,d0			; k+2 = field-971+2
+	move.l	d0,-20(a6)		; KP2
+	move.l	d3,-24(a6)		; XsL (m low)
+	move.l	d2,d0
+	andi.l	#$000FFFFF,d0
+	ori.l	#$00100000,d0
+	move.l	d0,-28(a6)		; XsH
+	; --- Ys^2 low 64 = Plo + (2*Pcross_lo << 32) ---
+	move.l	-16(a6),d0
+	move.l	d0,d1
+	bsr	_sqd_umul32		; d0:d1 = YsL^2
+	move.l	d0,d2			; q1 = plo_hi
+	move.l	d1,d3			; q0 = plo_lo
+	move.l	-12(a6),d0
+	move.l	-16(a6),d1
+	bsr	_sqd_umul32		; d0:d1 = YsH*YsL
+	lsl.l	#1,d1			; 2*Pcross (low 32)
+	add.l	d1,d2			; q1 += 2*Pcross_lo
+	; --- 4*Ys^2 low 64 = (q1:q0) << 2 ---
+	lsl.l	#1,d3
+	roxl.l	#1,d2
+	lsl.l	#1,d3
+	roxl.l	#1,d2			; d2:d3 = 4Ys^2 (hi:lo)
+	; --- XX low 64 = Xs << (k+2) ---
+	move.l	-24(a6),d1		; XsL
+	move.l	-28(a6),d0		; XsH
+	move.l	-20(a6),d7		; count
+_sqd_xxsh:
+	lsl.l	#1,d1
+	roxl.l	#1,d0
+	subq.l	#1,d7
+	bne.s	_sqd_xxsh		; d0:d1 = XX low 64 (hi:lo)
+	; --- W = XX - 4Ys^2 (signed 64-bit) -> d5:d4 ---
+	sub.l	d3,d1
+	subx.l	d2,d0
+	move.l	d1,d4			; W_lo
+	move.l	d0,d5			; W_hi
+	; --- INEXACT (D1): exact iff W == 0 (x a perfect square) ---
+	move.l	d5,d0
+	or.l	d4,d0
+	beq.s	_sqrtd_exact
+	ori.l	#FE_INEXACT,sqrtd_flags
+_sqrtd_exact:
+	tst.l	sqd_rmode
+	bne	_sqd_dir		; D4 directed rounding (uses W = XX-4Ys^2)
+	; --- Tp = 4Ys + 1 ; compare W vs Tp ---
+	move.l	-16(a6),d3
+	move.l	-12(a6),d2
+	lsl.l	#1,d3
+	roxl.l	#1,d2
+	lsl.l	#1,d3
+	roxl.l	#1,d2			; d2:d3 = 4Ys
+	addq.l	#1,d3
+	moveq	#0,d0
+	addx.l	d0,d2			; d2:d3 = Tp
+	move.l	d4,d6
+	move.l	d5,d7
+	sub.l	d3,d6
+	subx.l	d2,d7			; W - Tp
+	beq	_sqd_tieup
+	bgt	_sqd_inc
+	; W < Tp -> examine lower midpoint
+	move.l	-12(a6),d0
+	cmpi.l	#$00100000,d0
+	bne.s	_sqd_lower_normal
+	tst.l	-16(a6)
+	beq	_sqd_pow2lower		; Ys == 2^52 (power of two)
+_sqd_lower_normal:
+	move.l	-16(a6),d3
+	move.l	-12(a6),d2
+	lsl.l	#1,d3
+	roxl.l	#1,d2
+	lsl.l	#1,d3
+	roxl.l	#1,d2			; 4Ys
+	neg.l	d3
+	negx.l	d2			; -4Ys
+	addq.l	#1,d3
+	moveq	#0,d0
+	addx.l	d0,d2			; d2:d3 = Tm = 1 - 4Ys = -(4Ys-1)
+	move.l	d4,d6
+	move.l	d5,d7
+	sub.l	d3,d6
+	subx.l	d2,d7			; W - Tm
+	beq	_sqd_tiedn
+	blt	_sqd_dec		; W < Tm -> decrement
+	bra	_sqd_keep
+_sqd_pow2lower:
+	; 4W vs -(8Ys-1); Ys=2^52 so -(8Ys-1) = $FF800000:00000001
+	move.l	d4,d3
+	move.l	d5,d2
+	lsl.l	#1,d3
+	roxl.l	#1,d2
+	lsl.l	#1,d3
+	roxl.l	#1,d2			; d2:d3 = 4W
+	move.l	#$FF800000,d0
+	moveq	#1,d1
+	move.l	d3,d6
+	move.l	d2,d7
+	sub.l	d1,d6
+	subx.l	d0,d7			; 4W - T
+	blt	_sqd_dec
+	bra	_sqd_keep
+_sqd_tieup:
+	move.l	-16(a6),d0
+	btst	#0,d0
+	bne	_sqd_inc
+	bra	_sqd_keep
+_sqd_tiedn:
+	move.l	-16(a6),d0
+	btst	#0,d0
+	bne	_sqd_dec
+	bra	_sqd_keep
+_sqd_dir:
+	; D4 directed: d5:d4 = W = XX - 4Ys^2.  W==0 exact; W>0 true>y; W<0 true<y.
+	; sqrt >= 0: RZ(1)/RD(3) = floor, RU(2) = ceil.
+	move.l	d5,d0
+	or.l	d4,d0
+	beq	_sqd_keep		; exact -> keep
+	tst.l	d5			; sign of W
+	bmi.s	_sqd_dir_below
+	cmpi.l	#2,sqd_rmode		; W>0: RU -> inc, else keep
+	beq	_sqd_inc
+	bra	_sqd_keep
+_sqd_dir_below:
+	cmpi.l	#2,sqd_rmode		; W<0: RU -> keep, else dec
+	beq	_sqd_keep
+	bra	_sqd_dec
+_sqd_inc:
+	addq.l	#1,-16(a6)
+	bcc.s	_sqd_inc_hi
+	addq.l	#1,-12(a6)
+_sqd_inc_hi:
+	cmpi.l	#$00200000,-12(a6)	; overflow to 2^53?
+	bne.s	_sqd_keep
+	move.l	#$00100000,-12(a6)	; renorm Ys=2^52, Ye++
+	clr.l	-16(a6)
+	addq.l	#1,-8(a6)
+	bra.s	_sqd_keep
+_sqd_dec:
+	subq.l	#1,-16(a6)
+	bcc.s	_sqd_dec_hi
+	subq.l	#1,-12(a6)
+_sqd_dec_hi:
+	cmpi.l	#$00100000,-12(a6)
+	bcc.s	_sqd_keep		; still >= 2^52 -> normalized
+	move.l	-16(a6),d0		; Ys < 2^52: renorm (Ys<<1)|1, Ye--
+	move.l	-12(a6),d1
+	lsl.l	#1,d0
+	roxl.l	#1,d1
+	ori.l	#1,d0
+	move.l	d0,-16(a6)
+	move.l	d1,-12(a6)
+	subq.l	#1,-8(a6)
+_sqd_keep:
+	; --- reconstruct corrected s into d4:d5 ---
+	move.l	-8(a6),d0
+	lsl.l	#8,d0
+	lsl.l	#8,d0
+	lsl.l	#4,d0			; Ye << 20
+	move.l	-12(a6),d1
+	andi.l	#$000FFFFF,d1		; drop implicit bit
+	or.l	d1,d0
+	move.l	d0,d4			; s_hi corrected
+	move.l	-16(a6),d5		; s_lo
+
 	; --- scale: sqrt(x) = s * 2^half_e : result hi = s_hi + (half_e << 20) ---
 	move.l	-4(a6),d0		; half_e (signed)
 	asl.l	#8,d0
@@ -1604,6 +2269,10 @@ _sqrtd_nl:
 	move.l	d4,d0
 	move.l	d5,d1
 _sqrtd_ret:
+	move.l	sqrtd_fe,d2		; D1: restore caller flags | sqrt's own
+	or.l	sqrtd_flags,d2
+	move.l	d2,_fe_status
+	move.l	sqd_rmode,_fe_round	; D4: restore the directed mode
 	movem.l	(sp)+,d2-d7
 	unlk	a6
 	rts
@@ -1612,9 +2281,55 @@ _sqrtd_z:
 	move.l	d3,d1			; return signed zero (the input)
 	bra.s	_sqrtd_ret
 _sqrtd_nan:
+	; -inf / negative finite -> INVALID; a NaN input just propagates.
+	move.l	d2,d0
+	andi.l	#$7FF00000,d0
+	cmpi.l	#$7FF00000,d0		; exp all-ones?
+	bne.s	_sqrtd_nan_inv		; finite negative -> invalid
+	move.l	d2,d0
+	andi.l	#$000FFFFF,d0
+	or.l	d3,d0
+	bne.s	_sqrtd_nan_ret		; NaN input -> propagate (no flag)
+_sqrtd_nan_inv:
+	ori.l	#FE_INVALID,sqrtd_flags
+_sqrtd_nan_ret:
 	move.l	#DBL_QNAN_HI,d0
 	move.l	#DBL_QNAN_LO,d1
 	bra.s	_sqrtd_ret
+
+; _sqd_umul32 -- unsigned 32x32 -> 64.  in: d0=a, d1=b.  out: d0=hi, d1=lo.
+; preserves d2-d7 (used internally).
+_sqd_umul32:
+	movem.l	d2-d7,-(sp)
+	move.l	d0,d2
+	swap	d2			; d2 low = ah
+	move.l	d1,d3
+	swap	d3			; d3 low = bh
+	move.w	d0,d4
+	mulu	d1,d4			; LL = al*bl
+	move.w	d2,d5
+	mulu	d3,d5			; HH = ah*bh
+	move.w	d0,d6
+	mulu	d3,d6			; LH = al*bh
+	move.w	d2,d7
+	mulu	d1,d7			; HL = ah*bl
+	add.l	d7,d6			; cross = LH + HL
+	moveq	#0,d7
+	addx.l	d7,d7			; d7 = carry out of bit 31 (bit 32 of cross)
+	move.l	d6,d3
+	swap	d3			; d3: high=cross&FFFF, low=cross>>16
+	move.l	d3,d0
+	clr.w	d0			; d0 = (cross&FFFF) << 16
+	add.l	d0,d4			; lo = LL + (cross_lo16<<16)
+	moveq	#0,d0
+	move.w	d3,d0			; d0 = cross >> 16 (16 bits)
+	addx.l	d0,d5			; hi = HH + (cross>>16) + carry(lo)
+	swap	d7			; carry_bit32 << 16
+	add.l	d7,d5			; hi += bit32 carry at position 16
+	move.l	d5,d0			; out hi
+	move.l	d4,d1			; out lo
+	movem.l	(sp)+,d2-d7
+	rts
 
 
 ; ============================================================
@@ -1669,6 +2384,24 @@ _powd_absx:
 	bclr.l	#31,d2			; x := |x| for the logd
 
 _powd_calc:
+	; x in d2:d3 (>0 or +0), y in d4:d5, d6 = negate-result flag.
+	; special x (0 / inf / nan) -> the exact rounded logd/expd path; a finite
+	; normal x uses the double-double core (Phase C: ~1034 -> <=3 ULP).
+	move.l	d2,d0
+	andi.l	#$7FF00000,d0
+	cmpi.l	#$7FF00000,d0
+	beq.s	_powd_oldpath		; x = inf / nan
+	move.l	d2,d0
+	andi.l	#$7FFFFFFF,d0
+	or.l	d3,d0
+	beq.s	_powd_oldpath		; x = 0
+	move.l	d2,pw_x
+	move.l	d3,pw_x+4
+	move.l	d4,pw_y
+	move.l	d5,pw_y+4
+	bsr	_pow_core		; d0:d1 = exp(y*log x)  (preserves d2-d7)
+	bra.s	_powd_signfix
+_powd_oldpath:
 	; r = expd(y * logd(x))
 	move.l	d3,-(sp)
 	move.l	d2,-(sp)
@@ -1684,6 +2417,7 @@ _powd_calc:
 	move.l	d0,-(sp)
 	jsr	_expd
 	addq.l	#8,sp
+_powd_signfix:
 	tst.l	d6
 	beq.s	_powd_ret
 	bchg.l	#31,d0			; negative base, odd exponent -> negate
@@ -1699,5 +2433,523 @@ _powd_nan:
 	move.l	#DBL_QNAN_HI,d0
 	move.l	#DBL_QNAN_LO,d1
 	bra.s	_powd_ret
+
+; ============================================================
+;  Double-double pow core: exp(y*log x) for finite normal x>0.
+;  Reads pw_x (x), pw_y (y); returns x^y in d0:d1.  Preserves d2-d7.
+;  All intermediate dd values live in .bss (pw_*); the helpers may clobber
+;  every data register.  Validated in test/tools/powd_model.py (<=3 ULP).
+; ============================================================
+_pow_core:
+	movem.l	d2-d7/a2-a4,-(sp)	; a2-a4 used as dd pointers -> must be saved (ABI)
+	; --- reduce x = m*2^e, m in [sqrt2/2, sqrt2) ---
+	move.l	pw_x,d2
+	move.l	pw_x+4,d3
+	move.l	d2,d0
+	andi.l	#IEEE754_DBL_EXP_MASK_HI,d0
+	EXTRACT_DBL_EXP d0
+	subi.l	#IEEE754_DBL_EXP_BIAS,d0	; e
+	move.l	d2,d4
+	andi.l	#IEEE754_DBL_MANT_MASK_HI,d4
+	ori.l	#$3FF00000,d4		; m.hi (m.lo = x.lo)
+	cmpi.l	#$3FF6A09E,d4
+	bhi.s	_pc_halve
+	bcs.s	_pc_nohalve
+	cmpi.l	#$667F3BCD,d3
+	bls.s	_pc_nohalve
+_pc_halve:
+	subi.l	#$00100000,d4
+	addq.l	#1,d0
+_pc_nohalve:
+	move.l	d0,pw_e
+	move.l	d4,pw_m
+	move.l	d3,pw_m+4
+
+	; --- num = m - 1 ---
+	move.l	_d_one+4(pc),-(sp)
+	move.l	_d_one(pc),-(sp)
+	move.l	pw_m+4,-(sp)
+	move.l	pw_m,-(sp)
+	jsr	_fpsubd
+	lea	16(sp),sp
+	move.l	d0,pw_num
+	move.l	d1,pw_num+4
+
+	; --- den = two_sum(m, 1) ---
+	move.l	pw_m,d2
+	move.l	pw_m+4,d3
+	move.l	_d_one(pc),d4
+	move.l	_d_one+4(pc),d5
+	bsr	_dp_ts
+	move.l	d0,pw_den
+	move.l	d1,pw_den+4
+	move.l	d6,pw_den+8
+	move.l	d7,pw_den+12
+
+	; --- t (dd) = num / den ---
+	move.l	pw_den+4,-(sp)
+	move.l	pw_den,-(sp)
+	move.l	pw_num+4,-(sp)
+	move.l	pw_num,-(sp)
+	jsr	_fpdivd
+	lea	16(sp),sp
+	move.l	d0,pw_th
+	move.l	d1,pw_th+4
+	move.l	d0,d2			; two_prod(th, den.hi)
+	move.l	d1,d3
+	move.l	pw_den,d4
+	move.l	pw_den+4,d5
+	bsr	_dp_tp
+	move.l	d0,pw_ph
+	move.l	d1,pw_ph+4
+	move.l	d6,pw_pl
+	move.l	d7,pw_pl+4
+	move.l	pw_ph+4,-(sp)		; num - ph
+	move.l	pw_ph,-(sp)
+	move.l	pw_num+4,-(sp)
+	move.l	pw_num,-(sp)
+	jsr	_fpsubd
+	lea	16(sp),sp
+	move.l	pw_pl+4,-(sp)		; (num-ph) - pl
+	move.l	pw_pl,-(sp)
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpsubd
+	lea	16(sp),sp
+	move.l	d0,pw_rr
+	move.l	d1,pw_rr+4
+	move.l	pw_den+12,-(sp)		; th * den.lo
+	move.l	pw_den+8,-(sp)
+	move.l	pw_th+4,-(sp)
+	move.l	pw_th,-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	d1,-(sp)		; r = rr - th*den.lo
+	move.l	d0,-(sp)
+	move.l	pw_rr+4,-(sp)
+	move.l	pw_rr,-(sp)
+	jsr	_fpsubd
+	lea	16(sp),sp
+	move.l	pw_den+4,-(sp)		; tl = r / den.hi
+	move.l	pw_den,-(sp)
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpdivd
+	lea	16(sp),sp
+	move.l	pw_th,dd_s		; t = fast_two_sum(th, tl)
+	move.l	pw_th+4,dd_s+4
+	move.l	d0,dd_e
+	move.l	d1,dd_e+4
+	lea	pw_t,a4
+	bsr	_dd_fts
+
+	; --- t2 = t*t ; t3 = t2*t ; R = t3 * (2/3) ---
+	lea	pw_t,a2
+	lea	pw_t,a3
+	lea	pw_t2,a4
+	bsr	_dd_mul
+	lea	pw_t2,a2
+	lea	pw_t,a3
+	lea	pw_t3,a4
+	bsr	_dd_mul
+	lea	pw_t3,a2
+	lea	_d_23hi,a3
+	lea	pw_R,a4
+	bsr	_dd_mul
+
+	; --- rest = 2 * t3.hi * t2.hi * P2 ; P2 = l2 + t2(l3 + ... + t2*l10) ---
+	move.l	_d_l10(pc),d0
+	move.l	_d_l10+4(pc),d1
+	PW_HORN	_d_l9
+	PW_HORN	_d_l8
+	PW_HORN	_d_l7
+	PW_HORN	_d_l6
+	PW_HORN	_d_l5
+	PW_HORN	_d_l4
+	PW_HORN	_d_l3
+	PW_HORN	_d_l2
+	move.l	d0,pw_p2		; P2
+	move.l	d1,pw_p2+4
+	move.l	pw_t2+4,-(sp)		; t5 = t3.hi * t2.hi
+	move.l	pw_t2,-(sp)
+	move.l	pw_t3+4,-(sp)
+	move.l	pw_t3,-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	pw_p2+4,-(sp)		; t5 * P2
+	move.l	pw_p2,-(sp)
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	_d_two+4(pc),-(sp)	; rest = 2 * (t5*P2)
+	move.l	_d_two(pc),-(sp)
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	d0,pw_rest		; rest (as a dd with lo = 0)
+	move.l	d1,pw_rest+4
+	clr.l	pw_rest+8
+	clr.l	pw_rest+12
+
+	; --- 2t = t*2 (exact) ; lm = 2t + R ; lm2 = lm + rest ---
+	move.l	_d_two+4(pc),-(sp)
+	move.l	_d_two(pc),-(sp)
+	move.l	pw_t+4,-(sp)
+	move.l	pw_t,-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	d0,pw_2t
+	move.l	d1,pw_2t+4
+	move.l	_d_two+4(pc),-(sp)
+	move.l	_d_two(pc),-(sp)
+	move.l	pw_t+12,-(sp)
+	move.l	pw_t+8,-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	d0,pw_2t+8
+	move.l	d1,pw_2t+12
+	lea	pw_2t,a2
+	lea	pw_R,a3
+	lea	pw_lm,a4
+	bsr	_dd_add
+	lea	pw_lm,a2
+	lea	pw_rest,a3
+	lea	pw_lm2,a4
+	bsr	_dd_add
+
+	; --- e*ln2 dd = (ef*ln2hi, ef*ln2lo) ; L = e*ln2 + lm2 ---
+	move.l	pw_e,-(sp)
+	jsr	_fpltod
+	addq.l	#4,sp
+	move.l	d0,pw_ef
+	move.l	d1,pw_ef+4
+	move.l	_d_ln2hi+4(pc),-(sp)
+	move.l	_d_ln2hi(pc),-(sp)
+	move.l	pw_ef+4,-(sp)
+	move.l	pw_ef,-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	d0,pw_eln2
+	move.l	d1,pw_eln2+4
+	move.l	_d_ln2lo+4(pc),-(sp)
+	move.l	_d_ln2lo(pc),-(sp)
+	move.l	pw_ef+4,-(sp)
+	move.l	pw_ef,-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	d0,pw_eln2+8
+	move.l	d1,pw_eln2+12
+	lea	pw_eln2,a2
+	lea	pw_lm2,a3
+	lea	pw_L,a4
+	bsr	_dd_add
+
+	; --- z = L * y (dd) ---
+	move.l	pw_y,dd_bd
+	move.l	pw_y+4,dd_bd+4
+	lea	pw_L,a2
+	lea	pw_z,a4
+	bsr	_dd_mul_d
+
+	; --- e0 = expd(z.hi) ; result = fma(e0, z.lo, e0) ---
+	move.l	pw_z+4,-(sp)
+	move.l	pw_z,-(sp)
+	jsr	_expd
+	addq.l	#8,sp
+	move.l	d0,pw_e0
+	move.l	d1,pw_e0+4
+	move.l	pw_e0+4,-(sp)		; c = e0
+	move.l	pw_e0,-(sp)
+	move.l	pw_z+12,-(sp)		; b = z.lo
+	move.l	pw_z+8,-(sp)
+	move.l	pw_e0+4,-(sp)		; a = e0
+	move.l	pw_e0,-(sp)
+	jsr	_fmad
+	lea	24(sp),sp
+	movem.l	(sp)+,d2-d7/a2-a4
+	rts
+
+; ------------------------------------------------------------
+;  _dp_ts -- two_sum(d2:d3, d4:d5) -> s=d0:d1, e=d6:d7.  Preserves d2-d5,
+;  a2-a6 (all callees do).  Uses dp_* scratch.
+; ------------------------------------------------------------
+_dp_ts:
+	move.l	d5,-(sp)		; s = a + b
+	move.l	d4,-(sp)
+	move.l	d3,-(sp)
+	move.l	d2,-(sp)
+	jsr	_fpaddd
+	lea	16(sp),sp
+	move.l	d0,dp_s
+	move.l	d1,dp_s+4
+	move.l	d3,-(sp)		; bb = s - a
+	move.l	d2,-(sp)
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpsubd
+	lea	16(sp),sp
+	move.l	d0,dp_bb
+	move.l	d1,dp_bb+4
+	move.l	d1,-(sp)		; s - bb
+	move.l	d0,-(sp)
+	move.l	dp_s+4,-(sp)
+	move.l	dp_s,-(sp)
+	jsr	_fpsubd
+	lea	16(sp),sp
+	move.l	d1,-(sp)		; a - (s-bb)
+	move.l	d0,-(sp)
+	move.l	d3,-(sp)
+	move.l	d2,-(sp)
+	jsr	_fpsubd
+	lea	16(sp),sp
+	move.l	d0,dp_t1
+	move.l	d1,dp_t1+4
+	move.l	dp_bb+4,-(sp)		; b - bb
+	move.l	dp_bb,-(sp)
+	move.l	d5,-(sp)
+	move.l	d4,-(sp)
+	jsr	_fpsubd
+	lea	16(sp),sp
+	move.l	d1,-(sp)		; e = (a-(s-bb)) + (b-bb)
+	move.l	d0,-(sp)
+	move.l	dp_t1+4,-(sp)
+	move.l	dp_t1,-(sp)
+	jsr	_fpaddd
+	lea	16(sp),sp
+	move.l	d0,d6
+	move.l	d1,d7
+	move.l	dp_s,d0
+	move.l	dp_s+4,d1
+	rts
+
+; ------------------------------------------------------------
+;  _dp_tp -- two_prod(d2:d3, d4:d5) -> p=d0:d1, e=d6:d7.  Uses dp_s.
+; ------------------------------------------------------------
+_dp_tp:
+	move.l	d5,-(sp)
+	move.l	d4,-(sp)
+	move.l	d3,-(sp)
+	move.l	d2,-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	d0,dp_s
+	move.l	d1,dp_s+4
+	move.l	dp_s+4,-(sp)		; c.lo = p.lo
+	move.l	dp_s,d0
+	eori.l	#$80000000,d0
+	move.l	d0,-(sp)		; c.hi = -p.hi
+	move.l	d5,-(sp)
+	move.l	d4,-(sp)
+	move.l	d3,-(sp)
+	move.l	d2,-(sp)
+	jsr	_fmad
+	lea	24(sp),sp
+	move.l	d0,d6
+	move.l	d1,d7
+	move.l	dp_s,d0
+	move.l	dp_s+4,d1
+	rts
+
+; ------------------------------------------------------------
+;  _dd_fts -- (a4) = fast_two_sum(dd_s, dd_e).  Requires |dd_s| >= |dd_e|.
+; ------------------------------------------------------------
+_dd_fts:
+	move.l	dd_e+4,-(sp)		; R.hi = s + e
+	move.l	dd_e,-(sp)
+	move.l	dd_s+4,-(sp)
+	move.l	dd_s,-(sp)
+	jsr	_fpaddd
+	lea	16(sp),sp
+	move.l	d0,(a4)
+	move.l	d1,4(a4)
+	move.l	d0,dd_rh
+	move.l	d1,dd_rh+4
+	move.l	dd_s+4,-(sp)		; R.hi - s
+	move.l	dd_s,-(sp)
+	move.l	d1,-(sp)
+	move.l	d0,-(sp)
+	jsr	_fpsubd
+	lea	16(sp),sp
+	move.l	d1,-(sp)		; R.lo = e - (R.hi - s)
+	move.l	d0,-(sp)
+	move.l	dd_e+4,-(sp)
+	move.l	dd_e,-(sp)
+	jsr	_fpsubd
+	lea	16(sp),sp
+	move.l	d0,8(a4)
+	move.l	d1,12(a4)
+	rts
+
+; ------------------------------------------------------------
+;  _dd_add -- (a4) = (a2) + (a3)   [double-double add]
+; ------------------------------------------------------------
+_dd_add:
+	move.l	(a2),d2			; two_sum(A.hi, B.hi)
+	move.l	4(a2),d3
+	move.l	(a3),d4
+	move.l	4(a3),d5
+	bsr	_dp_ts
+	move.l	d0,dd_s
+	move.l	d1,dd_s+4
+	move.l	d6,dd_e
+	move.l	d7,dd_e+4
+	move.l	12(a3),-(sp)		; A.lo + B.lo
+	move.l	8(a3),-(sp)
+	move.l	12(a2),-(sp)
+	move.l	8(a2),-(sp)
+	jsr	_fpaddd
+	lea	16(sp),sp
+	move.l	d1,-(sp)		; e = e + (A.lo+B.lo)
+	move.l	d0,-(sp)
+	move.l	dd_e+4,-(sp)
+	move.l	dd_e,-(sp)
+	jsr	_fpaddd
+	lea	16(sp),sp
+	move.l	d0,dd_e
+	move.l	d1,dd_e+4
+	bsr	_dd_fts
+	rts
+
+; ------------------------------------------------------------
+;  _dd_mul -- (a4) = (a2) * (a3)   [double-double multiply]
+; ------------------------------------------------------------
+_dd_mul:
+	move.l	(a2),d2			; two_prod(A.hi, B.hi)
+	move.l	4(a2),d3
+	move.l	(a3),d4
+	move.l	4(a3),d5
+	bsr	_dp_tp
+	move.l	d0,dd_s
+	move.l	d1,dd_s+4
+	move.l	d6,dd_e
+	move.l	d7,dd_e+4
+	move.l	12(a3),-(sp)		; A.hi * B.lo
+	move.l	8(a3),-(sp)
+	move.l	4(a2),-(sp)
+	move.l	(a2),-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	d0,dd_rh		; stash A.hi*B.lo
+	move.l	d1,dd_rh+4
+	move.l	4(a3),-(sp)		; A.lo * B.hi
+	move.l	(a3),-(sp)
+	move.l	12(a2),-(sp)
+	move.l	8(a2),-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	d1,-(sp)		; cross = A.hi*B.lo + A.lo*B.hi
+	move.l	d0,-(sp)
+	move.l	dd_rh+4,-(sp)
+	move.l	dd_rh,-(sp)
+	jsr	_fpaddd
+	lea	16(sp),sp
+	move.l	d1,-(sp)		; e = e + cross
+	move.l	d0,-(sp)
+	move.l	dd_e+4,-(sp)
+	move.l	dd_e,-(sp)
+	jsr	_fpaddd
+	lea	16(sp),sp
+	move.l	d0,dd_e
+	move.l	d1,dd_e+4
+	bsr	_dd_fts
+	rts
+
+; ------------------------------------------------------------
+;  _dd_mul_d -- (a4) = (a2) * dd_bd   [double-double * double]
+; ------------------------------------------------------------
+_dd_mul_d:
+	move.l	(a2),d2			; two_prod(A.hi, b)
+	move.l	4(a2),d3
+	move.l	dd_bd,d4
+	move.l	dd_bd+4,d5
+	bsr	_dp_tp
+	move.l	d0,dd_s
+	move.l	d1,dd_s+4
+	move.l	d6,dd_e
+	move.l	d7,dd_e+4
+	move.l	dd_bd+4,-(sp)		; A.lo * b
+	move.l	dd_bd,-(sp)
+	move.l	12(a2),-(sp)
+	move.l	8(a2),-(sp)
+	jsr	_fpmultd
+	lea	16(sp),sp
+	move.l	d1,-(sp)		; e = e + A.lo*b
+	move.l	d0,-(sp)
+	move.l	dd_e+4,-(sp)
+	move.l	dd_e,-(sp)
+	jsr	_fpaddd
+	lea	16(sp),sp
+	move.l	d0,dd_e
+	move.l	d1,dd_e+4
+	bsr	_dd_fts
+	rts
+
+	.bss
+dp_s	ds.l	2
+dp_bb	ds.l	2
+dp_t1	ds.l	2
+dd_s	ds.l	2
+dd_e	ds.l	2
+dd_rh	ds.l	2
+dd_bd	ds.l	2
+pw_x	ds.l	2
+pw_y	ds.l	2
+pw_m	ds.l	2
+pw_e	ds.l	1
+pw_ef	ds.l	2
+pw_num	ds.l	2
+pw_den	ds.l	4
+pw_th	ds.l	2
+pw_ph	ds.l	2
+pw_pl	ds.l	2
+pw_rr	ds.l	2
+pw_p2	ds.l	2
+pw_rest	ds.l	4
+pw_t	ds.l	4
+pw_t2	ds.l	4
+pw_t3	ds.l	4
+pw_R	ds.l	4
+pw_2t	ds.l	4
+pw_lm	ds.l	4
+pw_lm2	ds.l	4
+pw_eln2	ds.l	4
+pw_L	ds.l	4
+pw_z	ds.l	4
+pw_e0	ds.l	2
+sqrtd_fe	ds.l	1		; D1: saved caller _fe_status
+sqrtd_flags	ds.l	1		; D1: sqrtd's own raised flags
+sqd_rmode	ds.l	1		; D4: saved directed rounding mode
+
+; Payne-Hanek reduction work area (__rem_pio2_big)
+rp_sgn	ds.l	1
+rp_E	ds.l	1
+rp_Mhi	ds.l	1
+rp_Mlo	ds.l	1
+rp_w0	ds.l	1
+rp_k	ds.l	1
+rp_q0	ds.l	1
+rp_rsgn	ds.l	1
+rp_mpp	ds.l	3
+rp_s	ds.l	7
+rp_P	ds.l	11
+rp_mag	ds.l	7
+rp_t1	ds.l	1
+rp_t2	ds.l	1
+rp_t3	ds.l	1
+rp_t4	ds.l	1
+rp_a	ds.l	2
+rp_b	ds.l	2
+rp_shi	ds.l	2
+rp_bb	ds.l	2
+rp_e	ds.l	2
+rp_tmp	ds.l	2
+rp_tmp2	ds.l	2
+rp_clo	ds.l	2
+rp_rlo	ds.l	2
+rp_hi	ds.l	2
+rp_lo	ds.l	2
+rp_r	ds.l	2
 
 	end

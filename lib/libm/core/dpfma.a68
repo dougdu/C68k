@@ -1,0 +1,851 @@
+	title	"IEEE 754 double-precision fused multiply-add"
+; ============================================================
+;  _fmad -- correctly-rounded double-precision FMA
+;
+;  double _fmad(double a, double b, double c)  ->  round(a*b + c)  (RNE)
+;  Arguments: a=8(a6):12(a6), b=16(a6):20(a6), c=24(a6):28(a6).
+;  Result in D0:D1 (hi:lo).
+;
+;  Exact 106-bit product + 53-bit c placed into a 192-bit signed accumulator
+;  anchored at the larger operand's MSB (bits below the window -> sticky),
+;  normalised and rounded once.  Same scheme as single _fma, scaled up.
+;  Policy: D3 gradual underflow -- subnormal inputs decomposed with Ce=-1074
+;  (no implied bit); subnormal result denormalised + round-nearest-even on the
+;  subnormal grid; overflow -> +/-inf.  Modelled in test/tools/fma_model.py.
+; ============================================================
+
+	.model	flat
+	include	ieee754d.inc
+
+	public	_fmad
+	extern	_sqd_umul32
+	extern	_fe_status		; D1 sticky exception flags
+	extern	_fe_round, _fe_dirup, _fe_ovf_maxf	; D4 directed rounding
+
+	.code
+
+_fmad:
+	link	a6,#0
+	movem.l	d2-d7,-(sp)
+	move.l	8(a6),fmad_a_hi
+	move.l	12(a6),fmad_a_lo
+	move.l	16(a6),fmad_b_hi
+	move.l	20(a6),fmad_b_lo
+	move.l	24(a6),fmad_c_hi
+	move.l	28(a6),fmad_c_lo
+
+	; ---- classify a, b, c (0 fin, 1 zero, 2 inf, 3 nan) ----
+	move.l	fmad_a_hi,d0
+	move.l	fmad_a_lo,d1
+	bsr	_fmad_class
+	move.l	d0,d4			; ca
+	move.l	fmad_b_hi,d0
+	move.l	fmad_b_lo,d1
+	bsr	_fmad_class
+	move.l	d0,d5			; cb
+	move.l	fmad_c_hi,d0
+	move.l	fmad_c_lo,d1
+	bsr	_fmad_class
+	move.l	d0,d6			; cc
+	cmpi.l	#3,d4
+	beq	_fmad_nan
+	cmpi.l	#3,d5
+	beq	_fmad_nan
+	; c-NaN is handled AFTER the 0*inf / inf*0 product check below -- those
+	; signal INVALID even when the addend c is a NaN (IEEE 754-2008 7.2).
+	; product sign
+	move.l	fmad_a_hi,d0
+	move.l	fmad_b_hi,d1
+	eor.l	d1,d0
+	andi.l	#$80000000,d0
+	move.l	d0,fmad_sp
+	; --- 0*inf / inf products / product zero ---
+	cmpi.l	#1,d4			; a zero?
+	bne.s	_fmad_a_nz
+	cmpi.l	#2,d5			; b inf -> 0*inf (INVALID)
+	beq	_fmad_invalid
+	bra	_fmad_prodzero
+_fmad_a_nz:
+	cmpi.l	#2,d4			; a inf?
+	bne.s	_fmad_a_fin
+	cmpi.l	#1,d5			; b zero -> inf*0 (INVALID)
+	beq	_fmad_invalid
+	bra.s	_fmad_prodinf
+_fmad_a_fin:
+	cmpi.l	#2,d5			; b inf?
+	beq.s	_fmad_prodinf
+	cmpi.l	#1,d5			; b zero?
+	beq.s	_fmad_prodzero
+	cmpi.l	#3,d6			; c NaN -> propagate
+	beq	_fmad_nan
+	cmpi.l	#2,d6			; c inf (finite product)?
+	beq	_fmad_retc
+	bra	_fmad_core
+
+_fmad_prodinf:
+	cmpi.l	#3,d6			; c NaN -> propagate (no invalid)
+	beq	_fmad_nan
+	cmpi.l	#2,d6			; c inf?
+	bne.s	_fmad_ret_pinf
+	move.l	fmad_c_hi,d0
+	andi.l	#$80000000,d0
+	cmp.l	fmad_sp,d0
+	bne	_fmad_invalid		; inf + opposite inf -> NaN (INVALID)
+_fmad_ret_pinf:
+	move.l	fmad_sp,d0
+	ori.l	#DBL_INF_HI,d0
+	moveq	#0,d1
+	bra	_fmad_ret
+_fmad_prodzero:
+	cmpi.l	#1,d6			; c zero?
+	bne	_fmad_retc
+	move.l	fmad_c_hi,d0
+	andi.l	#$80000000,d0
+	and.l	fmad_sp,d0		; -0 iff both negative
+	moveq	#0,d1
+	bra	_fmad_ret
+_fmad_retc:
+	move.l	fmad_c_hi,d0
+	move.l	fmad_c_lo,d1
+	bra	_fmad_ret
+_fmad_invalid:
+	ori.l	#FE_INVALID,_fe_status	; 0*inf / inf*0 / inf-inf -> INVALID
+_fmad_nan:
+	move.l	#DBL_QNAN_HI,d0
+	move.l	#DBL_QNAN_LO,d1
+	bra	_fmad_ret
+
+; -------------------- finite nonzero product + finite c --------------------
+_fmad_core:
+	; --- decompose a,b; subnormal (exp field 0) -> no implied bit, eff exp 1 (D3) ---
+	move.l	fmad_a_hi,d0
+	andi.l	#$000FFFFF,d0
+	move.l	fmad_a_hi,d1
+	andi.l	#$7FF00000,d1
+	bne.s	_fmad_a_norm
+	move.l	d0,fmad_ma_hi		; subnormal a
+	move.l	fmad_a_lo,fmad_ma_lo
+	moveq	#1,d1
+	move.l	d1,fmad_ea
+	bra.s	_fmad_a_done
+_fmad_a_norm:
+	ori.l	#$00100000,d0
+	move.l	d0,fmad_ma_hi
+	move.l	fmad_a_lo,fmad_ma_lo
+	move.l	fmad_a_hi,d0
+	lsr.l	#8,d0
+	lsr.l	#8,d0
+	lsr.l	#4,d0
+	andi.l	#$7FF,d0
+	move.l	d0,fmad_ea
+_fmad_a_done:
+	move.l	fmad_b_hi,d0
+	andi.l	#$000FFFFF,d0
+	move.l	fmad_b_hi,d1
+	andi.l	#$7FF00000,d1
+	bne.s	_fmad_b_norm
+	move.l	d0,fmad_mb_hi		; subnormal b
+	move.l	fmad_b_lo,fmad_mb_lo
+	moveq	#1,d1
+	move.l	d1,fmad_eb
+	bra.s	_fmad_b_done
+_fmad_b_norm:
+	ori.l	#$00100000,d0
+	move.l	d0,fmad_mb_hi
+	move.l	fmad_b_lo,fmad_mb_lo
+	move.l	fmad_b_hi,d0
+	lsr.l	#8,d0
+	lsr.l	#8,d0
+	lsr.l	#4,d0
+	andi.l	#$7FF,d0
+	move.l	d0,fmad_eb
+_fmad_b_done:
+	; --- decompose c (may be +/-0) ---
+	move.l	fmad_c_hi,d0
+	andi.l	#$80000000,d0
+	move.l	d0,fmad_sc
+	move.l	fmad_c_hi,d0
+	andi.l	#$7FFFFFFF,d0
+	or.l	fmad_c_lo,d0
+	bne.s	_fmad_c_norm
+	clr.l	fmad_mc_hi
+	clr.l	fmad_mc_lo
+	move.l	#$C0000000,fmad_ce	; c == 0: CE very negative (never anchors)
+	bra.s	_fmad_have_c
+_fmad_c_norm:
+	move.l	fmad_c_hi,d0
+	andi.l	#$000FFFFF,d0
+	move.l	fmad_c_hi,d1
+	andi.l	#$7FF00000,d1
+	bne.s	_fmad_c_normal
+	move.l	d0,fmad_mc_hi		; subnormal c
+	move.l	fmad_c_lo,fmad_mc_lo
+	move.l	#-1074,fmad_ce		; ce = 1 - 1075
+	bra.s	_fmad_have_c
+_fmad_c_normal:
+	ori.l	#$00100000,d0
+	move.l	d0,fmad_mc_hi
+	move.l	fmad_c_lo,fmad_mc_lo
+	move.l	fmad_c_hi,d0
+	lsr.l	#8,d0
+	lsr.l	#8,d0
+	lsr.l	#4,d0
+	andi.l	#$7FF,d0
+	subi.l	#1075,d0		; ce = Ec - 1075
+	move.l	d0,fmad_ce
+_fmad_have_c:
+	; PE = Ea + Eb - 2150
+	move.l	fmad_ea,d0
+	add.l	fmad_eb,d0
+	subi.l	#2150,d0
+	move.l	d0,fmad_pe
+	; --- product P = Ma*Mb (106-bit) -> fmad_prod[0..3] ---
+	move.l	fmad_ma_lo,d0
+	move.l	fmad_mb_lo,d1
+	bsr	_sqd_umul32		; LL
+	move.l	d1,fmad_prod+0
+	move.l	d0,fmad_prod+4		; LL_hi (temp in P1)
+	move.l	fmad_ma_lo,d0
+	move.l	fmad_mb_hi,d1
+	bsr	_sqd_umul32		; LH
+	move.l	d0,fmad_crhi
+	move.l	d1,fmad_crlo
+	move.l	fmad_ma_hi,d0
+	move.l	fmad_mb_lo,d1
+	bsr	_sqd_umul32		; HL
+	move.l	fmad_crlo,d2
+	add.l	d1,d2
+	move.l	d2,fmad_crlo
+	move.l	fmad_crhi,d2
+	addx.l	d0,d2
+	move.l	d2,fmad_crhi		; cross = LH + HL
+	move.l	fmad_ma_hi,d0
+	move.l	fmad_mb_hi,d1
+	bsr	_sqd_umul32		; HH
+	move.l	d0,fmad_hhhi
+	move.l	d1,fmad_hhlo
+	; P1 = LL_hi + cross_lo
+	move.l	fmad_prod+4,d2
+	add.l	fmad_crlo,d2
+	move.l	d2,fmad_prod+4
+	; P2 = HH_lo + cross_hi + carry
+	move.l	fmad_hhlo,d2
+	move.l	fmad_crhi,d3
+	addx.l	d3,d2
+	move.l	d2,fmad_prod+8
+	; P3 = HH_hi + carry
+	move.l	fmad_hhhi,d2
+	moveq	#0,d3
+	addx.l	d3,d2
+	move.l	d2,fmad_prod+12
+	; --- anchor A = max(PE+105, CE+52) + 2 ; lsbe = A - 191 ---
+	move.l	fmad_pe,d0
+	addi.l	#105,d0
+	move.l	fmad_ce,d1
+	addi.l	#52,d1
+	cmp.l	d1,d0
+	bge.s	_fmad_amax
+	move.l	d1,d0
+_fmad_amax:
+	addi.l	#2,d0
+	subi.l	#191,d0
+	move.l	d0,fmad_lsbe
+	; --- init accumulator + sticky ---
+	clr.l	fmad_acc+0
+	clr.l	fmad_acc+4
+	clr.l	fmad_acc+8
+	clr.l	fmad_acc+12
+	clr.l	fmad_acc+16
+	clr.l	fmad_acc+20
+	clr.l	fmad_sticky
+	clr.l	fmad_lost
+	; --- place product (tp = P, upper 2 longwords 0) ---
+	move.l	fmad_prod+0,fmad_tp+0
+	move.l	fmad_prod+4,fmad_tp+4
+	move.l	fmad_prod+8,fmad_tp+8
+	move.l	fmad_prod+12,fmad_tp+12
+	clr.l	fmad_tp+16
+	clr.l	fmad_tp+20
+	move.l	fmad_pe,d2
+	sub.l	fmad_lsbe,d2
+	bsr	_fmad_place
+	tst.l	fmad_sp
+	bne.s	_fmad_p_sub
+	bsr	_fmad_acc_add
+	tst.l	fmad_llost
+	beq.s	_fmad_place_c
+	move.l	#1,fmad_lost
+	clr.l	fmad_lsgn		; product lost bits added -> +remainder
+	bra.s	_fmad_place_c
+_fmad_p_sub:
+	bsr	_fmad_acc_sub
+	tst.l	fmad_llost
+	beq.s	_fmad_place_c
+	move.l	#1,fmad_lost
+	move.l	#1,fmad_lsgn		; product lost bits subtracted -> -remainder
+_fmad_place_c:
+	; --- place c (tp = Mc, rest 0) ---
+	move.l	fmad_mc_lo,fmad_tp+0
+	move.l	fmad_mc_hi,fmad_tp+4
+	clr.l	fmad_tp+8
+	clr.l	fmad_tp+12
+	clr.l	fmad_tp+16
+	clr.l	fmad_tp+20
+	move.l	fmad_ce,d2
+	sub.l	fmad_lsbe,d2
+	bsr	_fmad_place
+	tst.l	fmad_sc
+	bne.s	_fmad_c_sub
+	bsr	_fmad_acc_add
+	tst.l	fmad_llost
+	beq.s	_fmad_reduce
+	move.l	#1,fmad_lost
+	clr.l	fmad_lsgn		; c lost bits added -> +remainder
+	bra	_fmad_reduce
+_fmad_c_sub:
+	bsr	_fmad_acc_sub
+	tst.l	fmad_llost
+	beq.s	_fmad_reduce
+	move.l	#1,fmad_lost
+	move.l	#1,fmad_lsgn		; c lost bits subtracted -> -remainder
+
+_fmad_reduce:
+	; --- sign of accumulator; take magnitude ---
+	move.l	fmad_acc+20,d0
+	bpl.s	_fmad_pos
+	move.l	fmad_acc+0,d0
+	neg.l	d0
+	move.l	d0,fmad_acc+0
+	move.l	fmad_acc+4,d0
+	negx.l	d0
+	move.l	d0,fmad_acc+4
+	move.l	fmad_acc+8,d0
+	negx.l	d0
+	move.l	d0,fmad_acc+8
+	move.l	fmad_acc+12,d0
+	negx.l	d0
+	move.l	d0,fmad_acc+12
+	move.l	fmad_acc+16,d0
+	negx.l	d0
+	move.l	d0,fmad_acc+16
+	move.l	fmad_acc+20,d0
+	negx.l	d0
+	move.l	d0,fmad_acc+20
+	moveq	#1,d0
+	move.l	d0,fmad_sign
+	bra.s	_fmad_chkz
+_fmad_pos:
+	clr.l	fmad_sign
+_fmad_chkz:
+	move.l	fmad_acc+0,d0
+	or.l	fmad_acc+4,d0
+	or.l	fmad_acc+8,d0
+	or.l	fmad_acc+12,d0
+	or.l	fmad_acc+16,d0
+	or.l	fmad_acc+20,d0
+	beq	_fmad_zero
+	; --- fold the signed sub-LSB lost remainder S (|S| < 1 acc LSB) ---
+	;   S same sign as magnitude -> tail +|S| -> sticky only
+	;   S opposite sign          -> tail -|S| -> borrow 1 from mag + sticky
+	; (only the smaller, far operand loses bits; the borrow turns a false
+	;  product-midpoint tie into the correct round-down.)
+	tst.l	fmad_lost
+	beq.s	_fmad_nolost
+	move.l	#1,fmad_sticky		; lost low bits => inexact => sticky
+	move.l	fmad_lsgn,d0
+	cmp.l	fmad_sign,d0
+	beq.s	_fmad_nolost		; same sign -> sticky already set
+	moveq	#0,d1			; opposite sign -> 192-bit magnitude -= 1
+	move.l	fmad_acc+0,d0
+	subq.l	#1,d0
+	move.l	d0,fmad_acc+0
+	move.l	fmad_acc+4,d0
+	subx.l	d1,d0
+	move.l	d0,fmad_acc+4
+	move.l	fmad_acc+8,d0
+	subx.l	d1,d0
+	move.l	d0,fmad_acc+8
+	move.l	fmad_acc+12,d0
+	subx.l	d1,d0
+	move.l	d0,fmad_acc+12
+	move.l	fmad_acc+16,d0
+	subx.l	d1,d0
+	move.l	d0,fmad_acc+16
+	move.l	fmad_acc+20,d0
+	subx.l	d1,d0
+	move.l	d0,fmad_acc+20
+_fmad_nolost:
+	; --- normalise: shift acc left until acc5 bit31 set, count nsh in d6 ---
+	moveq	#0,d6
+_fmad_nloop:
+	move.l	fmad_acc+20,d0
+	bmi.s	_fmad_normed
+	bsr	_fmad_acc_shl1
+	addq.l	#1,d6
+	bra.s	_fmad_nloop
+_fmad_normed:
+	move.l	fmad_lsbe,d5
+	addi.l	#191,d5
+	sub.l	d6,d5			; d5 = E
+	cmpi.l	#1023,d5
+	bgt	_fmad_ovf
+	cmpi.l	#-1022,d5
+	blt	_fmad_subnormal		; D3 gradual underflow
+	; --- normal extract + RNE ---
+	move.l	fmad_acc+20,d1
+	lsr.l	#8,d1
+	lsr.l	#3,d1			; sig_hi (21 bits)
+	move.l	fmad_acc+20,d2
+	lsl.l	#8,d2
+	lsl.l	#8,d2
+	lsl.l	#5,d2			; acc5 << 21
+	move.l	fmad_acc+16,d3
+	lsr.l	#8,d3
+	lsr.l	#3,d3			; acc4 >> 11
+	or.l	d3,d2			; sig_lo
+	move.l	fmad_acc+16,d4
+	andi.l	#$400,d4		; guard
+	move.l	fmad_acc+16,d7
+	andi.l	#$3FF,d7
+	or.l	fmad_acc+12,d7
+	or.l	fmad_acc+8,d7
+	or.l	fmad_acc+4,d7
+	or.l	fmad_acc+0,d7
+	or.l	fmad_sticky,d7		; sticky
+	; D1: INEXACT iff guard(d4) OR sticky(d7) nonzero
+	move.l	d4,d0
+	or.l	d7,d0
+	beq.s	_fmad_rdec
+	ori.l	#FE_INEXACT,_fe_status
+	tst.l	_fe_round
+	bne	_fmad_rdir		; D4 directed rounding
+_fmad_rdec:
+	tst.l	d4
+	beq.s	_fmad_pack
+	tst.l	d7
+	bne.s	_fmad_pack_up
+	btst	#0,d2
+	beq.s	_fmad_pack
+_fmad_pack_up:
+	addq.l	#1,d2
+	bcc.s	_fmad_rup_hi
+	addq.l	#1,d1
+_fmad_rup_hi:
+	cmpi.l	#$00200000,d1		; sig overflow to 2^53?
+	bne.s	_fmad_pack
+	move.l	#$00100000,d1
+	moveq	#0,d2
+	addq.l	#1,d5
+	cmpi.l	#1023,d5
+	bgt	_fmad_ovf
+_fmad_pack:
+	addi.l	#1023,d5		; biased exponent
+	lsl.l	#8,d5
+	lsl.l	#8,d5
+	lsl.l	#4,d5			; << 20
+	andi.l	#$000FFFFF,d1		; mantissa hi (drop implicit bit)
+	or.l	d1,d5
+	tst.l	fmad_sign
+	beq.s	_fmad_setres
+	ori.l	#$80000000,d5
+_fmad_setres:
+	move.l	d5,d0
+	move.l	d2,d1
+	bra	_fmad_ret
+
+_fmad_rdir:
+	; D4 directed normal round: inexact, sig d1:d2, sign fmad_sign.
+	movem.l	d1,-(sp)		; save sig_hi (d2 preserved by helper)
+	move.l	fmad_sign,d1
+	ror.l	#1,d1			; sign (0/1) -> bit31
+	moveq	#1,d0			; inexact
+	bsr	_fe_dirup
+	tst.l	d0
+	movem.l	(sp)+,d1		; restore sig_hi (CCR unchanged)
+	beq	_fmad_pack
+	bra	_fmad_pack_up
+
+_fmad_subnormal:
+	; D3: E < -1022.  Shift the 192-bit accumulator right by k = -1022 - E,
+	; extract at exp field 0, round RNE (a round-up may promote to min normal).
+	move.l	#-1022,d0
+	sub.l	d5,d0			; d0 = k (>= 1)
+	cmpi.l	#55,d0			; below 1/2 ULP of the min subnormal -> +/-0
+	bge	_fmad_unf
+	move.l	d0,d6			; shift counter
+_fmad_sub_shr:
+	move.l	fmad_acc+0,d0
+	btst	#0,d0			; a bit shifted off the bottom -> sticky
+	beq.s	_fmad_sub_nos
+	ori.l	#1,fmad_sticky
+_fmad_sub_nos:
+	move.l	fmad_acc+20,d0
+	lsr.l	#1,d0
+	move.l	d0,fmad_acc+20
+	move.l	fmad_acc+16,d0
+	roxr.l	#1,d0
+	move.l	d0,fmad_acc+16
+	move.l	fmad_acc+12,d0
+	roxr.l	#1,d0
+	move.l	d0,fmad_acc+12
+	move.l	fmad_acc+8,d0
+	roxr.l	#1,d0
+	move.l	d0,fmad_acc+8
+	move.l	fmad_acc+4,d0
+	roxr.l	#1,d0
+	move.l	d0,fmad_acc+4
+	move.l	fmad_acc+0,d0
+	roxr.l	#1,d0
+	move.l	d0,fmad_acc+0
+	subq.l	#1,d6
+	bne.s	_fmad_sub_shr
+	move.l	fmad_acc+20,d1
+	lsr.l	#8,d1
+	lsr.l	#3,d1			; sig_hi (bit 20 clear = subnormal)
+	move.l	fmad_acc+20,d2
+	lsl.l	#8,d2
+	lsl.l	#8,d2
+	lsl.l	#5,d2
+	move.l	fmad_acc+16,d3
+	lsr.l	#8,d3
+	lsr.l	#3,d3
+	or.l	d3,d2			; sig_lo
+	move.l	fmad_acc+16,d4
+	andi.l	#$400,d4		; guard
+	move.l	fmad_acc+16,d7
+	andi.l	#$3FF,d7
+	or.l	fmad_acc+12,d7
+	or.l	fmad_acc+8,d7
+	or.l	fmad_acc+4,d7
+	or.l	fmad_acc+0,d7
+	or.l	fmad_sticky,d7
+	; D1: tininess-before -> subnormal path + inexact = UNDERFLOW+INEXACT
+	move.l	d4,d0
+	or.l	d7,d0
+	beq.s	_fmad_sub_rdec
+	ori.l	#FE_UNDERFLOW+FE_INEXACT,_fe_status
+	tst.l	_fe_round
+	bne	_fmad_sub_dir		; D4 directed rounding
+_fmad_sub_rdec:
+	tst.l	d4
+	beq.s	_fmad_sub_pack
+	tst.l	d7
+	bne.s	_fmad_sub_up
+	btst	#0,d2
+	beq.s	_fmad_sub_pack
+_fmad_sub_up:
+	addq.l	#1,d2
+	bcc.s	_fmad_sub_pack
+	addq.l	#1,d1
+_fmad_sub_pack:
+	btst	#20,d1			; carried up to the min normal?
+	beq.s	_fmad_sub_store
+	andi.l	#$000FFFFF,d1
+	ori.l	#$00100000,d1		; min normal (exp field 1)
+	bra.s	_fmad_sub_sign
+_fmad_sub_store:
+	andi.l	#$000FFFFF,d1		; subnormal (exp field 0)
+_fmad_sub_sign:
+	tst.l	fmad_sign
+	beq.s	_fmad_sub_res
+	ori.l	#$80000000,d1
+_fmad_sub_res:
+	move.l	d1,d0
+	move.l	d2,d1
+	bra	_fmad_ret
+
+_fmad_sub_dir:
+	; D4 directed subnormal round: inexact, sig d1:d2, sign fmad_sign.
+	movem.l	d1,-(sp)
+	move.l	fmad_sign,d1
+	ror.l	#1,d1			; sign -> bit31
+	moveq	#1,d0			; inexact
+	bsr	_fe_dirup
+	tst.l	d0
+	movem.l	(sp)+,d1
+	beq	_fmad_sub_pack
+	bra	_fmad_sub_up
+
+_fmad_ovf:
+	ori.l	#FE_OVERFLOW+FE_INEXACT,_fe_status
+	move.l	fmad_sign,d1
+	ror.l	#1,d1			; sign -> bit31
+	bsr	_fe_ovf_maxf		; d0 = 1 max-finite / 0 inf
+	tst.l	d0
+	bne.s	_fmad_ovf_max
+	move.l	#DBL_INF_HI,d0
+	moveq	#0,d1
+	bra.s	_fmad_ovf_sign
+_fmad_ovf_max:
+	move.l	#$7FEFFFFF,d0		; max-finite hi
+	moveq	#-1,d1			; max-finite lo
+_fmad_ovf_sign:
+	tst.l	fmad_sign
+	beq.s	_fmad_ret
+	ori.l	#$80000000,d0
+	bra.s	_fmad_ret
+_fmad_unf:
+	ori.l	#FE_UNDERFLOW+FE_INEXACT,_fe_status
+	move.l	fmad_sign,d1
+	ror.l	#1,d1			; sign -> bit31
+	moveq	#1,d0			; inexact (tiny nonzero)
+	bsr	_fe_dirup		; RU-of-pos / RD-of-neg -> up to min subnormal
+	tst.l	d0
+	bne.s	_fmad_unf_min
+	moveq	#0,d0			; signed zero
+	moveq	#0,d1
+	tst.l	fmad_sign
+	beq.s	_fmad_ret
+	move.l	#$80000000,d0
+	bra.s	_fmad_ret
+_fmad_unf_min:
+	moveq	#0,d0			; min subnormal: hi = sign|0
+	moveq	#1,d1			; min subnormal lo = 1
+	tst.l	fmad_sign
+	beq.s	_fmad_ret
+	move.l	#$80000000,d0
+	bra.s	_fmad_ret
+_fmad_zero:
+	moveq	#0,d0
+	moveq	#0,d1
+_fmad_ret:
+	movem.l	(sp)+,d2-d7
+	unlk	a6
+	rts
+
+; ------------------------------------------------------------
+;  _fmad_class -- d0=hi, d1=lo -> d0 = 0 fin / 1 zero / 2 inf / 3 nan.
+;  Clobbers d2,d3.
+; ------------------------------------------------------------
+_fmad_class:
+	move.l	d0,d2
+	andi.l	#$7FFFFFFF,d2
+	move.l	d2,d3
+	or.l	d1,d3
+	beq.s	_fcl_zero
+	cmpi.l	#$7FF00000,d2
+	blt.s	_fcl_fin
+	bhi.s	_fcl_nan
+	tst.l	d1
+	beq.s	_fcl_inf
+_fcl_nan:
+	moveq	#3,d0
+	rts
+_fcl_zero:
+	moveq	#1,d0
+	rts
+_fcl_inf:
+	moveq	#2,d0
+	rts
+_fcl_fin:
+	moveq	#0,d0
+	rts
+
+; ------------------------------------------------------------
+;  _fmad_place -- shift preloaded fmad_tp (192-bit) by signed d2.  Sets
+;  fmad_llost=1 if any bit was lost below the window (the caller folds it
+;  into sticky/borrow by sign).  Clobbers d0-d2.
+; ------------------------------------------------------------
+_fmad_place:
+	clr.l	fmad_llost
+	tst.l	d2
+	bmi.s	_fmdp_right
+	beq.s	_fmdp_ret
+_fmdp_lloop:
+	bsr	_fmad_tp_shl1
+	subq.l	#1,d2
+	bne.s	_fmdp_lloop
+_fmdp_ret:
+	rts
+_fmdp_right:
+	neg.l	d2
+	cmpi.l	#160,d2
+	bcc.s	_fmdp_allst
+_fmdp_rloop:
+	bsr	_fmad_tp_shr1		; d0 = bit shifted out of tp0
+	tst.l	d0
+	beq.s	_fmdp_rnc
+	moveq	#1,d0
+	move.l	d0,fmad_llost
+_fmdp_rnc:
+	subq.l	#1,d2
+	bne.s	_fmdp_rloop
+	rts
+_fmdp_allst:
+	move.l	fmad_tp+0,d0
+	or.l	fmad_tp+4,d0
+	or.l	fmad_tp+8,d0
+	or.l	fmad_tp+12,d0
+	or.l	fmad_tp+16,d0
+	or.l	fmad_tp+20,d0
+	beq.s	_fmdp_zero
+	moveq	#1,d0
+	move.l	d0,fmad_llost
+_fmdp_zero:
+	clr.l	fmad_tp+0
+	clr.l	fmad_tp+4
+	clr.l	fmad_tp+8
+	clr.l	fmad_tp+12
+	clr.l	fmad_tp+16
+	clr.l	fmad_tp+20
+	rts
+
+; shift fmad_tp left 1 (6 longwords).  Clobbers d0.
+_fmad_tp_shl1:
+	move.l	fmad_tp+0,d0
+	add.l	d0,d0
+	move.l	d0,fmad_tp+0
+	move.l	fmad_tp+4,d0
+	addx.l	d0,d0
+	move.l	d0,fmad_tp+4
+	move.l	fmad_tp+8,d0
+	addx.l	d0,d0
+	move.l	d0,fmad_tp+8
+	move.l	fmad_tp+12,d0
+	addx.l	d0,d0
+	move.l	d0,fmad_tp+12
+	move.l	fmad_tp+16,d0
+	addx.l	d0,d0
+	move.l	d0,fmad_tp+16
+	move.l	fmad_tp+20,d0
+	addx.l	d0,d0
+	move.l	d0,fmad_tp+20
+	rts
+
+; shift fmad_tp right 1; return the shifted-out bit (tp0 bit0) in d0.  Clobbers d0,d1.
+_fmad_tp_shr1:
+	move.l	fmad_tp+20,d0
+	lsr.l	#1,d0
+	move.l	d0,fmad_tp+20
+	move.l	fmad_tp+16,d0
+	roxr.l	#1,d0
+	move.l	d0,fmad_tp+16
+	move.l	fmad_tp+12,d0
+	roxr.l	#1,d0
+	move.l	d0,fmad_tp+12
+	move.l	fmad_tp+8,d0
+	roxr.l	#1,d0
+	move.l	d0,fmad_tp+8
+	move.l	fmad_tp+4,d0
+	roxr.l	#1,d0
+	move.l	d0,fmad_tp+4
+	move.l	fmad_tp+0,d0
+	roxr.l	#1,d0			; C = old tp0 bit0
+	scs	d1
+	move.l	d0,fmad_tp+0
+	andi.l	#1,d1
+	move.l	d1,d0
+	rts
+
+; shift fmad_acc left 1 (6 longwords).  Clobbers d0.
+_fmad_acc_shl1:
+	move.l	fmad_acc+0,d0
+	add.l	d0,d0
+	move.l	d0,fmad_acc+0
+	move.l	fmad_acc+4,d0
+	addx.l	d0,d0
+	move.l	d0,fmad_acc+4
+	move.l	fmad_acc+8,d0
+	addx.l	d0,d0
+	move.l	d0,fmad_acc+8
+	move.l	fmad_acc+12,d0
+	addx.l	d0,d0
+	move.l	d0,fmad_acc+12
+	move.l	fmad_acc+16,d0
+	addx.l	d0,d0
+	move.l	d0,fmad_acc+16
+	move.l	fmad_acc+20,d0
+	addx.l	d0,d0
+	move.l	d0,fmad_acc+20
+	rts
+
+; acc += tp (192-bit).  Clobbers d0,d1.
+_fmad_acc_add:
+	move.l	fmad_acc+0,d0
+	move.l	fmad_tp+0,d1
+	add.l	d1,d0
+	move.l	d0,fmad_acc+0
+	move.l	fmad_acc+4,d0
+	move.l	fmad_tp+4,d1
+	addx.l	d1,d0
+	move.l	d0,fmad_acc+4
+	move.l	fmad_acc+8,d0
+	move.l	fmad_tp+8,d1
+	addx.l	d1,d0
+	move.l	d0,fmad_acc+8
+	move.l	fmad_acc+12,d0
+	move.l	fmad_tp+12,d1
+	addx.l	d1,d0
+	move.l	d0,fmad_acc+12
+	move.l	fmad_acc+16,d0
+	move.l	fmad_tp+16,d1
+	addx.l	d1,d0
+	move.l	d0,fmad_acc+16
+	move.l	fmad_acc+20,d0
+	move.l	fmad_tp+20,d1
+	addx.l	d1,d0
+	move.l	d0,fmad_acc+20
+	rts
+
+; acc -= tp (192-bit).  Clobbers d0,d1.
+_fmad_acc_sub:
+	move.l	fmad_acc+0,d0
+	move.l	fmad_tp+0,d1
+	sub.l	d1,d0
+	move.l	d0,fmad_acc+0
+	move.l	fmad_acc+4,d0
+	move.l	fmad_tp+4,d1
+	subx.l	d1,d0
+	move.l	d0,fmad_acc+4
+	move.l	fmad_acc+8,d0
+	move.l	fmad_tp+8,d1
+	subx.l	d1,d0
+	move.l	d0,fmad_acc+8
+	move.l	fmad_acc+12,d0
+	move.l	fmad_tp+12,d1
+	subx.l	d1,d0
+	move.l	d0,fmad_acc+12
+	move.l	fmad_acc+16,d0
+	move.l	fmad_tp+16,d1
+	subx.l	d1,d0
+	move.l	d0,fmad_acc+16
+	move.l	fmad_acc+20,d0
+	move.l	fmad_tp+20,d1
+	subx.l	d1,d0
+	move.l	d0,fmad_acc+20
+	rts
+
+	.bss
+fmad_acc	ds.l	6
+fmad_tp		ds.l	6
+fmad_prod	ds.l	4
+fmad_sticky	ds.l	1
+fmad_llost	ds.l	1
+fmad_lost	ds.l	1
+fmad_lsgn	ds.l	1
+fmad_lsbe	ds.l	1
+fmad_ma_hi	ds.l	1
+fmad_ma_lo	ds.l	1
+fmad_mb_hi	ds.l	1
+fmad_mb_lo	ds.l	1
+fmad_mc_hi	ds.l	1
+fmad_mc_lo	ds.l	1
+fmad_ea		ds.l	1
+fmad_eb		ds.l	1
+fmad_ce		ds.l	1
+fmad_pe		ds.l	1
+fmad_sp		ds.l	1
+fmad_sc		ds.l	1
+fmad_sign	ds.l	1
+fmad_crhi	ds.l	1
+fmad_crlo	ds.l	1
+fmad_hhhi	ds.l	1
+fmad_hhlo	ds.l	1
+fmad_a_hi	ds.l	1
+fmad_a_lo	ds.l	1
+fmad_b_hi	ds.l	1
+fmad_b_lo	ds.l	1
+fmad_c_hi	ds.l	1
+fmad_c_lo	ds.l	1
+
+	end

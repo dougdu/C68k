@@ -1,0 +1,201 @@
+	title	"IEEE 754 environment ABI (reserved: flags / rounding mode / feature query)"
+; ============================================================
+;  Reserved forward-compatible IEEE-environment ABI.
+;
+;  The library today does gradual underflow (D3) but rounds to-nearest-even
+;  only and raises NO exception flags (Conformance-Delta ledger D1 flags, D4
+;  directed rounding -- see IEEE_FLOAT_TEST_PLAN.md).  These entry points
+;  RESERVE the binding surface so a later, ADDITIVE implementation of sticky
+;  flags / directed rounding does not change any signature the language
+;  runtimes bind to (C <fenv.h>, FORTRAN IEEE_ARITHMETIC/IEEE_EXCEPTIONS,
+;  PL/I ON-conditions, PROLOG evaluation_error, ...).
+;
+;  Contract TODAY:
+;   - the sticky status word is honoured by test/clear/raise AND raised by the
+;     arithmetic/sqrt/fma/conversion ops (D1 sticky flags).
+;   - all four rounding modes are implemented (D4): the ops read _fe_round, and
+;     _fe_setround accepts FE_TONEAREST/TOWARDZERO/UPWARD/DOWNWARD.
+;   - _fe_supports answers the IEEE_SUPPORT_* style query truthfully for TODAY,
+;     so a runtime can branch on real capability now and automatically pick up
+;     new capabilities when a later release flips them to 1.
+;
+;  C-callable.  arg1 @ 8(a6) after `link a6,#0`; result in D0.  Only D0/D1 are
+;  touched (callee-saved D2-D7/A2-A6 preserved), so these are safe to call from
+;  any hot path.  The status word and mode live in .data (image-initialised, so
+;  no dependence on the loader zeroing .bss).
+; ============================================================
+
+	.model	flat
+	include	ieee754.inc
+
+	public	_fe_testexcept, _fe_clearexcept, _fe_raiseexcept
+	public	_fe_getround, _fe_setround, _fe_supports
+	public	_fe_status		; exposed for the D1 flag-conformance harness
+	public	_fe_round		; exposed for D4 directed-rounding (ops + harness)
+	public	_fe_dirup, _fe_ovf_maxf	; D4 shared rounding-decision helpers
+
+	.code
+
+; ------------------------------------------------------------
+;  int _fe_testexcept(int excepts)
+;  -> the subset of `excepts` (masked to FE_ALL_EXCEPT) currently raised.
+; ------------------------------------------------------------
+_fe_testexcept:
+	link	a6,#0
+	move.l	8(a6),d0
+	andi.l	#FE_ALL_EXCEPT,d0
+	and.l	_fe_status,d0
+	unlk	a6
+	rts
+
+; ------------------------------------------------------------
+;  void _fe_clearexcept(int excepts)   -> status &= ~excepts
+; ------------------------------------------------------------
+_fe_clearexcept:
+	link	a6,#0
+	move.l	8(a6),d0
+	andi.l	#FE_ALL_EXCEPT,d0
+	not.l	d0
+	and.l	d0,_fe_status		; and.l Dn,<ea> (data-reg source) is legal
+	unlk	a6
+	rts
+
+; ------------------------------------------------------------
+;  void _fe_raiseexcept(int excepts)   -> status |= excepts
+;  For consumers that model flags themselves today, and the seam where the
+;  arithmetic ops will raise flags once D1 is implemented.
+; ------------------------------------------------------------
+_fe_raiseexcept:
+	link	a6,#0
+	move.l	8(a6),d0
+	andi.l	#FE_ALL_EXCEPT,d0
+	or.l	d0,_fe_status
+	unlk	a6
+	rts
+
+; ------------------------------------------------------------
+;  int _fe_getround(void)   -> current rounding mode (FE_TONEAREST today)
+; ------------------------------------------------------------
+_fe_getround:
+	move.l	_fe_round,d0
+	rts
+
+; ------------------------------------------------------------
+;  int _fe_setround(int mode)   -> 0 if accepted, nonzero if unsupported.
+;  All four IEEE modes are implemented (D4): FE_TONEAREST (0), FE_TOWARDZERO
+;  (1), FE_UPWARD (2), FE_DOWNWARD (3).  Every rounding op reads _fe_round.
+; ------------------------------------------------------------
+_fe_setround:
+	link	a6,#0
+	move.l	8(a6),d0
+	cmpi.l	#FE_DOWNWARD,d0		; valid modes are 0..3
+	bhi.s	_fe_setr_no		; > 3 (unsigned) -> reject, mode unchanged
+	move.l	d0,_fe_round
+	moveq	#0,d0			; success
+	unlk	a6
+	rts
+_fe_setr_no:
+	moveq	#-1,d0			; unsupported mode -> reject (mode unchanged)
+	unlk	a6
+	rts
+
+; ------------------------------------------------------------
+;  int _fe_supports(int feature)   -> 1 if supported TODAY, else 0.
+;  Real now: DATATYPE (binary32+64), NAN, INF, correctly-rounded SQRT and FMA,
+;  SUBNORMAL (D3 gradual underflow), ROUNDING (D4 directed modes).  Reserved
+;  (0): FLAG (D1 -- flags are raised but there is no fetestexcept-on-halting),
+;  HALTING (D2 traps).
+; ------------------------------------------------------------
+_fe_supports:
+	link	a6,#0
+	move.l	8(a6),d0
+	cmpi.l	#IEEE_SUPPORT_DATATYPE,d0
+	beq.s	_fe_sup_yes
+	cmpi.l	#IEEE_SUPPORT_NAN,d0
+	beq.s	_fe_sup_yes
+	cmpi.l	#IEEE_SUPPORT_INF,d0
+	beq.s	_fe_sup_yes
+	cmpi.l	#IEEE_SUPPORT_SQRT,d0
+	beq.s	_fe_sup_yes
+	cmpi.l	#IEEE_SUPPORT_FMA,d0
+	beq.s	_fe_sup_yes
+	cmpi.l	#IEEE_SUPPORT_SUBNORMAL,d0
+	beq.s	_fe_sup_yes		; D3 gradual underflow now real
+	cmpi.l	#IEEE_SUPPORT_ROUNDING,d0
+	beq.s	_fe_sup_yes		; D4 directed rounding now real
+	moveq	#0,d0			; reserved-but-not-yet -> 0
+	unlk	a6
+	rts
+_fe_sup_yes:
+	moveq	#1,d0
+	unlk	a6
+	rts
+
+; ------------------------------------------------------------
+;  D4 directed-rounding decision helpers (INTERNAL, not C-callable).
+;  Every op keeps its round-to-nearest-even tail UNCHANGED and, when
+;  _fe_round != 0, branches to a small directed path that calls these.
+; ------------------------------------------------------------
+;  _fe_dirup -- should a truncated-toward-zero magnitude be incremented,
+;  under a DIRECTED mode (RZ/RU/RD; caller handles RN itself)?
+;   IN:  d0 = inexact (0 = exact, nonzero = some bit dropped)
+;        d1 = sign  (bit 31: 0 = positive, 1 = negative)
+;   OUT: d0 = 1 (round the magnitude up) / 0 (truncate).  Preserves d1-d7.
+;  RZ never rounds up; RU rounds up a positive inexact; RD rounds up a
+;  negative inexact.
+_fe_dirup:
+	tst.l	d0
+	beq.s	_fed_no			; exact -> never round up
+	move.l	_fe_round,d0		; 1=RZ, 2=RU, 3=RD
+	subq.l	#1,d0
+	beq.s	_fed_no			; RZ -> truncate
+	tst.l	d1			; sign
+	bmi.s	_fed_neg
+	; positive: RU(d0==1) -> up ; RD(d0==2) -> down
+	subq.l	#1,d0
+	beq.s	_fed_yes		; RU & positive
+	bra.s	_fed_no			; RD & positive
+_fed_neg:
+	; negative: RD(d0==2) -> up ; RU(d0==1) -> down
+	subq.l	#2,d0
+	beq.s	_fed_yes		; RD & negative
+_fed_no:
+	moveq	#0,d0
+	rts
+_fed_yes:
+	moveq	#1,d0
+	rts
+
+; ------------------------------------------------------------
+;  _fe_ovf_maxf -- on exponent overflow, does the current mode round the
+;  magnitude to MAX-FINITE instead of infinity?
+;   IN:  d1 = sign (bit 31)
+;   OUT: d0 = 1 (max-finite) / 0 (infinity).  Preserves d1.
+;  Inf iff RN, or RU-of-positive, or RD-of-negative; else max-finite.
+_fe_ovf_maxf:
+	move.l	_fe_round,d0
+	beq.s	_feo_inf		; RN -> inf
+	cmpi.l	#1,d0
+	beq.s	_feo_max		; RZ -> max-finite
+	cmpi.l	#2,d0
+	beq.s	_feo_ru
+	; RD (3): negative -> inf, positive -> max-finite
+	tst.l	d1
+	bmi.s	_feo_inf
+	bra.s	_feo_max
+_feo_ru:
+	; RU (2): positive -> inf, negative -> max-finite
+	tst.l	d1
+	bpl.s	_feo_inf
+_feo_max:
+	moveq	#1,d0
+	rts
+_feo_inf:
+	moveq	#0,d0
+	rts
+
+	.data
+_fe_status	dc.l	0		; sticky exception flags (low 5 bits); 0 = all clear
+_fe_round	dc.l	0		; rounding mode; 0 = FE_TONEAREST (only value now)
+
+	end

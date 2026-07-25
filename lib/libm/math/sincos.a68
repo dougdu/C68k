@@ -20,6 +20,8 @@
 	extern	_fpftol, _fpltof
 	; double-precision ops for the range reduction (library is consolidated)
 	extern	_fpftod, _fpdtof, _fpmultd, _fpaddd, _fpsubd, _fpdtol, _fpltod
+	; Payne-Hanek reduction (shared with sind/cosd) for large |x|
+	extern	__rem_pio2_big, rp_r
 
 	.code
 
@@ -85,6 +87,26 @@ _sc_common:
 	beq	_sin_return_x		; sin(0) = 0
 _sc_reduce:
 
+	; |x| >= 2^20 : reduce in DOUBLE loses bits too -> Payne-Hanek (BUG-0021).
+	; Widen x to double, call the shared reducer, narrow r back to single.
+	move.l	d2,d0
+	andi.l	#$7FFFFFFF,d0
+	cmpi.l	#$49000000,d0		; 2^20 as single (exp field 147)
+	blt.s	_sc_cw
+	move.l	d2,-(sp)
+	jsr	_fpftod			; xd = (double)x
+	addq.l	#4,sp
+	move.l	d0,d2			; xd -> d2:d3 for the reducer
+	move.l	d1,d3
+	bsr	__rem_pio2_big		; d0 = quadrant; rp_r = r (double)
+	move.l	d0,-8(a6)		; k
+	move.l	rp_r+4,-(sp)
+	move.l	rp_r,-(sp)
+	jsr	_fpdtof			; r (single)
+	addq.l	#8,sp
+	move.l	d0,-4(a6)
+	bra	_sc_haveR
+_sc_cw:
 	; --- Range reduction in DOUBLE precision (Cody-Waite) ---
 	; The old single-precision k*(pi/2) lost low bits for large |x|, wrecking
 	; sin/cos of large arguments (BUG-0021).  Reduce in double: xd=(double)x,
@@ -158,6 +180,7 @@ _sc_reduce:
 	addq.l	#8,sp
 	move.l	d0,-4(a6)		; save r (single)
 
+_sc_haveR:
 	; --- Compute x² = r² ---
 	move.l	d0,-(sp)
 	move.l	d0,-(sp)

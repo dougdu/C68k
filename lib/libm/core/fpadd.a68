@@ -24,6 +24,8 @@
 	include	ieee754.inc
 
 	public	_fpadd, _fpaddf, _fpsub, _fpsubf
+	extern	_fe_status		; D1 sticky exception flags
+	extern	_fe_round, _fe_dirup, _fe_ovf_maxf	; D4 directed rounding
 
 	.code
 
@@ -76,14 +78,28 @@ _fpadd_entry:
 	cmpi.l	#255,d3
 	beq	_add_b_special
 
-	; --- Extract mantissas with implied bit ---
+	; --- Extract mantissas (implied bit for normals; subnormals use exp=1) ---
+	; D3 gradual underflow: a subnormal operand (exp field 0, already-nonzero)
+	; has NO implied bit and an effective biased exponent of 1.
 	move.l	d6,d4
 	andi.l	#IEEE754_SNG_MANT_MASK,d4
+	tst.l	d2
+	bne.s	_add_a_normal
+	moveq	#1,d2			; subnormal a: biased exp 1, no implied bit
+	bra.s	_add_a_mdone
+_add_a_normal:
 	ori.l	#IEEE754_SNG_IMPLIED_BIT,d4 ; d4 = a mantissa (24 bits)
+_add_a_mdone:
 
 	move.l	d7,d5
 	andi.l	#IEEE754_SNG_MANT_MASK,d5
+	tst.l	d3
+	bne.s	_add_b_normal
+	moveq	#1,d3			; subnormal b: biased exp 1, no implied bit
+	bra.s	_add_b_mdone
+_add_b_normal:
 	ori.l	#IEEE754_SNG_IMPLIED_BIT,d5 ; d5 = b mantissa (24 bits)
+_add_b_mdone:
 
 	; --- Extract signs ---
 	move.l	d6,d0
@@ -108,7 +124,14 @@ _add_no_swap:
 	move.l	d2,d6			; d6 = result exponent
 	sub.l	d3,d2			; d2 = exponent difference
 	cmpi.l	#26,d2			; shift >= 26: smaller is < 1/4 ULP even
-	bge	_add_result_a		;   after a power-of-two subtract -> result is a
+	blt.s	_add_align_small
+	; shift >= 26: the smaller operand is entirely below the guard bit.
+	tst.l	_fe_round
+	beq	_add_result_a		; RN -> result is just the larger operand
+	moveq	#0,d5			; D4: aligned smaller mantissa = 0
+	moveq	#1,d7			; guard = 0 (bit31 clear), sticky = 1 (nonzero)
+	bra.s	_add_aligned
+_add_align_small:
 
 	; --- Align smaller mantissa right by d2, capturing the shifted-out
 	;     fraction into guard register d7:  [d5:d7] = [d5:0] >> d2 ---
@@ -157,18 +180,74 @@ _add_normalize:
 _add_norm_loop:
 	btst.l	#IEEE754_SNG_MANT_BITS,d4 ; bit 23 set?
 	bne.s	_add_round
+	cmpi.l	#1,d6			; exponent already at min -> subnormal (D3)
+	ble.s	_add_subnormal
 	lsl.l	#1,d7			; shift [d4:d7] left,
 	roxl.l	#1,d4			;   pulling the guard into d4 bit 0
 	subq.l	#1,d6
-	tst.l	d6			; exponent underflow?
-	ble	_add_return_zero	; flush to zero
 	bra.s	_add_norm_loop
 
+_add_subnormal:
+	; D3 gradual underflow: d6 == 1, bit 23 clear -> subnormal (exp field 0).
+	; Round to nearest even from the guard d7; a round-up may carry the
+	; significand into bit 23, promoting it to the min normal (exp field 1).
+	; D1 (tininess before rounding): the pre-rounding value is tiny here, so
+	; any inexactness (d7 != 0) raises UNDERFLOW as well as INEXACT.
+	tst.l	d7
+	beq.s	_add_sub_round		; exact subnormal -> no flags
+	ori.l	#FE_UNDERFLOW+FE_INEXACT,_fe_status
+	tst.l	_fe_round
+	bne.s	_add_sub_dir		; D4 directed rounding
+	tst.l	d7			; reload guard sign (ori touched CCR)
+_add_sub_round:
+	bpl.s	_add_sub_pack		; guard < half (or exact) -> down
+	move.l	d7,d3
+	andi.l	#$7FFFFFFF,d3
+	bne.s	_add_sub_up		; > half -> up
+	btst.l	#0,d4			; == half -> round to even
+	beq.s	_add_sub_pack
+_add_sub_up:
+	addq.l	#1,d4
+_add_sub_pack:
+	btst.l	#IEEE754_SNG_MANT_BITS,d4 ; carried up to the implied bit?
+	beq.s	_add_sub_store		; still subnormal -> exp field 0
+	andi.l	#IEEE754_SNG_MANT_MASK,d4 ; rounded up to min normal (exp field 1)
+	moveq	#1,d6
+	INSERT_EXP d6
+	or.l	d6,d4
+	or.l	d0,d4
+	move.l	d4,d0
+	bra	_add_done
+_add_sub_store:
+	andi.l	#IEEE754_SNG_MANT_MASK,d4 ; subnormal mantissa (exp field 0)
+	or.l	d0,d4			; combine sign
+	move.l	d4,d0
+	bra	_add_done
+
+_add_sub_dir:
+	; D4 directed subnormal round: inexact (d7 != 0), sign in d0, mag in d4.
+	move.l	d0,d1			; sign -> d1 (preserved by helper)
+	moveq	#1,d0			; inexact = 1
+	bsr	_fe_dirup		; d0 = round-up (0/1)
+	tst.l	d0
+	beq.s	_add_sub_dir_dn
+	move.l	d1,d0			; restore sign
+	bra.s	_add_sub_up
+_add_sub_dir_dn:
+	move.l	d1,d0			; restore sign
+	bra.s	_add_sub_pack
+
 _add_round:
-	; Round to nearest even from the guard register d7:
+	; Round to nearest even from the guard register d7, raising INEXACT (D1)
+	; whenever any bit was dropped (d7 != 0):
 	;   d7 <  $80000000 -> round down;  d7 > $80000000 -> round up;
 	;   d7 == $80000000 (exactly half) -> round to even.
 	tst.l	d7
+	beq.s	_add_pack		; d7 == 0 -> exact, no rounding, no INEXACT
+	ori.l	#FE_INEXACT,_fe_status	; bits dropped -> inexact
+	tst.l	_fe_round
+	bne.s	_add_round_dir		; D4 directed rounding
+	tst.l	d7			; (ori touched CCR) reload the guard sign
 	bpl.s	_add_pack		; guard bit 31 clear -> below half -> down
 	move.l	d7,d3
 	andi.l	#$7FFFFFFF,d3		; sticky = bits below the half bit
@@ -196,6 +275,19 @@ _add_done:
 	movem.l	(sp)+,d2-d7
 	unlk	a6
 	rts
+
+_add_round_dir:
+	; D4 directed normal round: inexact (d7 != 0), sign in d0, mag in d4.
+	move.l	d0,d1			; sign -> d1 (preserved by helper)
+	moveq	#1,d0			; inexact = 1
+	bsr	_fe_dirup		; d0 = round-up (0/1)
+	tst.l	d0
+	beq.s	_add_round_dir_dn
+	move.l	d1,d0			; restore sign
+	bra.s	_add_roundup
+_add_round_dir_dn:
+	move.l	d1,d0			; restore sign
+	bra.s	_add_pack
 
 ; --- Special case handlers ---
 
@@ -225,7 +317,7 @@ _add_a_special:
 	move.l	d6,d0
 	eor.l	d7,d0
 	andi.l	#IEEE754_SNG_SIGN_MASK,d0
-	bne.s	_add_return_nan		; different signs: inf - inf = NaN
+	bne.s	_add_invalid		; different signs: inf - inf = NaN (INVALID)
 	bra.s	_add_return_a		; same sign: return inf
 
 _add_b_special:
@@ -242,8 +334,10 @@ _add_return_a:
 	bra.s	_add_done
 
 _add_result_a:
-	; Exponent difference too large: result is just the larger operand
-	; d4 = mantissa (with implied bit), d0 = sign, d6 = exponent
+	; Exponent difference too large: result is just the larger operand.
+	; The smaller operand is nonzero (zeros handled early), so the true sum
+	; differs from a -> INEXACT (D1).  d4 = mantissa, d0 = sign, d6 = exponent
+	ori.l	#FE_INEXACT,_fe_status
 	andi.l	#IEEE754_SNG_MANT_MASK,d4
 	INSERT_EXP d6
 	or.l	d6,d4			; combine exponent (BUG-0001 fix)
@@ -255,6 +349,8 @@ _add_return_zero:
 	moveq	#0,d0
 	bra	_add_done
 
+_add_invalid:
+	ori.l	#FE_INVALID,_fe_status	; D1: inf - inf (signaled invalid)
 _add_return_nan:
 	move.l	#SNG_QNAN,d0
 	bra	_add_done
@@ -263,7 +359,18 @@ _add_overflow:
 	; Exponent overflow -> signed infinity.  D0 already holds the result sign
 	; (bit 31; the same-sign add path never clobbers it), so OR in +inf.
 	; (BUG-0008 fix -- the old block clobbered the sign and returned +inf.)
-	ori.l	#SNG_INF,d0
+	ori.l	#FE_OVERFLOW+FE_INEXACT,_fe_status ; D1: overflow implies inexact
+	move.l	d0,d1
+	andi.l	#$80000000,d1		; D4: sign only
+	bsr	_fe_ovf_maxf		; d0 = 1 max-finite / 0 inf ; d1 = sign
+	tst.l	d0
+	bne.s	_add_ovf_max
+	move.l	d1,d0
+	ori.l	#SNG_INF,d0		; RN / RU+ / RD- -> signed inf
+	bra	_add_done
+_add_ovf_max:
+	move.l	d1,d0
+	ori.l	#$7F7FFFFF,d0		; directed toward 0 -> signed max-finite
 	bra	_add_done
 
 	end

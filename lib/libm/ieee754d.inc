@@ -67,3 +67,28 @@ INSERT_DBL_EXP	macro	reg
 	swap	reg
 	clr.w	reg
 	endm
+
+; --- Reserved IEEE-environment ABI (mirrors ieee754.inc; see core/fenv.a68) ---
+; Same canonical values so double-only consumers that include ONLY this file
+; still see the environment constants.  Kept identical to ieee754.inc.
+FE_INVALID			equ	$01
+FE_DIVBYZERO			equ	$02
+FE_OVERFLOW			equ	$04
+FE_UNDERFLOW			equ	$08
+FE_INEXACT			equ	$10
+FE_ALL_EXCEPT			equ	$1F
+
+FE_TONEAREST			equ	0
+FE_TOWARDZERO			equ	1
+FE_UPWARD			equ	2
+FE_DOWNWARD			equ	3
+
+IEEE_SUPPORT_DATATYPE		equ	1
+IEEE_SUPPORT_NAN		equ	2
+IEEE_SUPPORT_INF		equ	3
+IEEE_SUPPORT_SQRT		equ	4
+IEEE_SUPPORT_FMA		equ	5
+IEEE_SUPPORT_SUBNORMAL		equ	6
+IEEE_SUPPORT_FLAG		equ	7
+IEEE_SUPPORT_HALTING		equ	8
+IEEE_SUPPORT_ROUNDING		equ	9

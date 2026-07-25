@@ -17,6 +17,8 @@
 	include	ieee754.inc
 
 	public	_fpltof
+	extern	_fe_status		; D1 sticky exception flags
+	extern	_fe_round, _fe_dirup	; D4 directed rounding
 
 	.code
 
@@ -51,7 +53,12 @@ _ltof_pack:
 	; 7:0; round them to nearest-even (guard = bit 7, sticky = bits 6:0).
 	move.l	d0,d3
 	andi.l	#$FF,d3			; d3 = guard + round bits
+	beq.s	_ltof_exact
+	ori.l	#FE_INEXACT,_fe_status	; D1: dropped bits -> inexact
+_ltof_exact:
 	lsr.l	#8,d0			; implied bit now at bit 23
+	tst.l	_fe_round
+	bne	_ltof_rdir		; D4 directed rounding
 	cmpi.l	#$80,d3
 	blo.s	_ltof_finish		; below half -> truncate
 	bhi.s	_ltof_roundup		; above half -> round up
@@ -75,5 +82,19 @@ _ltof_finish:
 _ltof_zero:
 	moveq	#0,d0
 	rts
+
+_ltof_rdir:
+	; D4 directed: d3 = dropped bits (inexact), d0 = 24-bit sig, d1 = exponent,
+	; d2 = sign (bit31).
+	tst.l	d3
+	beq	_ltof_finish		; exact -> truncate
+	movem.l	d0-d1,-(sp)		; save sig AND exponent (d1)
+	move.l	d2,d1			; sign
+	moveq	#1,d0			; inexact
+	bsr	_fe_dirup		; d0 = round-up
+	tst.l	d0
+	movem.l	(sp)+,d0-d1		; restore sig + exponent (CCR unchanged)
+	beq	_ltof_finish
+	bra	_ltof_roundup
 
 	end

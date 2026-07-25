@@ -65,3 +65,36 @@ INSERT_EXP	macro	reg
 	swap	reg
 	clr.w	reg
 	endm
+
+; --- Reserved IEEE-environment ABI (see core/fenv.a68, IEEE754_REFERENCE.md) ---
+; The arithmetic ops do gradual underflow (D3) but do NOT raise these flags yet
+; (Conformance-Delta D1) and only round-to-nearest-even is implemented (D4); the
+; status word and the _fe_* accessors are RESERVED so flag / directed-rounding
+; support can land additively without changing any binding signature.
+
+; Sticky exception flags (canonical bit values for THIS library; IEEE 754 order)
+FE_INVALID			equ	$01
+FE_DIVBYZERO			equ	$02
+FE_OVERFLOW			equ	$04
+FE_UNDERFLOW			equ	$08
+FE_INEXACT			equ	$10
+FE_ALL_EXCEPT			equ	$1F
+
+; Rounding modes.  Only FE_TONEAREST is implemented; _fe_setround rejects the
+; rest (returns nonzero) until directed rounding lands (D4).
+FE_TONEAREST			equ	0
+FE_TOWARDZERO			equ	1
+FE_UPWARD			equ	2
+FE_DOWNWARD			equ	3
+
+; Feature-query IDs for _fe_supports (a la FORTRAN IEEE_SUPPORT_*): returns 1
+; if the capability is real TODAY, else 0 (reserved for a later release).
+IEEE_SUPPORT_DATATYPE		equ	1	; binary32 + binary64 arithmetic  -> 1
+IEEE_SUPPORT_NAN		equ	2	; quiet NaN                       -> 1
+IEEE_SUPPORT_INF		equ	3	; signed infinity                -> 1
+IEEE_SUPPORT_SQRT		equ	4	; correctly-rounded sqrt         -> 1
+IEEE_SUPPORT_FMA		equ	5	; correctly-rounded fused mul-add-> 1
+IEEE_SUPPORT_SUBNORMAL		equ	6	; gradual underflow (D3)         -> 1
+IEEE_SUPPORT_FLAG		equ	7	; ops raise sticky flags (D1)    -> 0
+IEEE_SUPPORT_HALTING		equ	8	; trapping on exceptions (D2)    -> 0
+IEEE_SUPPORT_ROUNDING		equ	9	; directed rounding modes (D4)   -> 0

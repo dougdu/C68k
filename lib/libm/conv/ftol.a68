@@ -12,19 +12,27 @@
 ;       if shift > 0: shift mantissa left (large number)
 ;       if shift < 0: shift mantissa right (fractional digits lost)
 ;    4. Apply sign
+;
+;  Saturation: an out-of-range magnitude, +/-inf, or NaN returns the nearest
+;  representable integer (positive -> INT_MAX $7FFFFFFF, negative -> INT_MIN
+;  $80000000); x == -2^31 exactly is in range and returns INT_MIN.
+;
+;  D1 exception flags (OR'd into _fe_status): FE_INVALID for a saturated
+;  (out-of-range / inf / NaN) result; FE_INEXACT when truncation discards a
+;  nonzero fraction (including 0 < |x| < 1 -> 0).
 ; ============================================================
 
 	.model	flat
 	include	ieee754.inc
 
 	public	_fpftol
+	extern	_fe_status		; D1 sticky exception flags
 
 	.code
 
 _fpftol:
 	move.l	4(sp),d0		; d0 = IEEE float
-	move.l	d1,-(sp)		; save d1
-	move.l	d2,-(sp)		; save d2
+	movem.l	d1-d3,-(sp)		; save d1-d3 (d3 = fraction-test scratch)
 
 	; Extract sign
 	move.l	d0,d2
@@ -35,29 +43,37 @@ _fpftol:
 	andi.l	#IEEE754_SNG_EXP_MASK,d1
 	EXTRACT_EXP d1
 
-	; Check for zero or tiny
+	; |x| < 1  ->  0 (INEXACT unless exactly +/-0)
 	tst.l	d1
-	beq.s	_ftol_zero		; exponent 0 → denormal or zero → 0
+	beq	_ftol_zero		; exponent 0 → denormal or zero
 	cmpi.l	#IEEE754_SNG_EXP_BIAS,d1
-	blt.s	_ftol_zero		; |x| < 1.0 → 0
+	blt	_ftol_zero		; |x| < 1.0
 
-	; Check for too large
+	; Out of range: exp > 158 → inf / NaN / |x| >= 2^32 (INVALID)
 	cmpi.l	#127+31,d1
-	bgt.s	_ftol_overflow
+	bgt	_ftol_overflow
+	beq	_ftol_boundary		; exp == 158: in range only for x == -2^31
 
-	; Extract mantissa with implied bit
+	; In range (exp 127..157): 24-bit significand
 	andi.l	#IEEE754_SNG_MANT_MASK,d0
 	ori.l	#IEEE754_SNG_IMPLIED_BIT,d0 ; d0 = 1.mantissa (24 bits)
 
-	; Compute shift amount
-	subi.l	#IEEE754_SNG_EXP_BIAS,d1 ; d1 = unbiased exponent (0..30)
-	subi.l	#IEEE754_SNG_MANT_BITS,d1 ; d1 = shift count (exp - 23)
-	beq.s	_ftol_apply_sign	; shift = 0: mantissa is the integer
-	bpl.s	_ftol_shift_left
+	; Compute shift amount = exp - 127 - 23
+	subi.l	#IEEE754_SNG_EXP_BIAS,d1 ; d1 = unbiased exponent
+	subi.l	#IEEE754_SNG_MANT_BITS,d1 ; d1 = shift count
+	beq.s	_ftol_apply_sign	; shift = 0: significand is the integer (exact)
+	bpl.s	_ftol_shift_left	; shift > 0: |x| >= 2^24 (exact)
 
-	; Shift right (fractional part lost)
-	neg.l	d1
-	lsr.l	d1,d0
+	; shift < 0: right shift; the dropped low bits are the fraction → INEXACT
+	neg.l	d1			; d1 = k = fractional bit count (1..23)
+	moveq	#1,d3
+	lsl.l	d1,d3
+	subq.l	#1,d3			; d3 = (1<<k)-1  fraction mask
+	and.l	d0,d3			; d3 = dropped fraction bits
+	lsr.l	d1,d0			; d0 = truncated integer magnitude
+	tst.l	d3
+	beq.s	_ftol_apply_sign
+	ori.l	#FE_INEXACT,_fe_status
 	bra.s	_ftol_apply_sign
 
 _ftol_shift_left:
@@ -69,24 +85,41 @@ _ftol_apply_sign:
 	neg.l	d0
 
 _ftol_done:
-	move.l	(sp)+,d2
-	move.l	(sp)+,d1
+	movem.l	(sp)+,d1-d3
 	rts
 
 _ftol_zero:
+	; |x| < 1: result 0; INEXACT unless x is exactly +/-0
+	andi.l	#$7FFFFFFF,d0		; magnitude
+	beq.s	_ftol_zero_exact
+	ori.l	#FE_INEXACT,_fe_status
+_ftol_zero_exact:
 	moveq	#0,d0
-	move.l	(sp)+,d2
-	move.l	(sp)+,d1
+	movem.l	(sp)+,d1-d3
+	rts
+
+_ftol_boundary:
+	; exp == 158: |x| in [2^31, 2^32).  In range only for x == -2^31 exactly.
+	tst.l	d2
+	beq.s	_ftol_ovf_pos		; +2^31.. → overflow
+	andi.l	#IEEE754_SNG_MANT_MASK,d0
+	bne.s	_ftol_ovf_neg		; -(2^31+..) → overflow
+	move.l	#$80000000,d0		; exactly -2^31 = INT_MIN (in range, exact)
+	movem.l	(sp)+,d1-d3
 	rts
 
 _ftol_overflow:
-	; Return max/min integer
 	tst.l	d2
-	bne.s	_ftol_neg_overflow
-	move.l	#$7FFFFFFF,d0		; INT_MAX
-	bra.s	_ftol_done
-_ftol_neg_overflow:
-	move.l	#$80000000,d0		; INT_MIN
-	bra.s	_ftol_done
+	bne.s	_ftol_ovf_neg
+_ftol_ovf_pos:
+	move.l	#$7FFFFFFF,d0		; +overflow / +inf / +NaN → INT_MAX
+	ori.l	#FE_INVALID,_fe_status
+	movem.l	(sp)+,d1-d3
+	rts
+_ftol_ovf_neg:
+	move.l	#$80000000,d0		; -overflow / -inf / -NaN → INT_MIN
+	ori.l	#FE_INVALID,_fe_status
+	movem.l	(sp)+,d1-d3
+	rts
 
 	end
