@@ -17,6 +17,14 @@ CFLAGS=-std=c11 -g -fno-common -Wall -Wno-switch
 INCDIR=include
 TESTDIR=tests
 
+# Build-unique version stamp: embed the git short hash (plus "-dirty" when the
+# working tree is dirty) and the build date so `c68k --version` and the
+# __c68k_gitrev__ predefined macro identify the exact build. Evaluated once per
+# make invocation (`:=`), so it is constant across the stage1/2/3 compiles.
+C68K_GITREV := $(shell git describe --always --dirty --abbrev=8 2>/dev/null || echo unknown)
+C68K_BUILD_DATE := $(shell date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown)
+CFLAGS += -DC68K_GITREV='"$(C68K_GITREV)"' -DC68K_BUILD_DATE='"$(C68K_BUILD_DATE)"'
+
 SRCS=$(wildcard src/*.c)
 OBJS=$(SRCS:.c=.o)
 
@@ -29,6 +37,10 @@ c68k: $(OBJS)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
 $(OBJS): src/chibicc.h
+
+# Rebuild main.o (which carries the --version build stamp) when HEAD or the
+# index moves, so a commit / staged change refreshes the embedded git rev.
+src/main.o: $(wildcard .git/HEAD .git/index)
 
 # ---- Tests (compiled by stage-1 c68k, run natively) ----
 

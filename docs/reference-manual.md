@@ -57,6 +57,8 @@ The front end is chibicc's C11 preprocessor + parser, retargeted to **ILP32 big-
 | Macro | Value / when |
 | --- | --- |
 | `__c68k__` | `1` — always (compiler identity) |
+| `__c68k_version__` | release version string, e.g. `"0.1.0"` |
+| `__c68k_gitrev__` | build's git short hash + `-dirty` string, e.g. `"1a2b3c4-dirty"` (`"unknown"` if built without git) |
 | `__osiris__` | `1` under `-target osiris` |
 | `__CPM68K__` | `1` under `-target cpm` |
 | `__m68k__`, `__mc68000__` | `1` |

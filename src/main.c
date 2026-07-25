@@ -2,6 +2,19 @@
 
 #define C68K_VERSION "0.1.0"
 
+// Build-unique stamp. C68K_GITREV (git short hash, plus a "-dirty" suffix when
+// the working tree has uncommitted changes) and C68K_BUILD_DATE are injected by
+// the build system as string literals -- see CMakeLists.txt and the Makefile.
+// They fall back to "unknown" for ad-hoc builds with no injection; the fallbacks
+// are deliberately constant (NOT __DATE__/__TIME__) so the self-host stages
+// (which build without injection) stay byte-identical.
+#ifndef C68K_GITREV
+#define C68K_GITREV "unknown"
+#endif
+#ifndef C68K_BUILD_DATE
+#define C68K_BUILD_DATE "unknown"
+#endif
+
 typedef enum {
   FILE_NONE, FILE_C, FILE_ASM, FILE_OBJ, FILE_AR, FILE_DSO,
 } FileType;
@@ -78,7 +91,7 @@ static void usage(int status) {
 }
 
 static void version(void) {
-  printf("c68k %s\n", C68K_VERSION);
+  printf("c68k %s (%s, built %s)\n", C68K_VERSION, C68K_GITREV, C68K_BUILD_DATE);
   exit(0);
 }
 
@@ -451,8 +464,12 @@ static void parse_args(int argc, char **argv) {
     strarray_push(&include_paths, idirafter.data[i]);
 
   // Compiler-identity and target predefined macros. __c68k__ lets code detect
-  // this compiler; -target adds the OS macro so one source tree can #ifdef.
+  // this compiler; __c68k_version__ / __c68k_gitrev__ expose the release version
+  // and the exact build (git rev) as string literals; -target adds the OS macro
+  // so one source tree can #ifdef.
   define_macro("__c68k__", "1");
+  define_macro("__c68k_version__", "\"" C68K_VERSION "\"");
+  define_macro("__c68k_gitrev__", "\"" C68K_GITREV "\"");
   if (opt_target == TGT_OSIRIS)
     define_macro("__osiris__", "1");
   else if (opt_target == TGT_CPM)

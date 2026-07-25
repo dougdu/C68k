@@ -128,6 +128,8 @@ your program at `-O1` (mirrors the `C68K_INTEGRATED_AS` knob).
 | Macro | When | Use |
 | --- | --- | --- |
 | `__c68k__` | always | detect this compiler |
+| `__c68k_version__` | always | release version string, e.g. `"0.1.0"` |
+| `__c68k_gitrev__` | always | exact build (git short hash + `-dirty`), e.g. `"1a2b3c4-dirty"` |
 | `__osiris__` | `-target osiris` | Osiris-specific code |
 | `__CPM68K__` | `-target cpm` | CP/M-68K-specific code |
 
