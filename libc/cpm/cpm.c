@@ -531,6 +531,12 @@ int sys_getcountry(int code, void *buf) {
   return -1;
 }
 
+/* No collating-sequence table on CP/M-68K -> strcoll stays byte order. */
+int sys_getcolltab(void *buf) {
+  (void)buf;
+  return -1;
+}
+
 /* conio raw console I/O over BDOS direct console functions. */
 int sys_conin(void) {
   int c;

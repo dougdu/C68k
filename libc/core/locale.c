@@ -23,6 +23,7 @@ static struct lconv _c_lconv = {
 static int _native;           /* 1 = the native ("") locale is active */
 static struct lconv _n_lconv; /* built from the country block */
 static char _n_dec[4], _n_thou[4], _n_cur[8]; /* backing strings for _n_lconv */
+static unsigned char _coll_tbl[256]; /* native LC_COLLATE weights (OS 65h/06) */
 
 /* Copy an ASCIIZ field of at most `max` bytes out of the country block. */
 static void _copyz(char *dst, const unsigned char *src, int max) {
@@ -62,6 +63,11 @@ static int _load_native(void) {
     _n_lconv.p_sep_by_space = sp;
     _n_lconv.n_sep_by_space = sp;
   }
+  /* LC_COLLATE: adopt the OS collating sequence (65h/06) when available so
+     strcoll/strxfrm order per the country table; else leave byte order. */
+  _coll_weights = 0;
+  if (sys_getcolltab(_coll_tbl) == 0)
+    _coll_weights = _coll_tbl;
   return 0;
 }
 
@@ -71,6 +77,7 @@ char *setlocale(int category, const char *locale) {
     return _native ? _native_name : _c_name; /* query the current locale */
   if (strcmp(locale, "C") == 0 || strcmp(locale, "POSIX") == 0) {
     _native = 0;
+    _coll_weights = 0; /* C locale: byte-order collation */
     return _c_name;
   }
   if (locale[0] == '\0') { /* the OS-configured native locale */
@@ -79,6 +86,7 @@ char *setlocale(int category, const char *locale) {
       return _native_name;
     }
     _native = 0; /* none available -> the C locale */
+    _coll_weights = 0;
     return _c_name;
   }
   return NULL; /* any named non-C locale is unavailable */

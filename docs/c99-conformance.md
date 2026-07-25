@@ -17,6 +17,12 @@ conversion set (`%[` scanset and `%a` hex‑float included), text/binary `fopen`
 modes with Ctrl‑Z text‑EOF on CP/M, real `getenv`/`system` on Osiris (DOS
 `64h`/`4Bh`), and the `f`/`l` math variants. The tables reflect that work.
 
+**Wide stdio (2026‑07‑24):** the wide‑character stdio set is now complete too —
+wide character I/O + `fwide`, wide **formatted output** (`fwprintf`/`wprintf`/
+`swprintf`), and wide **formatted input** (`fwscanf`/`wscanf`/`swscanf`) with their
+`v*` variants — all in their own dead‑strippable objects and verified by
+`tests/lockstep/{wcio,wprintf,wscanf}.c` on both OSes.
+
 ## Target model
 
 C68K targets the Motorola 68000 family under two operating systems (Osiris and
@@ -50,8 +56,14 @@ Headers live in two roots: `include/` (freestanding: available with
 
 ## Legend
 
+Each table below carries **two Status columns** — one per target OS (**Osiris**
+and **CP/M‑68K**). Identical marks (the common case) mean the item behaves the
+same on both; where they differ, the Notes explain why. The only C99 surface
+that actually diverges is `getenv`/`system`, which are platform‑limited on
+CP/M‑68K (no environment block, no command processor).
+
 - ✅ Present and substantially conforming.
-- ⚠️ Present but deviates from the standard (see Notes).
+- ⚠️ Present but deviates from the standard, or is platform‑limited (see Notes).
 - ❌ Not implemented.
 
 ---
@@ -62,32 +74,32 @@ C99 defines 24 standard headers. Seven are *freestanding* (available without an
 OS): `<float.h>`, `<iso646.h>`, `<limits.h>`, `<stdarg.h>`, `<stdbool.h>`,
 `<stddef.h>`, `<stdint.h>`.
 
-| Header | Purpose | Status | Location | Deviations / Gaps |
-|--------|---------|:------:|----------|-------------------|
-| `<assert.h>` | `assert` diagnostic macro | ✅ | `libc/include/assert.h`, `libc/core/assert.c` | Honours `NDEBUG`. Conforming. |
-| `<complex.h>` | Complex arithmetic (`_Complex`) | ❌ | — | Not provided; compiler has no `_Complex` support. |
-| `<ctype.h>` | Character classification | ✅ | `libc/include/ctype.h`, `libc/core/is*.c` | Complete (C/ASCII locale). |
-| `<errno.h>` | Error numbers | ✅ | `libc/include/errno.h`, `libc/core/errno.c` | `EDOM`/`ERANGE`/`EILSEQ` + a POSIX subset. Base double math now *sets* `EDOM`/`ERANGE`; seam wrappers map OS error codes via `__oserr_to_errno` (`oserr.c`, DOS 59h). |
-| `<fenv.h>` | Floating‑point environment | ⚠️ | `libc/include/fenv.h`, `libc/core/fenv.c` | Conforming‑but‑inert stubs: exception ops are no‑ops, only `FE_TONEAREST` selectable (soft‑float is fixed round‑to‑nearest). |
-| `<float.h>` | Floating‑type characteristics | ✅ | `include/float.h`, `libc/include/float.h` | Complete. |
-| `<inttypes.h>` | Integer format conversions | ✅ | `libc/include/inttypes.h`, `libc/core/imax*.c`, `strto[iu]max.c` | Full `PRI*`/`SCN*` set; `imaxabs`/`imaxdiv`/`strtoimax`/`strtoumax` present. |
-| `<iso646.h>` | Alternative operator spellings | ✅ | `libc/include/iso646.h` | Complete. |
-| `<limits.h>` | Integer‑type limits | ✅ | `include/limits.h`, `libc/include/limits.h` | Complete for ILP32. |
-| `<locale.h>` | Localization | ⚠️ | `libc/include/locale.h`, `libc/core/locale.c` | `setlocale`/`localeconv` present; the native (`""`) locale adopts the OS country on Osiris (DOS `38h` — real `decimal_point`/`thousands_sep`/currency), `"C"` elsewhere. Collation is byte order (`strcoll`==`strcmp`). |
-| `<math.h>` | Mathematics | ⚠️ | `libc/include/math.h`, `libc/core/*.c` → **libm** | Base transcendentals inline (double); the full C99 function set + classification/constants added in C (Tier 2 2a/2b/2c, with `EDOM`/`ERANGE`), the `f`/`l` type variants, and native `asin`/`acos`. Underlying libm passed its initial defect sweep (29/30 resolved); `sqrt`/`atan`/`asin`/`acos` ~1–2 ULP double. The double base functions now set `EDOM`/`ERANGE` on domain/range errors (float variants bind directly to libm and do not). Deviation: soft‑float fixed rounding (double transcendentals not correctly‑rounded), no `_Complex`. |
-| `<setjmp.h>` | Non‑local jumps | ✅ | `lib/runtime/rt68k.a68` + hdr | `setjmp`/`longjmp` asm shim; codegen spills temporaries across the `returns_twice` call so longjmp re‑entry is safe. |
-| `<signal.h>` | Signal handling | ⚠️ | `libc/include/signal.h`, `libc/core/signal.c` | Synchronous only — no async delivery on these OSes; `raise` calls handlers inline. |
-| `<stdarg.h>` | Variable arguments | ✅ | `include/stdarg.h` | m68k `va_list`. Conforming. |
-| `<stdbool.h>` | Boolean type/values | ✅ | `include/stdbool.h`, `libc/include/stdbool.h` | Complete. |
-| `<stddef.h>` | Common definitions | ✅ | `include/stddef.h` | `size_t`, `ptrdiff_t`, `wchar_t`, `NULL`, `offsetof`. |
-| `<stdint.h>` | Fixed‑width integers | ✅ | `include/stdint.h` | Complete (exact/least/fast/ptr/max + limits + `*_C` macros). |
-| `<stdio.h>` | Input/output | ⚠️ | `libc/include/stdio.h`, `libc/core/*.c` | Streaming scanf family, the `v*` variants, `ungetc`/`rewind`/`clearerr`/`perror`/`remove`/`rename`, `freopen`/`setbuf`/`setvbuf`/`fgetpos`/`fsetpos`/`tmpnam`/`tmpfile`, buffer‑aware `ftell`, byte‑level `fseek`, and `+` update modes (orientation‑tracked) on both OSes. Wide char I/O + `fwide` and the full wide **formatted** I/O — output (`fwprintf`/`wprintf`/`swprintf`) and input (`fwscanf`/`wscanf`/`swscanf`) with their `v*` variants — present. See §stdio. |
-| `<stdlib.h>` | General utilities | ⚠️ | `libc/include/stdlib.h`, `libc/core/*.c` | Added `atoll`/`llabs`/`lldiv`/`strtof`/`_Exit`/`getenv`/`system`; C11 `aligned_alloc`/`at_quick_exit`/`quick_exit` (+ POSIX `posix_memalign`); the multibyte functions (`mblen`/`mbtowc`/`wctomb`/`mbstowcs`/`wcstombs`) over UTF‑8↔UTF‑32. Remaining deviations are the platform‑limited `getenv`/`system`. |
-| `<string.h>` | String handling | ✅ | `libc/include/string.h`, `libc/core/str*.c`, **rt** | Complete: added `strspn`/`strcspn`/`strpbrk` and `strcoll`/`strxfrm` (C-locale byte order). |
-| `<tgmath.h>` | Type‑generic math | ❌ | — | Requires `<complex.h>` + `<math.h>` generic macros. |
-| `<time.h>` | Date and time | ⚠️ | `libc/include/time.h`, `libc/core/time.c` | C11 `timespec_get` (`TIME_UTC`, 1‑second resolution) present; `clock` stubbed; a POSIX `TZ` env var (Osiris) drives `localtime`/`mktime`/`gmtime` + `tzset` (std/DST offset & rules); with no `TZ`, `localtime`==`gmtime`; `time_t` 32‑bit. |
-| `<wchar.h>` | Extended/wide characters | ✅ | `libc/include/wchar.h`, `libc/core/wchar.c` | Wide strings, restartable UTF‑8↔UTF‑32 conversion, wide `strto*`, `wcsftime`, wide **character** stream I/O + `fwide`, and the full wide **formatted** I/O — `fwprintf`/`wprintf`/`swprintf` and `fwscanf`/`wscanf`/`swscanf` (+ `v*`) — present (`wchar_t` is 32‑bit UTF‑32). |
-| `<wctype.h>` | Wide‑character classification | ✅ | `libc/include/wctype.h`, `libc/core/wctype.c` | Complete for the "C" locale (ASCII via `<ctype.h>`; ≥ 0x80 unclassified). |
+| Header | Purpose | Osiris | CP/M‑68K | Location | Deviations / Gaps |
+|--------|---------|:------:|:------:|----------|-------------------|
+| `<assert.h>` | `assert` diagnostic macro | ✅ | ✅ | `libc/include/assert.h`, `libc/core/assert.c` | Honours `NDEBUG`. Conforming. |
+| `<complex.h>` | Complex arithmetic (`_Complex`) | ❌ | ❌ | — | Not provided; compiler has no `_Complex` support. |
+| `<ctype.h>` | Character classification | ✅ | ✅ | `libc/include/ctype.h`, `libc/core/is*.c` | Complete (C/ASCII locale). |
+| `<errno.h>` | Error numbers | ✅ | ✅ | `libc/include/errno.h`, `libc/core/errno.c` | `EDOM`/`ERANGE`/`EILSEQ` + a POSIX subset. Base double math now *sets* `EDOM`/`ERANGE`; seam wrappers map OS error codes via `__oserr_to_errno` (`oserr.c`, DOS 59h). |
+| `<fenv.h>` | Floating‑point environment | ⚠️ | ⚠️ | `libc/include/fenv.h`, `libc/core/fenv.c` | Conforming‑but‑inert stubs: exception ops are no‑ops, only `FE_TONEAREST` selectable (soft‑float is fixed round‑to‑nearest). |
+| `<float.h>` | Floating‑type characteristics | ✅ | ✅ | `include/float.h`, `libc/include/float.h` | Complete. |
+| `<inttypes.h>` | Integer format conversions | ✅ | ✅ | `libc/include/inttypes.h`, `libc/core/imax*.c`, `strto[iu]max.c` | Full `PRI*`/`SCN*` set; `imaxabs`/`imaxdiv`/`strtoimax`/`strtoumax` present. |
+| `<iso646.h>` | Alternative operator spellings | ✅ | ✅ | `libc/include/iso646.h` | Complete. |
+| `<limits.h>` | Integer‑type limits | ✅ | ✅ | `include/limits.h`, `libc/include/limits.h` | Complete for ILP32. |
+| `<locale.h>` | Localization | ✅ | ⚠️ | `libc/include/locale.h`, `libc/core/locale.c` | `setlocale`/`localeconv` (`"C"`/`"POSIX"`/native `""`). On Osiris the native locale adopts the OS country (DOS `38h` — real `decimal_point`/`thousands_sep`/currency) **and** its collating sequence (`65h`/`06`), so `strcoll`/`strxfrm` order per the country table. CP/M‑68K has no country service, so `""` falls back to `"C"` (byte‑order collation). |
+| `<math.h>` | Mathematics | ⚠️ | ⚠️ | `libc/include/math.h`, `libc/core/*.c` → **libm** | Base transcendentals inline (double); the full C99 function set + classification/constants added in C (Tier 2 2a/2b/2c, with `EDOM`/`ERANGE`), the `f`/`l` type variants, and native `asin`/`acos`. Underlying libm passed its initial defect sweep (29/30 resolved); `sqrt`/`atan`/`asin`/`acos` ~1–2 ULP double. The double base functions now set `EDOM`/`ERANGE` on domain/range errors (float variants bind directly to libm and do not). Deviation: soft‑float fixed rounding (double transcendentals not correctly‑rounded), no `_Complex`. |
+| `<setjmp.h>` | Non‑local jumps | ✅ | ✅ | `lib/runtime/rt68k.a68` + hdr | `setjmp`/`longjmp` asm shim; codegen spills temporaries across the `returns_twice` call so longjmp re‑entry is safe. |
+| `<signal.h>` | Signal handling | ⚠️ | ⚠️ | `libc/include/signal.h`, `libc/core/signal.c` | Synchronous only — no async delivery on these OSes; `raise` calls handlers inline. |
+| `<stdarg.h>` | Variable arguments | ✅ | ✅ | `include/stdarg.h` | m68k `va_list`. Conforming. |
+| `<stdbool.h>` | Boolean type/values | ✅ | ✅ | `include/stdbool.h`, `libc/include/stdbool.h` | Complete. |
+| `<stddef.h>` | Common definitions | ✅ | ✅ | `include/stddef.h` | `size_t`, `ptrdiff_t`, `wchar_t`, `NULL`, `offsetof`. |
+| `<stdint.h>` | Fixed‑width integers | ✅ | ✅ | `include/stdint.h` | Complete (exact/least/fast/ptr/max + limits + `*_C` macros). |
+| `<stdio.h>` | Input/output | ⚠️ | ⚠️ | `libc/include/stdio.h`, `libc/core/*.c` | Streaming scanf family, the `v*` variants, `ungetc`/`rewind`/`clearerr`/`perror`/`remove`/`rename`, `freopen`/`setbuf`/`setvbuf`/`fgetpos`/`fsetpos`/`tmpnam`/`tmpfile`, buffer‑aware `ftell`, byte‑level `fseek`, and `+` update modes (orientation‑tracked) on both OSes. Wide char I/O + `fwide` and the full wide **formatted** I/O — output (`fwprintf`/`wprintf`/`swprintf`) and input (`fwscanf`/`wscanf`/`swscanf`) with their `v*` variants — present. See §stdio. |
+| `<stdlib.h>` | General utilities | ⚠️ | ⚠️ | `libc/include/stdlib.h`, `libc/core/*.c` | Added `atoll`/`llabs`/`lldiv`/`strtof`/`_Exit`/`getenv`/`system`; C11 `aligned_alloc`/`at_quick_exit`/`quick_exit` (+ POSIX `posix_memalign`); the multibyte functions (`mblen`/`mbtowc`/`wctomb`/`mbstowcs`/`wcstombs`) over UTF‑8↔UTF‑32. Remaining deviations are the platform‑limited `getenv`/`system`. |
+| `<string.h>` | String handling | ✅ | ✅ | `libc/include/string.h`, `libc/core/str*.c`, **rt** | Complete: added `strspn`/`strcspn`/`strpbrk` and `strcoll`/`strxfrm` (C-locale byte order). |
+| `<tgmath.h>` | Type‑generic math | ❌ | ❌ | — | Requires `<complex.h>` + `<math.h>` generic macros. |
+| `<time.h>` | Date and time | ⚠️ | ⚠️ | `libc/include/time.h`, `libc/core/time.c` | C11 `timespec_get` (`TIME_UTC`, 1‑second resolution) present; `clock` stubbed; a POSIX `TZ` env var (Osiris) drives `localtime`/`mktime`/`gmtime` + `tzset` (std/DST offset & rules); with no `TZ`, `localtime`==`gmtime`; `time_t` 32‑bit. |
+| `<wchar.h>` | Extended/wide characters | ✅ | ✅ | `libc/include/wchar.h`, `libc/core/wchar.c` | Wide strings, restartable UTF‑8↔UTF‑32 conversion, wide `strto*`, `wcsftime`, wide **character** stream I/O + `fwide`, and the full wide **formatted** I/O — `fwprintf`/`wprintf`/`swprintf` and `fwscanf`/`wscanf`/`swscanf` (+ `v*`) — present (`wchar_t` is 32‑bit UTF‑32). |
+| `<wctype.h>` | Wide‑character classification | ✅ | ✅ | `libc/include/wctype.h`, `libc/core/wctype.c` | Complete for the "C" locale (ASCII via `<ctype.h>`; ≥ 0x80 unclassified). |
 
 **Beyond C99:** C68K also ships the C11 freestanding headers `include/stdalign.h`,
 `include/stdatomic.h`, `include/stdnoreturn.h`, plus the C11 *hosted* headers
@@ -104,9 +116,9 @@ Grouped by header. The **Library / File** column names the providing artifact.
 
 ### `<assert.h>` — diagnostics
 
-| Function/Macro | Purpose | Status | Library / File | Notes |
-|---|---|:--:|---|---|
-| `assert` | Runtime assertion, disabled by `NDEBUG` | ✅ | libc / `assert.c` (`__assert_fail`) | Prints expr/file/line, then `abort()`. |
+| Function/Macro | Purpose | Osiris | CP/M‑68K | Library / File | Notes |
+|---|---|:--:|:--:|---|---|
+| `assert` | Runtime assertion, disabled by `NDEBUG` | ✅ | ✅ | libc / `assert.c` (`__assert_fail`) | Prints expr/file/line, then `abort()`. |
 
 ### `<complex.h>` — complex arithmetic
 
@@ -117,31 +129,31 @@ variants) are ❌: `cabs`, `cacos`, `cacosh`, `carg`, `casin`, `casinh`, `catan`
 
 ### `<ctype.h>` — character handling
 
-| Function | Purpose | Status | Library / File | Notes |
-|---|---|:--:|---|---|
-| `isalnum` | alphanumeric | ✅ | libc / `isalnum.c` | ASCII/C locale. |
-| `isalpha` | alphabetic | ✅ | libc / `isalpha.c` | |
-| `isblank` | space or tab | ✅ | libc / `isblank.c` | |
-| `iscntrl` | control char | ✅ | libc / `iscntrl.c` | |
-| `isdigit` | decimal digit | ✅ | libc / `isdigit.c` | |
-| `isgraph` | printable, non‑space | ✅ | libc / `isgraph.c` | |
-| `islower` | lowercase | ✅ | libc / `islower.c` | |
-| `isprint` | printable incl. space | ✅ | libc / `isprint.c` | |
-| `ispunct` | punctuation | ✅ | libc / `ispunct.c` | |
-| `isspace` | whitespace | ✅ | libc / `isspace.c` | |
-| `isupper` | uppercase | ✅ | libc / `isupper.c` | |
-| `isxdigit` | hex digit | ✅ | libc / `isxdigit.c` | |
-| `tolower` | to lowercase | ✅ | libc / `tolower.c` | |
-| `toupper` | to uppercase | ✅ | libc / `toupper.c` | |
+| Function | Purpose | Osiris | CP/M‑68K | Library / File | Notes |
+|---|---|:--:|:--:|---|---|
+| `isalnum` | alphanumeric | ✅ | ✅ | libc / `isalnum.c` | ASCII/C locale. |
+| `isalpha` | alphabetic | ✅ | ✅ | libc / `isalpha.c` | |
+| `isblank` | space or tab | ✅ | ✅ | libc / `isblank.c` | |
+| `iscntrl` | control char | ✅ | ✅ | libc / `iscntrl.c` | |
+| `isdigit` | decimal digit | ✅ | ✅ | libc / `isdigit.c` | |
+| `isgraph` | printable, non‑space | ✅ | ✅ | libc / `isgraph.c` | |
+| `islower` | lowercase | ✅ | ✅ | libc / `islower.c` | |
+| `isprint` | printable incl. space | ✅ | ✅ | libc / `isprint.c` | |
+| `ispunct` | punctuation | ✅ | ✅ | libc / `ispunct.c` | |
+| `isspace` | whitespace | ✅ | ✅ | libc / `isspace.c` | |
+| `isupper` | uppercase | ✅ | ✅ | libc / `isupper.c` | |
+| `isxdigit` | hex digit | ✅ | ✅ | libc / `isxdigit.c` | |
+| `tolower` | to lowercase | ✅ | ✅ | libc / `tolower.c` | |
+| `toupper` | to uppercase | ✅ | ✅ | libc / `toupper.c` | |
 
 ### `<errno.h>` — errors
 
-| Item | Purpose | Status | Library / File | Notes |
-|---|---|:--:|---|---|
-| `errno` | Last‑error lvalue | ⚠️ | libc / `errno.c` | Plain `extern int` (single‑threaded). Conforming for a hosted single‑thread. |
-| `EDOM` | Domain error | ✅ | libc / `errno.h` | Value 33. Not yet *set* by math routines (Tier 2). |
-| `ERANGE` | Range error | ✅ | libc / `errno.h` | Value 34. Not yet *set* by math/`strto*` (Tier 2). |
-| `EILSEQ` | Illegal byte sequence | ✅ | libc / `errno.h` | Value 84. |
+| Item | Purpose | Osiris | CP/M‑68K | Library / File | Notes |
+|---|---|:--:|:--:|---|---|
+| `errno` | Last‑error lvalue | ⚠️ | ⚠️ | libc / `errno.c` | Plain `extern int` (single‑threaded). Conforming for a hosted single‑thread. |
+| `EDOM` | Domain error | ✅ | ✅ | libc / `errno.h` | Value 33. Now *set* by the double base math on domain errors. |
+| `ERANGE` | Range error | ✅ | ✅ | libc / `errno.h` | Value 34. Now *set* by the double base math on range errors. |
+| `EILSEQ` | Illegal byte sequence | ✅ | ✅ | libc / `errno.h` | Value 84. |
 
 Also provided (POSIX numbers): `ENOENT`, `EIO`, `EBADF`, `ENOMEM`, `EACCES`,
 `EEXIST`, `EINVAL`, `EMFILE`.
@@ -166,15 +178,15 @@ holds a high surrogate until its low half arrives.
 
 ### `<inttypes.h>` — integer format conversion
 
-| Function | Purpose | Status | Library / File | Notes |
-|---|---|:--:|---|---|
-| `imaxabs` | `intmax_t` abs | ✅ | libc / `imaxabs.c` | |
-| `imaxdiv` | `intmax_t` div/rem | ✅ | libc / `imaxdiv.c` | `imaxdiv_t` in `<inttypes.h>`. |
-| `strtoimax` | string → `intmax_t` | ✅ | libc / `strtoimax.c` | wraps `strtoll`. |
-| `strtoumax` | string → `uintmax_t` | ✅ | libc / `strtoumax.c` | wraps `strtoull`. |
-| `wcstoimax` | wide string → `intmax_t` | ✅ | libc / `wchar.c` | wraps `wcstoll`. |
-| `wcstoumax` | wide string → `uintmax_t` | ✅ | libc / `wchar.c` | wraps `wcstoull`. |
-| `PRI*` / `SCN*` macros | `printf`/`scanf` format macros | ✅ | hdr | Full set: `d/i/o/u/x/X` (PRI) and `d/i/o/u/x` (SCN) for 8/16/32/64/`LEAST`/`FAST`/`MAX`/`PTR`. |
+| Function | Purpose | Osiris | CP/M‑68K | Library / File | Notes |
+|---|---|:--:|:--:|---|---|
+| `imaxabs` | `intmax_t` abs | ✅ | ✅ | libc / `imaxabs.c` | |
+| `imaxdiv` | `intmax_t` div/rem | ✅ | ✅ | libc / `imaxdiv.c` | `imaxdiv_t` in `<inttypes.h>`. |
+| `strtoimax` | string → `intmax_t` | ✅ | ✅ | libc / `strtoimax.c` | wraps `strtoll`. |
+| `strtoumax` | string → `uintmax_t` | ✅ | ✅ | libc / `strtoumax.c` | wraps `strtoull`. |
+| `wcstoimax` | wide string → `intmax_t` | ✅ | ✅ | libc / `wchar.c` | wraps `wcstoll`. |
+| `wcstoumax` | wide string → `uintmax_t` | ✅ | ✅ | libc / `wchar.c` | wraps `wcstoull`. |
+| `PRI*` / `SCN*` macros | `printf`/`scanf` format macros | ✅ | ✅ | hdr | Full set: `d/i/o/u/x/X` (PRI) and `d/i/o/u/x` (SCN) for 8/16/32/64/`LEAST`/`FAST`/`MAX`/`PTR`. |
 
 ### `<locale.h>` — localization
 
@@ -187,8 +199,12 @@ country's real `decimal_point`, `thousands_sep`, `grouping`, `currency_symbol`,
 `"$"`). On **CP/M-68K** (no country service) `""` falls back to the `"C"` locale.
 The `"C"`/`"POSIX"` locale is the fixed `struct lconv` (`decimal_point="."`, other
 string members empty, char members `CHAR_MAX`); `struct lconv` is fully defined
-(all 24 members). Collation (`strcoll`/`strxfrm`) uses the `"C"` byte order for
-every locale (no locale-specific collating sequence is wired yet).
+(all 24 members). Collation (`strcoll`/`strxfrm`) follows **`LC_COLLATE`**: the
+native (`""`) locale on Osiris loads the OS collating sequence (`65h` `AL=6` — a
+256‑entry byte‑weight table; the US/CP437 default folds `a`–`z` onto `A`–`Z`, i.e.
+case‑insensitive), so `strcoll` weights bytes through it and `strxfrm` emits
+weight keys.  `"C"`/`"POSIX"` — and CP/M‑68K, which has no country service — stay
+byte order (`strcoll`==`strcmp`).
 
 ### `<math.h>` — mathematics
 
@@ -235,41 +251,41 @@ so `float` math runs 32‑bit soft‑float instead of promoting to double; only
 `tanf`/`log10f`/`atan2f` are composed in the header.  The `l`‑suffixed variants
 are thin wrappers over the double versions (`long double` == `double`).
 
-| Function | Purpose | Status | Library / File | Notes |
-|---|---|:--:|---|---|
-| `sin` | sine | ✅ | libm / `math/sincos.a68` | via `sind`; `sinf` real single, `sinl`=double. |
-| `cos` | cosine | ✅ | libm / `math/sincos.a68` | via `cosd`; `cosf`/`cosl`. |
-| `tan` | tangent | ✅ | libc header + libm | `sin/cos`; `tanf`/`tanl`. |
-| `asin` | arcsine | ✅ | libm / `math/asincos*.a68` | Native kernel (`asind`/`asinf`), cancellation‑safe near ±1; ~1 ULP double / ~12 ULP single. `asinl`=double. |
-| `acos` | arccosine | ✅ | libm / `math/asincos*.a68` | Native kernel (`acosd`/`acosf`), quadrant‑based; ~2 ULP double / ~12 ULP single. `acosl`=double. |
-| `atan` | arctangent | ✅ | libm / `math/atan.a68` | `atanf`/`atanl`. |
-| `atan2` | arctangent of y/x | ✅ | libc header + libm | Quadrant logic in header; `atan2f`/`atan2l`. |
-| `exp` | e^x | ✅ | libm / `math/exp.a68` | `expf`/`expl`. |
-| `log` | natural log | ✅ | libm / `math/log.a68` | `logf`/`logl`. |
-| `log10` | base‑10 log | ✅ | libc header + libm | `log(x)/M_LN10`; `log10f`/`log10l`. |
-| `pow` | x^y | ✅ | libm / `core/fppwr.a68`,`math/…` | `powf`/`powl`. |
-| `sqrt` | square root | ✅ | libm / `math/sqrt.a68` | `sqrtf`/`sqrtl`. |
-| `ceil` | ceiling | ✅ | libm / `math/floor.a68` | `ceilf`/`ceill`. |
-| `floor` | floor | ✅ | libm / `math/floor.a68` | `floorf`/`floorl`. |
-| `fabs` | absolute value | ✅ | libm / `core/fabs.a68` | `fabsf`/`fabsl`. |
-| `fmod` | floating remainder | ✅ | libm / `core/fmod.a68` | `fmodf`/`fmodl`. |
-| `modf` | split int/frac | ✅ | libm / `math/dpmath.a68` | |
-| `sinh` `cosh` `tanh` | hyperbolic | ✅ | libc / `sinh.c`,`cosh.c`,`tanh.c` | via `exp`/`expm1` (conditioned). |
-| `asinh` `acosh` `atanh` | inverse hyperbolic | ✅ | libc / `asinh.c`,`acosh.c`,`atanh.c` | via `log`/`sqrt`; `EDOM`/`ERANGE` set. |
-| `exp2` `expm1` | 2^x, e^x−1 | ✅ | libc / `exp2.c`,`expm1.c` | `expm1` conditioned (Kahan). |
-| `log2` `log1p` | log2 / log(1+x) | ✅ | libc / `log2.c`,`log1p.c` | `log1p` conditioned; `EDOM`/`ERANGE`. |
-| `logb` `ilogb` | exponent extract | ✅ | libc / `logb.c`,`ilogb.c` | |
-| `frexp` `ldexp` `scalbn` `scalbln` | exponent manipulation | ✅ | libc / `frexp.c`,`ldexp.c`,`scalbn.c`,`scalbln.c` | |
-| `cbrt` `hypot` | cube root, hypotenuse | ✅ | libc / `cbrt.c`,`hypot.c` | `cbrt` Newton‑refined; `hypot` scaled. |
-| `erf` `erfc` | error function | ✅ | libc / `erf.c`,`erfc.c` | compact rational approx (~1e‑7). |
-| `lgamma` `tgamma` | gamma functions | ✅ | libc / `lgamma.c`,`tgamma.c` | Lanczos; `EDOM`/`ERANGE` at poles. |
-| `trunc` `round` `nearbyint` `rint` | rounding | ✅ | libc / `trunc.c`,`round.c`,`nearbyint.c`,`rint.c` | `rint`/`nearbyint` ties‑to‑even. |
-| `lround` `llround` `lrint` `llrint` | round‑to‑integer | ✅ | libc / `lround.c`,`llround.c`,`lrint.c`,`llrint.c` | |
-| `remainder` `remquo` | IEEE remainder | ✅ | libc / `remainder.c`,`remquo.c` | via `rint`; `EDOM` on `y==0`. |
-| `copysign` `nan` `nextafter` `nexttoward` | sign/representation | ✅ | libc / `copysign.c`,`nan.c`,`nextafter.c`,`nexttoward.c` | |
-| `fdim` `fmax` `fmin` `fma` | difference/max/min/FMA | ✅ | libc / `fdim.c`,`fmax.c`,`fmin.c`,`fma.c` | `fma` double‑rounded. |
-| `fpclassify` `isnan` `isinf` `isfinite` `isnormal` `signbit` | classification | ✅ | libc / `__*.c` + hdr | standard macros over `__` helpers. |
-| `HUGE_VAL` `INFINITY` `NAN` | constants | ✅ | libc / `__huge_val.c`,`__nan_val.c` + hdr | function‑backed (not constant expressions). |
+| Function | Purpose | Osiris | CP/M‑68K | Library / File | Notes |
+|---|---|:--:|:--:|---|---|
+| `sin` | sine | ✅ | ✅ | libm / `math/sincos.a68` | via `sind`; `sinf` real single, `sinl`=double. |
+| `cos` | cosine | ✅ | ✅ | libm / `math/sincos.a68` | via `cosd`; `cosf`/`cosl`. |
+| `tan` | tangent | ✅ | ✅ | libc header + libm | `sin/cos`; `tanf`/`tanl`. |
+| `asin` | arcsine | ✅ | ✅ | libm / `math/asincos*.a68` | Native kernel (`asind`/`asinf`), cancellation‑safe near ±1; ~1 ULP double / ~12 ULP single. `asinl`=double. |
+| `acos` | arccosine | ✅ | ✅ | libm / `math/asincos*.a68` | Native kernel (`acosd`/`acosf`), quadrant‑based; ~2 ULP double / ~12 ULP single. `acosl`=double. |
+| `atan` | arctangent | ✅ | ✅ | libm / `math/atan.a68` | `atanf`/`atanl`. |
+| `atan2` | arctangent of y/x | ✅ | ✅ | libc header + libm | Quadrant logic in header; `atan2f`/`atan2l`. |
+| `exp` | e^x | ✅ | ✅ | libm / `math/exp.a68` | `expf`/`expl`. |
+| `log` | natural log | ✅ | ✅ | libm / `math/log.a68` | `logf`/`logl`. |
+| `log10` | base‑10 log | ✅ | ✅ | libc header + libm | `log(x)/M_LN10`; `log10f`/`log10l`. |
+| `pow` | x^y | ✅ | ✅ | libm / `core/fppwr.a68`,`math/…` | `powf`/`powl`. |
+| `sqrt` | square root | ✅ | ✅ | libm / `math/sqrt.a68` | `sqrtf`/`sqrtl`. |
+| `ceil` | ceiling | ✅ | ✅ | libm / `math/floor.a68` | `ceilf`/`ceill`. |
+| `floor` | floor | ✅ | ✅ | libm / `math/floor.a68` | `floorf`/`floorl`. |
+| `fabs` | absolute value | ✅ | ✅ | libm / `core/fabs.a68` | `fabsf`/`fabsl`. |
+| `fmod` | floating remainder | ✅ | ✅ | libm / `core/fmod.a68` | `fmodf`/`fmodl`. |
+| `modf` | split int/frac | ✅ | ✅ | libm / `math/dpmath.a68` | |
+| `sinh` `cosh` `tanh` | hyperbolic | ✅ | ✅ | libc / `sinh.c`,`cosh.c`,`tanh.c` | via `exp`/`expm1` (conditioned). |
+| `asinh` `acosh` `atanh` | inverse hyperbolic | ✅ | ✅ | libc / `asinh.c`,`acosh.c`,`atanh.c` | via `log`/`sqrt`; `EDOM`/`ERANGE` set. |
+| `exp2` `expm1` | 2^x, e^x−1 | ✅ | ✅ | libc / `exp2.c`,`expm1.c` | `expm1` conditioned (Kahan). |
+| `log2` `log1p` | log2 / log(1+x) | ✅ | ✅ | libc / `log2.c`,`log1p.c` | `log1p` conditioned; `EDOM`/`ERANGE`. |
+| `logb` `ilogb` | exponent extract | ✅ | ✅ | libc / `logb.c`,`ilogb.c` | |
+| `frexp` `ldexp` `scalbn` `scalbln` | exponent manipulation | ✅ | ✅ | libc / `frexp.c`,`ldexp.c`,`scalbn.c`,`scalbln.c` | |
+| `cbrt` `hypot` | cube root, hypotenuse | ✅ | ✅ | libc / `cbrt.c`,`hypot.c` | `cbrt` Newton‑refined; `hypot` scaled. |
+| `erf` `erfc` | error function | ✅ | ✅ | libc / `erf.c`,`erfc.c` | compact rational approx (~1e‑7). |
+| `lgamma` `tgamma` | gamma functions | ✅ | ✅ | libc / `lgamma.c`,`tgamma.c` | Lanczos; `EDOM`/`ERANGE` at poles. |
+| `trunc` `round` `nearbyint` `rint` | rounding | ✅ | ✅ | libc / `trunc.c`,`round.c`,`nearbyint.c`,`rint.c` | `rint`/`nearbyint` ties‑to‑even. |
+| `lround` `llround` `lrint` `llrint` | round‑to‑integer | ✅ | ✅ | libc / `lround.c`,`llround.c`,`lrint.c`,`llrint.c` | |
+| `remainder` `remquo` | IEEE remainder | ✅ | ✅ | libc / `remainder.c`,`remquo.c` | via `rint`; `EDOM` on `y==0`. |
+| `copysign` `nan` `nextafter` `nexttoward` | sign/representation | ✅ | ✅ | libc / `copysign.c`,`nan.c`,`nextafter.c`,`nexttoward.c` | |
+| `fdim` `fmax` `fmin` `fma` | difference/max/min/FMA | ✅ | ✅ | libc / `fdim.c`,`fmax.c`,`fmin.c`,`fma.c` | `fma` double‑rounded. |
+| `fpclassify` `isnan` `isinf` `isfinite` `isnormal` `signbit` | classification | ✅ | ✅ | libc / `__*.c` + hdr | standard macros over `__` helpers. |
+| `HUGE_VAL` `INFINITY` `NAN` | constants | ✅ | ✅ | libc / `__huge_val.c`,`__nan_val.c` + hdr | function‑backed (not constant expressions). |
 
 ### `<setjmp.h>` — non‑local jumps
 
@@ -284,10 +300,10 @@ common `x = setjmp(env)` idiom.  Verified on Osiris and CP/M
 
 ### `<signal.h>` — signal handling
 
-| Function | Purpose | Status | Library / File | Notes |
-|---|---|:--:|---|---|
-| `signal` | Install handler | ⚠️ | libc / `signal.c` | Records disposition in a 32‑entry table. |
-| `raise` | Raise a signal | ⚠️ | libc / `signal.c` | Dispatches synchronously (inline); `SIGABRT` default → `abort()`. |
+| Function | Purpose | Osiris | CP/M‑68K | Library / File | Notes |
+|---|---|:--:|:--:|---|---|
+| `signal` | Install handler | ⚠️ | ⚠️ | libc / `signal.c` | Records disposition in a 32‑entry table. |
+| `raise` | Raise a signal | ⚠️ | ⚠️ | libc / `signal.c` | Dispatches synchronously (inline); `SIGABRT` default → `abort()`. |
 
 Deviation: these OSes deliver no asynchronous signals, so only program‑generated
 (`raise`) signals fire. The six C99 signals `SIGABRT`, `SIGFPE`, `SIGILL`,
@@ -295,12 +311,12 @@ Deviation: these OSes deliver no asynchronous signals, so only program‑generat
 
 ### `<stdarg.h>` — variable arguments
 
-| Macro | Purpose | Status | Library / File | Notes |
-|---|---|:--:|---|---|
-| `va_start` | Begin varargs | ✅ | hdr (`include/stdarg.h`) | m68k stack walk. |
-| `va_arg` | Fetch next arg | ✅ | hdr | 4/8‑byte rounding. |
-| `va_end` | Finish | ✅ | hdr | |
-| `va_copy` | Copy `va_list` | ✅ | hdr | |
+| Macro | Purpose | Osiris | CP/M‑68K | Library / File | Notes |
+|---|---|:--:|:--:|---|---|
+| `va_start` | Begin varargs | ✅ | ✅ | hdr (`include/stdarg.h`) | m68k stack walk. |
+| `va_arg` | Fetch next arg | ✅ | ✅ | hdr | 4/8‑byte rounding. |
+| `va_end` | Finish | ✅ | ✅ | hdr | |
+| `va_copy` | Copy `va_list` | ✅ | ✅ | hdr | |
 
 ### `<stdbool.h>` / `<stddef.h>` / `<stdint.h>` — types & macros
 
@@ -310,95 +326,96 @@ integer set with limits and `INT*_C`/`UINT*_C` constructors. ✅
 
 ### `<stdio.h>` — input/output
 
-| Function | Purpose | Status | Library / File | Notes |
-|---|---|:--:|---|---|
-| `fopen` | Open stream | ✅ | libc / `fopen.c` | Modes `r`/`w`/`a` and `r+`/`w+`/`a+` update (+`b`). Update streams track read/write *orientation*: a read↔write switch flushes/repositions the buffer per C99 §7.19.5.3. Text streams honor a Ctrl‑Z (`0x1A`) EOF; binary (`b`) reads raw — this is what makes CP/M's record‑padded files read back at their logical length. On CP/M, in‑place random *modify* (write after read without an intervening `fseek`) is best‑effort on the 128‑byte record model; the tested update pattern is write→rewind→read. |
-| `fclose` | Close stream | ✅ | libc / `fclose.c` | |
-| `fflush` | Flush buffer | ✅ | libc / `fflush.c` | |
-| `freopen` | Reassign stream | ✅ | libc / `freopen.c` | Flush+close then reopen, reusing the FILE (so `freopen("f","w",stdout)` redirects); NULL path (mode change) unsupported. |
-| `setbuf` / `setvbuf` | Buffering control | ✅ | libc / `setvbuf.c` | Honors the mode (`_IONBF` flushes per write); the built‑in `BUFSIZ` buffer is always used, so a caller‑supplied buffer is accepted but ignored. |
-| `remove` | Delete file | ✅ | libc / `remove.c` | wraps `sys_unlink`. |
-| `rename` | Rename file | ✅ | libc / `rename.c` + seam | `sys_rename`: Osiris DOS 56h (A0=old, A1=new); CP/M BDOS 23 (combined FCB). |
-| `tmpnam` | Temp name | ✅ | libc / `tmpnam.c` | 8.3‑friendly `TMPnnnnn`, probed for non‑existence. |
-| `tmpfile` | Temp file | ✅ | libc / `tmpfile.c` | `tmpnam` + `fopen(name,"wb+")`; the FILE carries `_SF_TMP` so `fclose` auto‑unlinks. |
-| `printf` | Formatted stdout | ⚠️ | libc / `printf.c`,`vformat.c` | Int/str/char, `%f/%e/%g/%a` (`%a`/`%A` hex float, exact by default), width/prec/flags, `%n` (`hh`/`h`/`l`/`ll`). Only wide output remains. |
-| `fprintf` | Formatted to stream | ⚠️ | libc / `fprintf.c` | as `printf`. |
-| `sprintf` | Formatted to buffer | ⚠️ | libc / `sprintf.c` | as `printf`. |
-| `snprintf` | Bounded to buffer | ✅ | libc / `snprintf.c` | |
-| `vfprintf` | va_list to stream | ✅ | libc / `vfprintf.c` | |
-| `vsnprintf` | va_list, bounded | ✅ | libc / `vsnprintf.c` | |
-| `vprintf` `vsprintf` | va_list print variants | ✅ | libc / `vprintf.c`,`vsprintf.c` | |
-| `vscanf` `vfscanf` | va_list scan variants | ✅ | libc / `vscanf.c`,`vfscanf.c` | Share the streaming engine. |
-| `scanf` `fscanf` | Formatted input | ⚠️ | libc / `scanf.c`,`fscanf.c`,`vsscanf.c` | True char-streaming scanner (`_vscan`): consumes exactly what it matches and leaves the rest in the stream. Full conversion set incl. `%[`/`%[^]` scanset and `%a` hex‑float. |
-| `sscanf` | Parse from string | ⚠️ | libc / `sscanf.c`,`vsscanf.c` | `d/i/u/o/x/X/p`, `f/e/g/a` (incl. hex float), `[`/`[^` scanset, `s/c/n/%`, width, `*`, `hh/h/l/ll`. |
-| `vsscanf` | va_list parse | ✅ | libc / `vsscanf.c` | |
-| `fgetc` `getc` `getchar` | Read char | ✅ | libc / `fgetc.c`,`getc.c`,`getchar.c` | |
-| `fgets` | Read line | ✅ | libc / `fgets.c` | |
-| `ungetc` | Push back char | ✅ | libc / `ungetc.c` | One‑char pushback guaranteed. |
-| `fputc` `putc` `putchar` | Write char | ✅ | libc / `fputc.c`,`putc.c`,`putchar.c` | |
-| `fputs` `puts` | Write string | ✅ | libc / `fputs.c`,`puts.c` | |
-| `gets` | Read line (unsafe) | ❌ | — | Intentionally omitted (removed in C11). |
-| `fread` `fwrite` | Binary I/O | ✅ | libc / `fread.c`,`fwrite.c` | |
-| `fseek` | Set position | ✅ | libc / `fseek.c` + seam | `SEEK_SET/CUR/END`; Osiris DOS seek and CP/M random‑record seek. On CP/M `SEEK_END` is record‑granular (CP/M stores no exact byte length). |
-| `ftell` | Get position | ✅ | libc / `ftell.c` | Buffer‑aware: adjusts the fd position by the unread/unwritten buffered bytes. |
-| `rewind` | Reset position | ✅ | libc / `rewind.c` | `fseek(...,SEEK_SET)` + clears EOF/err. |
-| `fgetpos` `fsetpos` | `fpos_t` position | ✅ | libc / `fgetpos.c` | `fpos_t` is a byte offset; thin wrappers over `ftell`/`fseek`. |
-| `feof` `ferror` | Stream status | ✅ | libc / `feof.c`,`ferror.c` | |
-| `clearerr` | Clear status | ✅ | libc / `clearerr.c` | |
-| `perror` | Print error message | ✅ | libc / `perror.c` | Uses `strerror(errno)`. |
+| Function | Purpose | Osiris | CP/M‑68K | Library / File | Notes |
+|---|---|:--:|:--:|---|---|
+| `fopen` | Open stream | ✅ | ✅ | libc / `fopen.c` | Modes `r`/`w`/`a` and `r+`/`w+`/`a+` update (+`b`). Update streams track read/write *orientation*: a read↔write switch flushes/repositions the buffer per C99 §7.19.5.3. Text streams honor a Ctrl‑Z (`0x1A`) EOF; binary (`b`) reads raw — this is what makes CP/M's record‑padded files read back at their logical length. On CP/M, in‑place random *modify* (write after read without an intervening `fseek`) is best‑effort on the 128‑byte record model; the tested update pattern is write→rewind→read. |
+| `fclose` | Close stream | ✅ | ✅ | libc / `fclose.c` | |
+| `fflush` | Flush buffer | ✅ | ✅ | libc / `fflush.c` | |
+| `freopen` | Reassign stream | ✅ | ✅ | libc / `freopen.c` | Flush+close then reopen, reusing the FILE (so `freopen("f","w",stdout)` redirects); NULL path (mode change) unsupported. |
+| `setbuf` / `setvbuf` | Buffering control | ✅ | ✅ | libc / `setvbuf.c` | Honors the mode (`_IONBF` flushes per write); the built‑in `BUFSIZ` buffer is always used, so a caller‑supplied buffer is accepted but ignored. |
+| `remove` | Delete file | ✅ | ✅ | libc / `remove.c` | wraps `sys_unlink`. |
+| `rename` | Rename file | ✅ | ✅ | libc / `rename.c` + seam | `sys_rename`: Osiris DOS 56h (A0=old, A1=new); CP/M BDOS 23 (combined FCB). |
+| `tmpnam` | Temp name | ✅ | ✅ | libc / `tmpnam.c` | 8.3‑friendly `TMPnnnnn`, probed for non‑existence. |
+| `tmpfile` | Temp file | ✅ | ✅ | libc / `tmpfile.c` | `tmpnam` + `fopen(name,"wb+")`; the FILE carries `_SF_TMP` so `fclose` auto‑unlinks. |
+| `printf` | Formatted stdout | ✅ | ✅ | libc / `printf.c`,`vformat.c` | Int/str/char, `%f/%e/%g/%a` (`%a`/`%A` hex float, exact by default), width/prec/flags, `%n` (`hh`/`h`/`l`/`ll`). Wide output is the separate `wprintf` family (`<wchar.h>`). |
+| `fprintf` | Formatted to stream | ✅ | ✅ | libc / `fprintf.c` | as `printf`. |
+| `sprintf` | Formatted to buffer | ✅ | ✅ | libc / `sprintf.c` | as `printf`. |
+| `snprintf` | Bounded to buffer | ✅ | ✅ | libc / `snprintf.c` | |
+| `vfprintf` | va_list to stream | ✅ | ✅ | libc / `vfprintf.c` | |
+| `vsnprintf` | va_list, bounded | ✅ | ✅ | libc / `vsnprintf.c` | |
+| `vprintf` `vsprintf` | va_list print variants | ✅ | ✅ | libc / `vprintf.c`,`vsprintf.c` | |
+| `vscanf` `vfscanf` | va_list scan variants | ✅ | ✅ | libc / `vscanf.c`,`vfscanf.c` | Share the streaming engine. |
+| `scanf` `fscanf` | Formatted input | ✅ | ✅ | libc / `scanf.c`,`fscanf.c`,`vsscanf.c` | True char-streaming scanner (`_vscan`): consumes exactly what it matches and leaves the rest in the stream. Full conversion set incl. `%[`/`%[^]` scanset and `%a` hex‑float. |
+| `sscanf` | Parse from string | ✅ | ✅ | libc / `sscanf.c`,`vsscanf.c` | `d/i/u/o/x/X/p`, `f/e/g/a` (incl. hex float), `[`/`[^` scanset, `s/c/n/%`, width, `*`, `hh/h/l/ll`. |
+| `vsscanf` | va_list parse | ✅ | ✅ | libc / `vsscanf.c` | |
+| `fgetc` `getc` `getchar` | Read char | ✅ | ✅ | libc / `fgetc.c`,`getc.c`,`getchar.c` | |
+| `fgets` | Read line | ✅ | ✅ | libc / `fgets.c` | |
+| `ungetc` | Push back char | ✅ | ✅ | libc / `ungetc.c` | One‑char pushback guaranteed. |
+| `fputc` `putc` `putchar` | Write char | ✅ | ✅ | libc / `fputc.c`,`putc.c`,`putchar.c` | |
+| `fputs` `puts` | Write string | ✅ | ✅ | libc / `fputs.c`,`puts.c` | |
+| `gets` | Read line (unsafe) | ❌ | ❌ | — | Intentionally omitted (removed in C11). |
+| `fread` `fwrite` | Binary I/O | ✅ | ✅ | libc / `fread.c`,`fwrite.c` | |
+| `fseek` | Set position | ✅ | ✅ | libc / `fseek.c` + seam | `SEEK_SET/CUR/END`; Osiris DOS seek and CP/M random‑record seek. On CP/M `SEEK_END` is record‑granular (CP/M stores no exact byte length). |
+| `ftell` | Get position | ✅ | ✅ | libc / `ftell.c` | Buffer‑aware: adjusts the fd position by the unread/unwritten buffered bytes. |
+| `rewind` | Reset position | ✅ | ✅ | libc / `rewind.c` | `fseek(...,SEEK_SET)` + clears EOF/err. |
+| `fgetpos` `fsetpos` | `fpos_t` position | ✅ | ✅ | libc / `fgetpos.c` | `fpos_t` is a byte offset; thin wrappers over `ftell`/`fseek`. |
+| `feof` `ferror` | Stream status | ✅ | ✅ | libc / `feof.c`,`ferror.c` | |
+| `clearerr` | Clear status | ✅ | ✅ | libc / `clearerr.c` | |
+| `perror` | Print error message | ✅ | ✅ | libc / `perror.c` | Uses `strerror(errno)`. |
 
 Macros: `EOF`, `BUFSIZ`, `SEEK_SET/CUR/END`, `stdin/stdout/stderr`,
 `FOPEN_MAX`, `FILENAME_MAX`, `TMP_MAX`, `L_tmpnam`, `_IOFBF/_IOLBF/_IONBF`,
-and the `fpos_t` type are present.  Missing: wide‑character I/O (`<wchar.h>`).
+and the `fpos_t` type are present.  Wide‑character I/O now lives in `<wchar.h>`
+(present — wide character streams plus the `fwprintf`/`fwscanf` families; see below).
 
 ### `<stdlib.h>` — general utilities
 
-| Function | Purpose | Status | Library / File | Notes |
-|---|---|:--:|---|---|
-| `malloc` `calloc` `realloc` `free` | Dynamic memory | ✅ | libc / `malloc.c` → **libheap** | Real reclaiming heap; `free`/`realloc` work. |
-| `atoi` `atol` | string → int/long | ✅ | libc / `atoi.c`,`atol.c` | |
-| `atoll` | string → long long | ✅ | libc / `atoll.c` | |
-| `atof` | string → double | ⚠️ | libc / `atof.c` | via libm `atod`. |
-| `strtol` `strtoul` | string → (u)long | ✅ | libc / `strtol.c`,`strtoul.c` | |
-| `strtoll` `strtoull` | string → (u)long long | ✅ | libc / `strtoll.c`,`strtoull.c` | |
-| `strtod` | string → double | ✅ | libc / `strtod.c` | |
-| `strtof` | string → float | ✅ | libc / `strtof.c` | narrows `strtod`. |
-| `strtold` | string → long double | ⚠️ | libc / `strtold.c` | `long double`==`double`. |
-| `rand` `srand` | PRNG | ⚠️ | libc / `rand.c` | LCG, `RAND_MAX` 32767 (minimum compliant). |
-| `abs` `labs` | int/long abs | ✅ | libc / `abs.c`,`labs.c` | |
-| `llabs` | long long abs | ✅ | libc / `llabs.c` | |
-| `div` `ldiv` | int/long div+rem | ✅ | libc / `div.c`,`ldiv.c` | |
-| `lldiv` | long long div+rem | ✅ | libc / `lldiv.c` | `lldiv_t` in `<stdlib.h>`. |
-| `bsearch` | Binary search | ✅ | libc / `bsearch.c` | |
-| `qsort` | Sort | ⚠️ | libc / `qsort.c` | Shell sort (conforming behaviour, not the named algorithm). |
-| `abort` | Abnormal exit | ⚠️ | libc / `exit.c` | Implemented as `exit(1)`: runs `atexit` handlers + flushes, and does **not** raise `SIGABRT`. |
-| `atexit` | Register exit handler | ✅ | libc / `exit.c` | LIFO table, 32 handlers (meets the C99 minimum). |
-| `exit` | Normal exit | ✅ | libc / `exit.c` | Flushes streams. |
-| `_Exit` | Exit w/o cleanup | ✅ | libc / `_Exit.c` | No `atexit`/flush. |
-| `getenv` | Environment lookup | ⚠️ | libc / `getenv.c` + seam | Osiris: real lookup via DOS `64h` (e.g. `COMSPEC`); returns `NULL` for an unset name. CP/M‑68K has no environment, so every lookup returns `NULL`. Read‑only (no `setenv`/`putenv`; the string is OS‑owned). |
-| `system` | Run command | ⚠️ | libc / `system.c` + seam | Osiris: spawns `COMSPEC` with a `/C <command>` tail (DOS `4Bh` EXEC) and returns the command's exit code; `system(NULL)`→nonzero (processor available). CP/M‑68K has no command processor: `system(NULL)`→0, any command→−1. The crt0 leaves a capped memory reserve so a child can load. |
-| `mblen` `mbtowc` `wctomb` `mbstowcs` `wcstombs` | Multibyte/wide | ✅ | libc / `multibyte.c` | UTF‑8 ↔ UTF‑32 (`wchar_t`); `MB_CUR_MAX`=4. |
+| Function | Purpose | Osiris | CP/M‑68K | Library / File | Notes |
+|---|---|:--:|:--:|---|---|
+| `malloc` `calloc` `realloc` `free` | Dynamic memory | ✅ | ✅ | libc / `malloc.c` → **libheap** | Real reclaiming heap; `free`/`realloc` work. |
+| `atoi` `atol` | string → int/long | ✅ | ✅ | libc / `atoi.c`,`atol.c` | |
+| `atoll` | string → long long | ✅ | ✅ | libc / `atoll.c` | |
+| `atof` | string → double | ⚠️ | ⚠️ | libc / `atof.c` | via libm `atod`. |
+| `strtol` `strtoul` | string → (u)long | ✅ | ✅ | libc / `strtol.c`,`strtoul.c` | |
+| `strtoll` `strtoull` | string → (u)long long | ✅ | ✅ | libc / `strtoll.c`,`strtoull.c` | |
+| `strtod` | string → double | ✅ | ✅ | libc / `strtod.c` | |
+| `strtof` | string → float | ✅ | ✅ | libc / `strtof.c` | narrows `strtod`. |
+| `strtold` | string → long double | ⚠️ | ⚠️ | libc / `strtold.c` | `long double`==`double`. |
+| `rand` `srand` | PRNG | ⚠️ | ⚠️ | libc / `rand.c` | LCG, `RAND_MAX` 32767 (minimum compliant). |
+| `abs` `labs` | int/long abs | ✅ | ✅ | libc / `abs.c`,`labs.c` | |
+| `llabs` | long long abs | ✅ | ✅ | libc / `llabs.c` | |
+| `div` `ldiv` | int/long div+rem | ✅ | ✅ | libc / `div.c`,`ldiv.c` | |
+| `lldiv` | long long div+rem | ✅ | ✅ | libc / `lldiv.c` | `lldiv_t` in `<stdlib.h>`. |
+| `bsearch` | Binary search | ✅ | ✅ | libc / `bsearch.c` | |
+| `qsort` | Sort | ⚠️ | ⚠️ | libc / `qsort.c` | Shell sort (conforming behaviour, not the named algorithm). |
+| `abort` | Abnormal exit | ⚠️ | ⚠️ | libc / `exit.c` | Implemented as `exit(1)`: runs `atexit` handlers + flushes, and does **not** raise `SIGABRT`. |
+| `atexit` | Register exit handler | ✅ | ✅ | libc / `exit.c` | LIFO table, 32 handlers (meets the C99 minimum). |
+| `exit` | Normal exit | ✅ | ✅ | libc / `exit.c` | Flushes streams. |
+| `_Exit` | Exit w/o cleanup | ✅ | ✅ | libc / `_Exit.c` | No `atexit`/flush. |
+| `getenv` | Environment lookup | ✅ | ⚠️ | libc / `getenv.c` + seam | Osiris: real lookup via DOS `64h` (e.g. `COMSPEC`); returns `NULL` for an unset name (C99‑conforming). CP/M‑68K has no environment, so every lookup returns `NULL` (present but inert). Read‑only (no `setenv`/`putenv`; the string is OS‑owned). |
+| `system` | Run command | ✅ | ⚠️ | libc / `system.c` + seam | Osiris: spawns `COMSPEC` with a `/C <command>` tail (DOS `4Bh` EXEC) and returns the command's exit code; `system(NULL)`→nonzero (processor available). CP/M‑68K has no command processor: `system(NULL)`→0 (correctly reports none), any command→−1. The crt0 leaves a capped memory reserve so a child can load. |
+| `mblen` `mbtowc` `wctomb` `mbstowcs` `wcstombs` | Multibyte/wide | ✅ | ✅ | libc / `multibyte.c` | UTF‑8 ↔ UTF‑32 (`wchar_t`); `MB_CUR_MAX`=4. |
 
 ### `<string.h>` — string handling
 
-| Function | Purpose | Status | Library / File | Notes |
-|---|---|:--:|---|---|
-| `memcpy` | Copy memory | ✅ | **rt** / `rt68k.a68` | |
-| `memmove` | Copy (overlapping) | ✅ | **rt** / `rt68k.a68` | |
-| `memset` | Fill memory | ✅ | **rt** / `rt68k.a68` | |
-| `memcmp` | Compare memory | ✅ | libc / `memcmp.c` | |
-| `memchr` | Find byte | ✅ | libc / `memchr.c` | |
-| `strcpy` `strncpy` | Copy string | ✅ | libc / `strcpy.c`,`strncpy.c` | |
-| `strcat` `strncat` | Concatenate | ✅ | libc / `strcat.c`,`strncat.c` | |
-| `strcmp` `strncmp` | Compare | ✅ | libc / `strcmp.c`,`strncmp.c` | |
-| `strcoll` | Locale compare | ✅ | libc / `strcoll.c` | C-locale byte order (== `strcmp`). |
-| `strxfrm` | Locale transform | ✅ | libc / `strcoll.c` | Identity copy; keys order as `strcoll`. |
-| `strchr` `strrchr` | Find char | ✅ | libc / `strchr.c`,`strrchr.c` | |
-| `strspn` `strcspn` `strpbrk` | Span/find‑set | ✅ | libc / `strspn.c`,`strcspn.c`,`strpbrk.c` | |
-| `strstr` | Find substring | ✅ | libc / `strstr.c` | |
-| `strtok` | Tokenize | ✅ | libc / `strtok.c` | |
-| `strlen` | Length | ✅ | libc / `strlen.c` | |
-| `strerror` | Error → message | ⚠️ | libc / `strerror.c` | Limited message set. |
+| Function | Purpose | Osiris | CP/M‑68K | Library / File | Notes |
+|---|---|:--:|:--:|---|---|
+| `memcpy` | Copy memory | ✅ | ✅ | **rt** / `rt68k.a68` | |
+| `memmove` | Copy (overlapping) | ✅ | ✅ | **rt** / `rt68k.a68` | |
+| `memset` | Fill memory | ✅ | ✅ | **rt** / `rt68k.a68` | |
+| `memcmp` | Compare memory | ✅ | ✅ | libc / `memcmp.c` | |
+| `memchr` | Find byte | ✅ | ✅ | libc / `memchr.c` | |
+| `strcpy` `strncpy` | Copy string | ✅ | ✅ | libc / `strcpy.c`,`strncpy.c` | |
+| `strcat` `strncat` | Concatenate | ✅ | ✅ | libc / `strcat.c`,`strncat.c` | |
+| `strcmp` `strncmp` | Compare | ✅ | ✅ | libc / `strcmp.c`,`strncmp.c` | |
+| `strcoll` | Locale compare | ✅ | ✅ | libc / `strcoll.c` | `LC_COLLATE`: byte order in `"C"`; the native locale weights bytes through the OS collating table (Osiris `65h`/`06`; CP/M has none → byte order). |
+| `strxfrm` | Locale transform | ✅ | ✅ | libc / `strcoll.c` | Emits collation‑weight keys whose `strcmp` order matches `strcoll` (identity in the `"C"` locale). |
+| `strchr` `strrchr` | Find char | ✅ | ✅ | libc / `strchr.c`,`strrchr.c` | |
+| `strspn` `strcspn` `strpbrk` | Span/find‑set | ✅ | ✅ | libc / `strspn.c`,`strcspn.c`,`strpbrk.c` | |
+| `strstr` | Find substring | ✅ | ✅ | libc / `strstr.c` | |
+| `strtok` | Tokenize | ✅ | ✅ | libc / `strtok.c` | |
+| `strlen` | Length | ✅ | ✅ | libc / `strlen.c` | |
+| `strerror` | Error → message | ⚠️ | ⚠️ | libc / `strerror.c` | Limited message set. |
 
 ### `<tgmath.h>` — type‑generic math
 
@@ -407,17 +424,17 @@ type‑generic macros ❌.
 
 ### `<time.h>` — date and time
 
-| Function | Purpose | Status | Library / File | Notes |
-|---|---|:--:|---|---|
-| `time` | Current time | ✅ | libc / `time.c` + seam | Reads RTC via `sys_time`. |
-| `clock` | Processor time | ⚠️ | libc / `time.c` | Returns `(clock_t)-1` (no CPU‑time source). |
-| `difftime` | Seconds between | ✅ | libc / `time.c` | via soft float. |
-| `mktime` | `struct tm` → `time_t` | ✅ | libc / `time.c` | Normalizes fields. |
-| `gmtime` | `time_t` → UTC `tm` | ✅ | libc / `time.c` | |
-| `localtime` | `time_t` → local `tm` | ✅ | libc / `time.c` | Applies the `TZ` zone (std/DST) when set; `==gmtime` when unset. |
-| `asctime` | `tm` → string | ✅ | libc / `time.c` | |
-| `ctime` | `time_t` → string | ✅ | libc / `time.c` | |
-| `strftime` | Formatted time | ⚠️ | libc / `time.c` | Subset of specifiers (`%Y%y%m%d%e%H%M%S%j%a%b%h%p%z%Z%%`). |
+| Function | Purpose | Osiris | CP/M‑68K | Library / File | Notes |
+|---|---|:--:|:--:|---|---|
+| `time` | Current time | ✅ | ✅ | libc / `time.c` + seam | Reads RTC via `sys_time`. |
+| `clock` | Processor time | ⚠️ | ⚠️ | libc / `time.c` | Returns `(clock_t)-1` (no CPU‑time source). |
+| `difftime` | Seconds between | ✅ | ✅ | libc / `time.c` | via soft float. |
+| `mktime` | `struct tm` → `time_t` | ✅ | ✅ | libc / `time.c` | Normalizes fields. |
+| `gmtime` | `time_t` → UTC `tm` | ✅ | ✅ | libc / `time.c` | |
+| `localtime` | `time_t` → local `tm` | ✅ | ✅ | libc / `time.c` | Applies the `TZ` zone (std/DST) when set; `==gmtime` when unset. |
+| `asctime` | `tm` → string | ✅ | ✅ | libc / `time.c` | |
+| `ctime` | `time_t` → string | ✅ | ✅ | libc / `time.c` | |
+| `strftime` | Formatted time | ⚠️ | ⚠️ | libc / `time.c` | Subset of specifiers (`%Y%y%m%d%e%H%M%S%j%a%b%h%p%z%Z%%`). |
 
 `time_t`/`clock_t` are 32‑bit signed (valid through 2038). POSIX `tzset`/`timezone`/
 `daylight`/`tzname` are provided; the RTC is read as local time and converted to
@@ -525,7 +542,8 @@ string and stream entry points), the `%[`/`%[^]` scanset, and `%a` hexadecimal�
 float input.  Both the scanf and printf families are now conversion‑complete for
 floats: `%a` parses hex or decimal on input and emits exact hex floats on output
 (`printf`/`scanf` round‑trip).  `%n` is now supported (with `hh`/`h`/`l`/`ll`
-length modifiers); the remaining printf gap is wide output only.
+length modifiers); both the narrow and the wide (`wprintf`/`wscanf` in
+`<wchar.h>`) printf/scanf families are now complete.
 
 ### Tier 2 — moderate
 7. **`<math.h>`** — Phase 2a ✅ DONE (2026‑07‑22): added `HUGE_VAL`/`INFINITY`/
@@ -551,7 +569,7 @@ length modifiers); the remaining printf gap is wide output only.
 8. **`<setjmp.h>`**: ✅ done — `setjmp`/`longjmp` asm shim plus a
    `returns_twice` codegen pass that spills SP‑stack temporaries to frame slots
    around the call so longjmp re‑entry (retry loops) is safe.
-9. **`<locale.h>`**: `setlocale`/`localeconv` with a real native (`""`) locale on Osiris (NLS country block `38h`); `strcoll`/`strxfrm` present (C-locale order). Locale-specific collation is the remaining refinement.
+9. **`<locale.h>`**: ✅ on Osiris — `setlocale`/`localeconv` with a real native (`""`) locale (NLS country block `38h`) **and** locale‑specific `strcoll`/`strxfrm` via the OS collating sequence (`65h`/`06`). CP/M‑68K has no country service, so `""` falls back to `"C"` (byte‑order collation). Remaining refinement: selectable named locales beyond `"C"`/`"POSIX"`/`""`.
 
 ### Tier 3 — large or blocked
 10. **`<wchar.h>` / `<wctype.h>`**: ✅ present (`wchar_t` = 32‑bit UTF‑32, multibyte = UTF‑8, reusing the `<uchar.h>` codec). Wide **character** stream I/O + `fwide` and the full wide **formatted** I/O — `fwprintf`/`wprintf`/`swprintf` and `fwscanf`/`wscanf`/`swscanf` (+ `v*`) — are present.

@@ -52,6 +52,28 @@ int main(void) {
   CHECK(!have || lc->grouping[0] == 3); /* groups of 3 */
   CHECK(have || lc->thousands_sep[0] == '\0'); /* CP/M: C fallback */
 
+  /* Native-locale collation (LC_COLLATE).  On Osiris the OS 65h/06 collating
+     table loads (US: case-insensitive -- 'a'=='A', 'a'<'B'); on CP/M "" fell
+     back to C, so collation stays byte order.  Each CHECK runs on both OSes
+     (guarded by `have`) so the pass count matches across the lockstep pair. */
+  CHECK(!have || strcoll("a", "A") == 0);      /* native: 'a' == 'A' */
+  CHECK(!have || strcoll("a", "B") < 0);       /* native: case-insensitive a<B */
+  CHECK(!have || strcoll("B", "a") > 0);
+  CHECK(!have || strcoll("ABC", "abc") == 0);
+  CHECK(have || strcoll("a", "A") > 0);        /* C fallback: 'a'(0x61) > 'A' */
+  CHECK(have || strcoll("a", "B") > 0);        /* C fallback: 'a'(0x61) > 'B' */
+  {
+    char na[8], nb[8];
+    strxfrm(na, "a", sizeof na);
+    strxfrm(nb, "B", sizeof nb);
+    CHECK(!have || strcmp(na, nb) < 0);        /* native keys order like strcoll */
+    CHECK(have || strcmp(na, nb) > 0);         /* C: "a" > "B" */
+    strxfrm(na, "A", sizeof na);
+    strxfrm(nb, "a", sizeof nb);
+    CHECK(!have || strcmp(na, nb) == 0);       /* native: 'A','a' share a weight */
+    CHECK(have || strcmp(na, nb) < 0);         /* C: "A" < "a" */
+  }
+
   setlocale(LC_ALL, "C"); /* restore */
   printf("LOCTEST %s %d/%d\n", pass == total ? "PASS" : "FAIL", pass, total);
   return pass == total ? 0 : 1;

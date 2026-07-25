@@ -22,7 +22,7 @@
         PUBLIC  _sys_mkdir,_sys_rmdir,_sys_chdir,_sys_getcwd,_sys_chmod,_sys_fdsize
         PUBLIC  _sys_setenv,_sys_getenvblk
         PUBLIC  _sys_conin,_sys_constat,_sys_doscall,_cpm_bdos
-        PUBLIC  _sys_lasterror,_sys_getcountry
+        PUBLIC  _sys_lasterror,_sys_getcountry,_sys_getcolltab
         EXTERN  _main,_envbuild
 
 * DOS TRAP #1 function selectors (AH, high byte of D0.W).
@@ -52,6 +52,7 @@ DOSF_ALLOC   equ  $4800
 DOSF_GETDATE equ  $2A00
 DOSF_GETTIME equ  $2C00
 DOSF_COUNTRY equ  $3800       ; 38h country info (D1=code, A0=34-byte buffer)
+DOSF_EXTCOUNTRY equ $6500     ; 65h ext country info (AL sub-fn; AL=06 collating table)
 DOSF_ENVGET  equ  $6400       ; 64h env access, sub-fn 00 (GET): A0=name -> A0=value/0
 DOSF_ENVSET  equ  $6401       ; 64h.01 SET: A0=name, A1=value (empty = delete)
 DOSF_ENVGETBLK equ $6402      ; 64h.02 GETBLK: -> A0 = env block (0 = none)
@@ -650,6 +651,49 @@ _sys_getcountry:
         rts
 ctry_err:
         moveq   #-1,d0
+        unlk    a6
+        rts
+
+**********************************************************
+* int _sys_getcolltab(void *buf256) -> 0 (buf256 filled with the 256 collating
+* weights, indexed by byte value), or -1 if unavailable.
+* DOS 65h/06 returns a 5-byte result [info-ID=06][4-byte big-endian linear
+* pointer] to the active collating table, laid out as [word 256][256 weights].
+* We deref that pointer and copy the 256 weight bytes into the caller's buffer.
+* D2 is callee-saved in the c68k ABI (only D0/D1/A0/A1 are scratch), so we
+* preserve it -- we need D2 for the DOS length param (CX).
+**********************************************************
+_sys_getcolltab:
+        link    a6,#-8             ; 8-byte scratch for the 5-byte result
+        move.l  d2,-(sp)           ; preserve D2 (callee-saved)
+        lea     -8(a6),a1          ; A1 = result buffer
+        moveq   #0,d1              ; D1 = country 0 (current)
+        moveq   #8,d2              ; D2 = buffer length (>= 5)
+        move.w  #DOSF_EXTCOUNTRY+6,d0 ; AH=65 ext country, AL=06 collating
+        trap    #1
+        bcs     colt_err
+        moveq   #0,d0              ; rebuild the big-endian pointer (result bytes 1..4)
+        move.b  -7(a6),d0
+        lsl.l   #8,d0
+        move.b  -6(a6),d0
+        lsl.l   #8,d0
+        move.b  -5(a6),d0
+        lsl.l   #8,d0
+        move.b  -4(a6),d0
+        movea.l d0,a0              ; A0 -> [word 256][256 weights]
+        addq.l  #2,a0             ; skip the count word -> the 256 weights
+        movea.l 8(a6),a1          ; A1 = caller's 256-byte destination
+        move.w  #255,d1
+colt_cp:
+        move.b  (a0)+,(a1)+
+        dbra    d1,colt_cp
+        moveq   #0,d0             ; success
+        move.l  (sp)+,d2
+        unlk    a6
+        rts
+colt_err:
+        moveq   #-1,d0
+        move.l  (sp)+,d2
         unlk    a6
         rts
 
