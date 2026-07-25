@@ -18,7 +18,7 @@
 	.model	flat
 	include	ieee754.inc
 
-	public	_atan, _atanf
+	public	_atanf
 	extern	_fpadd, _fpsub, _fpmult, _fpdiv
 
 	.code
@@ -35,7 +35,6 @@ _at_c5		dc.l	$3E4CCCCD	;  1/5  =  0.2
 _at_c7		dc.l	$BE124925	; -1/7  = -0.142857
 _at_c9		dc.l	$3DC71C72	;  1/9  =  0.111111
 
-_atan:
 _atanf:
 	link	a6,#-8
 	; -4(a6) = flags:  bit 0 = reciprocal (segment 2)

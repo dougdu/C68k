@@ -8,7 +8,7 @@
 ; ============================================================
 
 	.model	flat
-	include	ieee754d.inc
+	include	ieee754.inc
 
 	public	_fpnegd, _fabsd
 

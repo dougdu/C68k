@@ -17,14 +17,13 @@
 	.model	flat
 	include	ieee754.inc
 
-	public	_fpmult, _fpmultf
+	public	_fpmult
 	extern	_fe_status		; D1 sticky exception flags
 	extern	_fe_round, _fe_dirup, _fe_ovf_maxf	; D4 directed rounding
 
 	.code
 
 _fpmult:
-_fpmultf:
 	link	a6,#0
 	movem.l	d2-d7/a0,-(sp)
 

@@ -15,8 +15,8 @@
 	.model	flat
 	include	ieee754.inc
 
-	public	_sin, _sinf, _cos, _cosf
-	extern	_fpadd, _fpsub, _fpmult, _fpdiv, _fpneg, _fmod
+	public	_sinf, _cosf
+	extern	_fpadd, _fpsub, _fpmult, _fpdiv, _fpneg, _fmodf
 	extern	_fpftol, _fpltof
 	; double-precision ops for the range reduction (library is consolidated)
 	extern	_fpftod, _fpdtof, _fpmultd, _fpaddd, _fpsubd, _fpdtol, _fpltod
@@ -54,7 +54,6 @@ _sc_c8		dc.l	$37D00D01	;  1/40320 (BUG-0021: extend to ~1 ULP)
 ;  _cos — cos(x) = sin(x + pi/2): reduce x directly and shift the quadrant by 1
 ;  (adding pi/2 to x in single precision lost bits for large x)
 ; ============================================================
-_cos:
 _cosf:
 	link	a6,#-24			; -4=r -8=k -16=xd -24=kd
 	movem.l	d2-d5,-(sp)
@@ -64,7 +63,6 @@ _cosf:
 ; ============================================================
 ;  _sin — compute sin(x)
 ; ============================================================
-_sin:
 _sinf:
 	link	a6,#-24			; -4=r(single) -8=k -16=xd(double) -24=kd(double)
 	movem.l	d2-d5,-(sp)

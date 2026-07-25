@@ -14,7 +14,7 @@
 	.model	flat
 	include	ieee754.inc
 
-	public	_log, _logf
+	public	_logf
 	extern	_fpadd, _fpsub, _fpmult, _fpdiv, _fpltof
 
 	.code
@@ -27,7 +27,6 @@ _log_c3		dc.l	$3EAAAAAB	; 1/3 = 0.333333
 _log_c5		dc.l	$3E4CCCCD	; 1/5 = 0.2
 _log_c7		dc.l	$3E124925	; 1/7 = 0.142857
 
-_log:
 _logf:
 	link	a6,#-4
 	movem.l	d2-d4,-(sp)

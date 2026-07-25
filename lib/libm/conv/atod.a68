@@ -10,7 +10,6 @@
 
 	.model	flat
 	include	ieee754.inc
-	include	ieee754d.inc
 
 	public	_atod
 	extern	_fpmultd, _fpaddd, _fpsubd, _fpltod, _fpdivd

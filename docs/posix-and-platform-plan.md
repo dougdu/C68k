@@ -265,7 +265,7 @@ link against the "C" locale.
 | `<locale.h>` | header | `LC_*` macros, `struct lconv` | ✅ |
 
 **Status (2026‑07‑24): ✅ DONE.** Cross‑OS `POLISH` 13/13 both; full lockstep
-17/17; tier2/tier2f unregressed (56/56). errno mapping uses Osiris DOS 59h (the
+17/17; tier2/tier2f unregressed (58/58). errno mapping uses Osiris DOS 59h (the
 latched code → errno via the MS‑DOS 5.0 table); CP/M has no extended‑error latch,
 so failures default to `ENOENT`. Math errno covers the **double** base functions
 (long double inherits via the double wrappers; the float variants bind directly

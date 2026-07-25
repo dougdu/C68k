@@ -16,14 +16,13 @@
 	.model	flat
 	include	ieee754.inc
 
-	public	_fpdiv, _fpdivf
+	public	_fpdiv
 	extern	_fe_status		; D1 sticky exception flags
 	extern	_fe_round, _fe_dirup, _fe_ovf_maxf	; D4 directed rounding
 
 	.code
 
 _fpdiv:
-_fpdivf:
 	link	a6,#0
 	movem.l	d2-d7/a0,-(sp)
 

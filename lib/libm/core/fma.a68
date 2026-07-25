@@ -19,13 +19,12 @@
 	.model	flat
 	include	ieee754.inc
 
-	public	_fma, _fmaf
+	public	_fmaf
 	extern	_fe_status		; D1 sticky exception flags
 	extern	_fe_round, _fe_dirup, _fe_ovf_maxf	; D4 directed rounding
 
 	.code
 
-_fma:
 _fmaf:
 	link	a6,#0
 	movem.l	d2-d7,-(sp)

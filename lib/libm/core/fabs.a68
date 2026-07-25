@@ -9,11 +9,10 @@
 	.model	flat
 	include	ieee754.inc
 
-	public	_fabs, _fabsf
+	public	_fabsf
 
 	.code
 
-_fabs:
 _fabsf:
 	move.l	4(sp),d0
 	andi.l	#$7FFFFFFF,d0		; clear sign bit

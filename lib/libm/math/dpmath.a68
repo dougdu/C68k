@@ -10,7 +10,6 @@
 
 	.model	flat
 	include	ieee754.inc
-	include	ieee754d.inc
 
 	public	_sqrtd, _sind, _cosd, _atand, _expd, _logd, _powd
 	public	_sqd_umul32
@@ -18,7 +17,7 @@
 	public	__rem_pio2_big, rp_r
 	extern	_fpaddd, _fpsubd, _fpmultd, _fpdivd
 	extern	_fpdtof, _fpftod, _fpltod, _fpdtol
-	extern	_sqrt
+	extern	_sqrtf
 	extern	_fmad
 	extern	_fe_status		; D1 sticky exception flags
 	extern	_fe_round		; D4 directed rounding mode
@@ -2044,7 +2043,7 @@ _sqrtd_reduce:
 	jsr	_fpdtof
 	addq.l	#8,sp
 	move.l	d0,-(sp)
-	jsr	_sqrt
+	jsr	_sqrtf
 	addq.l	#4,sp
 	move.l	d0,-(sp)
 	jsr	_fpftod

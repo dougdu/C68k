@@ -10,12 +10,11 @@
 	.model	flat
 	include	ieee754.inc
 
-	public	_pow, _powf
-	extern	_fpmult, _log, _exp, _fpftol, _fpltof
+	public	_powf
+	extern	_fpmult, _logf, _expf, _fpftol, _fpltof
 
 	.code
 
-_pow:
 _powf:
 	link	a6,#0
 	movem.l	d2-d5,-(sp)
@@ -58,14 +57,14 @@ _pow_absx:
 _pow_calc:
 	; x^y = exp(y * ln(x))
 	move.l	d2,-(sp)
-	jsr	_log			; d0 = ln(x)
+	jsr	_logf			; d0 = ln(x)
 	addq.l	#4,sp
 	move.l	d3,-(sp)		; push y
 	move.l	d0,-(sp)		; push ln(x)
 	jsr	_fpmult			; d0 = y * ln(x)
 	addq.l	#8,sp
 	move.l	d0,-(sp)
-	jsr	_exp			; d0 = exp(y * ln(x))
+	jsr	_expf			; d0 = exp(y * ln(x))
 	addq.l	#4,sp
 	tst.l	d4
 	beq.s	_pow_ret

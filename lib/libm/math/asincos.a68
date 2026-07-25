@@ -23,16 +23,15 @@
 	.model	flat
 	include	ieee754.inc
 
-	public	_asin, _asinf, _acos, _acosf
+	public	_asinf, _acosf
 	extern	_fpadd, _fpsub, _fpmult, _fpdiv
-	extern	_sqrt, _atan
+	extern	_sqrtf, _atanf
 
 	.code
 
 ; ============================================================
 ;  _asin / _asinf
 ; ============================================================
-_asin:
 _asinf:
 	link	a6,#0
 	movem.l	d2-d4,-(sp)
@@ -62,7 +61,7 @@ _asinf:
 	addq.l	#8,sp
 
 	move.l	d0,-(sp)
-	jsr	_sqrt			; s = sqrt(1 - x^2)
+	jsr	_sqrtf			; s = sqrt(1 - x^2)
 	addq.l	#4,sp
 
 	; --- q = x / s ---
@@ -73,7 +72,7 @@ _asinf:
 
 	; --- asin = atan(q) ---
 	move.l	d0,-(sp)
-	jsr	_atan
+	jsr	_atanf
 	addq.l	#4,sp
 
 _asin_ret:
@@ -96,7 +95,6 @@ _asin_nan:
 ; ============================================================
 ;  _acos / _acosf
 ; ============================================================
-_acos:
 _acosf:
 	link	a6,#0
 	movem.l	d2-d4,-(sp)
@@ -128,7 +126,7 @@ _acosf:
 	addq.l	#8,sp
 
 	move.l	d0,-(sp)
-	jsr	_sqrt			; s = sqrt(1 - x^2)
+	jsr	_sqrtf			; s = sqrt(1 - x^2)
 	addq.l	#4,sp
 
 	; --- q = s / |x| ---
@@ -139,7 +137,7 @@ _acosf:
 
 	; --- a = atan(s/|x|) ---
 	move.l	d0,-(sp)
-	jsr	_atan
+	jsr	_atanf
 	addq.l	#4,sp
 
 	; x > 0 -> acos = a ;  x < 0 -> acos = pi - a

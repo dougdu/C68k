@@ -57,6 +57,8 @@ int main(void) {
     float fr = modff(3.75f, &fip);
     CHECK(neart(fr, 0.75, 1e-6) && neart(fip, 3.0, 1e-6));
   }
+  CHECK(fmaf(2.0f, 3.0f, 4.0f) == 10.0f); /* single-rounding FMA kernel */
+  CHECK(neart(fmaf(0.5f, 0.5f, 0.25f), 0.5, 1e-6));
 
   /* ---- Bucket 2: derived float (composed from the single kernels) ---- */
   CHECK(neart(tanf(0.7853982f), 1.0, 1e-4)); /* tan(pi/4) */

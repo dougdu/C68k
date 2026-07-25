@@ -17,7 +17,6 @@
 
 	.model	flat
 	include	ieee754.inc
-	include	ieee754d.inc
 
 	public	_FormatDouble
 	extern	_fpcmpd, _fpdivd, _fpmultd, _fpsubd, _fpdtol, _fpltod

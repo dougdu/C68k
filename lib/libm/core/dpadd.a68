@@ -10,7 +10,7 @@
 ; ============================================================
 
 	.model	flat
-	include	ieee754d.inc
+	include	ieee754.inc
 
 	public	_fpaddd, _fpsubd
 	extern	_fe_status		; D1 sticky exception flags

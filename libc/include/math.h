@@ -4,11 +4,11 @@
 #include <errno.h>
 
 /*
- * <math.h> over the soft-float runtime (libieee754d). The runtime provides
- * double primitives under the `d`-suffixed names (sind, cosd, ...); the C
- * names here are `static` so a program's `sqrt`/`exp`/`log`/`fmod` never clash
- * with the runtime's own single-precision `_sqrt`/`_exp`/`_log`/`_fmod`, which
- * its double routines call internally.
+ * <math.h> over the soft-float runtime (IEEE-754 libm). The runtime exposes
+ * the double primitives as the `d`-suffixed names (sind, cosd, ...) and the
+ * single primitives as the `f`-suffixed names (sinf, cosf, ...).  The C double
+ * names below are thin `static` inline wrappers over the `d` kernels; the
+ * `f` names (further down) bind straight to the single kernels.
  */
 
 extern double sind(double);
@@ -136,13 +136,11 @@ static double acos(double x) {
 }
 
 /* ------------------------------------------------------------------------
- * C99 `float` variants.  These bind directly to libm's real single-precision
+ * C99 `float` variants.  These bind directly to libm's single-precision
  * kernels (`_sqrtf`/`_expf`/...), so `float` math runs 32-bit soft-float
- * instead of promoting to double.  Unlike the unsuffixed names, the `f`
- * names do NOT collide with libm's internal single symbols, so they are
- * plain externs (pulled from libm only when referenced).  tan/log10/atan2
- * have no dedicated kernel and are composed, mirroring the double versions
- * above.
+ * instead of promoting to double.  They are plain externs, pulled from libm
+ * only when referenced.  tan/log10/atan2 have no dedicated kernel and are
+ * composed, mirroring the double versions above.
  * ------------------------------------------------------------------------ */
 extern float sqrtf(float);
 extern float expf(float);
@@ -158,6 +156,7 @@ extern float fabsf(float);
 extern float modff(float, float *);
 extern float asinf(float);
 extern float acosf(float);
+extern float fmaf(float, float, float);
 
 static float tanf(float x) { return sinf(x) / cosf(x); }
 static float log10f(float x) { return logf(x) / (float)M_LN10; }

@@ -23,7 +23,7 @@
 	.model	flat
 	include	ieee754.inc
 
-	public	_fpadd, _fpaddf, _fpsub, _fpsubf
+	public	_fpadd, _fpsub
 	extern	_fe_status		; D1 sticky exception flags
 	extern	_fe_round, _fe_dirup, _fe_ovf_maxf	; D4 directed rounding
 
@@ -33,7 +33,6 @@
 ;  _fpsub / _fpsubf — negate b then fall through to add
 ; ============================================================
 _fpsub:
-_fpsubf:
 	link	a6,#0
 	move.l	12(a6),d0		; d0 = b
 	eori.l	#IEEE754_SNG_SIGN_MASK,d0 ; flip sign of b
@@ -44,7 +43,6 @@ _fpsubf:
 ;  _fpadd / _fpaddf
 ; ============================================================
 _fpadd:
-_fpaddf:
 	link	a6,#0
 
 _fpadd_entry:

@@ -13,12 +13,11 @@
 	.model	flat
 	include	ieee754.inc
 
-	public	_fmod, _fmodf
+	public	_fmodf
 	extern	_fpsub
 
 	.code
 
-_fmod:
 _fmodf:
 	link	a6,#0
 	movem.l	d3-d7,-(sp)

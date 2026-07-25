@@ -11,14 +11,13 @@
 	.model	flat
 	include	ieee754.inc
 
-	public	_sqrt, _sqrtf
+	public	_sqrtf
 	extern	_fpadd, _fpdiv, _fpmult
 	extern	_fe_status		; D1 sticky exception flags
 	extern	_fe_round		; D4 directed rounding mode
 
 	.code
 
-_sqrt:
 _sqrtf:
 	link	a6,#0
 	movem.l	d2-d7,-(sp)

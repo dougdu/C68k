@@ -14,7 +14,7 @@
 	.model	flat
 	include	ieee754.inc
 
-	public	_exp, _expf
+	public	_expf
 	extern	_fpadd, _fpsub, _fpmult, _fpftol, _fpltof
 
 	.code
@@ -29,7 +29,6 @@ _exp_c3		dc.l	$3E2AAAAB	; 1/6  = 0.166667
 _exp_c4		dc.l	$3D2AAAAB	; 1/24 = 0.041667
 _exp_c5		dc.l	$3C088889	; 1/120= 0.008333
 
-_exp:
 _expf:
 	link	a6,#-8
 	movem.l	d2-d4,-(sp)

@@ -21,7 +21,6 @@
 
 	.model	flat
 	include	ieee754.inc
-	include	ieee754d.inc
 
 	public	_asind, _acosd
 	extern	_fpaddd, _fpsubd, _fpmultd, _fpdivd

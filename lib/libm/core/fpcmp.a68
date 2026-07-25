@@ -21,12 +21,11 @@
 	.model	flat
 	include	ieee754.inc
 
-	public	_fpcmp, _fpcmpf
+	public	_fpcmp
 
 	.code
 
 _fpcmp:
-_fpcmpf:
 	movem.l	d2-d3,-(sp)		; save scratch
 	move.l	12(sp),d0		; d0 = dest (adjusted for saved regs)
 	move.l	16(sp),d1		; d1 = src

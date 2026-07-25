@@ -249,7 +249,7 @@ are ~1–2 ULP.  The other double kernels are far better than the previous
 single‑grade (~1e‑7) but are **not** correctly‑rounded binary64:
 `expd` ≈ 481, `sind` ≈ 957, `cosd` ≈ 4733, `logd` ≈ 3966, `powd` ≈ 37 000 ULP
 (≈ 11–14 good decimal digits).  Verified single, double, and `long double` on
-both Osiris and CP/M (`tests/lockstep/tier2.c` 133/133, `tier2f.c` 56/56).
+both Osiris and CP/M (`tests/lockstep/tier2.c` 133/133, `tier2f.c` 58/58).
 
 **`float` / `long double` variants:** the C99 `f`‑suffixed base functions
 (`sqrtf`/`expf`/`logf`/`sinf`/`cosf`/`atanf`/`asinf`/`acosf`/`powf`/`fmodf`/

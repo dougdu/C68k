@@ -11,14 +11,14 @@
 	.model	flat
 	include	ieee754.inc
 
-	public	_atof
+	public	_atoff
 	extern	_fpmult, _fpadd, _fpltof, _fpneg, _fpdiv
 
 	.code
 
 FP_10		equ	SNG_TEN
 
-_atof:
+_atoff:
 	link	a6,#0
 	movem.l	a0,-(sp)
 	movea.l	8(a6),a0		; a0 → string

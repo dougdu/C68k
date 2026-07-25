@@ -1,41 +1,40 @@
 vendored library : libm
 upstream source  : C:\git\worm68k\68kTools\libraries\float\ieee754
-synced (UTC)     : 2026-07-25 07:07:15Z
-file count       : 35
+synced (UTC)     : 2026-07-25 17:58:02Z
+file count       : 34
 
 files (sha256, path):
-  C1F6E0E44A1D153A  conv\atod.a68
-  3A7880FA2668DE91  conv\atof.a68
-  1D8193FCB91F15E4  conv\dpconv.a68
+  B8D5DA01E6CCDA0E  conv\atod.a68
+  1D2E19A0B56FADE6  conv\atof.a68
+  E446676564590497  conv\dpconv.a68
   4D1AD28A70B2E1BD  conv\ftol.a68
   29F06CC76476E1B6  conv\ltof.a68
-  B594AFBD9D1F7E40  core\dpadd.a68
-  E501BE1FF2505ABB  core\dpcmp.a68
-  3BDBAF3F33490619  core\dpdiv.a68
-  07A9ECE9578783A0  core\dpfma.a68
-  040425DDD804E0AE  core\dpmul.a68
-  1286AAE9003D87E2  core\dpneg.a68
-  D54801E665E9C0B7  core\fabs.a68
+  1C48E4A6A0F953AC  core\dpadd.a68
+  418FD7F76F152F6C  core\dpcmp.a68
+  AD0860C39517FE24  core\dpdiv.a68
+  2925418EA60156C6  core\dpfma.a68
+  400F501EB67CB801  core\dpmul.a68
+  7508AC27E46E8D3D  core\dpneg.a68
+  4622109540512D97  core\fabs.a68
   7B4C938427283C83  core\fenv.a68
-  02072AF7E19FEEF8  core\fma.a68
-  F29BB703B0896272  core\fmod.a68
-  9C9390D4E1C2CBA0  core\fpadd.a68
-  C0A827CDED433053  core\fpcmp.a68
-  2A7BC812F5D621DB  core\fpdiv.a68
-  4428859434208EFB  core\fpmul.a68
-  56D40E02204D9448  core\fpneg.a68
-  84D3085A63B45FD5  core\fppwr.a68
+  12E5889ED09BF53B  core\fma.a68
+  D125E58EB7B2C578  core\fmod.a68
+  D040F9ED2F1E7C00  core\fpadd.a68
+  E159BB6A42AE7301  core\fpcmp.a68
+  DC007422666BB3EB  core\fpdiv.a68
+  F455968FA3FBA09D  core\fpmul.a68
+  63F6D3ED29CC05D2  core\fpneg.a68
+  1730A9B981A16D93  core\fppwr.a68
   E9AB1DCA26226DAD  fmt\fcvt.a68
-  AB734B50BAECE710  fmt\FormatDouble.a68
+  F9BE50079F9DE01C  fmt\FormatDouble.a68
   AB21F070AAF3F4D9  fmt\FormatFloat.a68
-  AEC4724279C97E31  ieee754.inc
-  B43677DACBD19CAB  ieee754d.inc
-  A941697C45FE6B5F  math\asincos.a68
-  62B8151B4C47F728  math\asincosd.a68
-  F3204A9DDE58637B  math\atan.a68
-  BE9F461271A29299  math\dpmath.a68
-  FAEA368E26797E14  math\exp.a68
-  BAE49E09406E6968  math\floor.a68
-  03173FFC156B702B  math\log.a68
-  1EC026AA73B2FA14  math\sincos.a68
-  45AF221B1EE0A400  math\sqrt.a68
+  9FC3D85E251211D4  ieee754.inc
+  080CA4B9434161C7  math\asincos.a68
+  01F194E8592C677F  math\asincosd.a68
+  A4371770B3C6EFE8  math\atan.a68
+  892C75CB20515660  math\dpmath.a68
+  03D67C77D062F30C  math\exp.a68
+  5BF8B8E184500C64  math\floor.a68
+  21A7745052DB192E  math\log.a68
+  35554ADF42FA7D2A  math\sincos.a68
+  DE430AA59B57B238  math\sqrt.a68
