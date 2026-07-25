@@ -251,6 +251,7 @@ struct Node {
 
   // Block or statement expression
   Node *body;
+  Obj *vla_mark; // reclamation marker: an ND_BLOCK that directly declares a VLA
 
   // Struct member access
   Member *member;

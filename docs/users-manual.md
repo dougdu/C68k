@@ -344,7 +344,7 @@ program to the gallery build, drop a single-source `.c` in `samples/` and add it
   length; a short file reads back **padded to the next 128-byte boundary with `0x1A`** (Ctrl-Z, the
   CP/M soft-EOF). Osiris FAT12 stores the exact length. A tool that must behave identically on both
   OSes should round its own data to 128-byte records or treat `0x1A` as end-of-text.
-- **No variable-length arrays** (use a fixed bound or `malloc`); `<complex.h>`, `<fenv.h>`,
+- **Variable-length arrays** are supported (block-scoped, reclaimed on scope exit); `<complex.h>`,
   `<tgmath.h>`, and threads are out of scope. See the
   [reference manual](reference-manual.md#7-standard-library-reference) for the full library scope.
 

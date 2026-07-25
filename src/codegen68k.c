@@ -180,6 +180,12 @@ static void gen_addr(Node *node) {
   switch (node->kind) {
   case ND_VAR:
     if (node->var->is_local) {
+      // A VLA variable's slot holds the runtime data pointer, so load it (an
+      // ordinary local's "address" is the slot itself).
+      if (node->ty->kind == TY_VLA) {
+        println("  move.l %d(a6),d0", node->var->offset);
+        return;
+      }
       // Local / parameter: A6-relative.
       println("  lea %d(a6),a0", node->var->offset);
       println("  move.l a0,d0");
@@ -214,9 +220,10 @@ static void gen_addr(Node *node) {
     }
     break;
   case ND_VLA_PTR:
-    // Variable-length arrays are a documented c68k exclusion (they need a
-    // runtime stack allocator; use a fixed bound or malloc instead).
-    error_tok(node->tok, "variable-length arrays are not supported by c68k");
+    // The VLA designator's lvalue is its A6-relative slot (which holds the
+    // runtime data pointer).
+    println("  lea %d(a6),a0", node->var->offset);
+    println("  move.l a0,d0");
     return;
   }
   error_tok(node->tok, "not an lvalue");
@@ -816,6 +823,14 @@ static void gen_expr(Node *node) {
     gen_addr(node->lhs);
     return;
   case ND_ASSIGN:
+    if (node->lhs->kind == ND_VLA_PTR) {
+      // `vla = alloca(size)`: store the alloca pointer straight into the VLA's
+      // A6-relative slot. NOT via the generic push-address / gen-rhs path --
+      // the alloca's `suba.l d0,sp` moves SP between the push and its pop.
+      gen_expr(node->rhs);
+      println("  move.l d0,%d(a6)", node->lhs->var->offset);
+      return;
+    }
     gen_addr(node->lhs);
     push();
     gen_expr(node->rhs);
@@ -919,6 +934,18 @@ static void gen_expr(Node *node) {
     return;
   }
   case ND_FUNCALL: {
+    // Inline alloca (also the lowering target of a VLA declaration): grow the
+    // stack and return the new SP as the allocation pointer. The SP move is a
+    // scope-lifetime allocation reclaimed at block/function exit -- not an
+    // eval-stack push -- so `depth` is left unchanged. Runs at depth == 0.
+    if (node->lhs->kind == ND_VAR && !strcmp(node->lhs->var->name, "alloca")) {
+      gen_expr(node->args);       // size -> D0
+      println("  addq.l #3,d0");   // round up to a multiple of 4 (keeps SP even)
+      println("  andi.l #-4,d0");
+      println("  suba.l d0,sp");
+      println("  move.l sp,d0");
+      return;
+    }
     // A returns_twice call (setjmp) is re-entered by longjmp, which restores SP
     // and loses any temporary the surrounding expression left on the SP stack.
     // Spill those pending temporaries to frame slots (A6-relative, so they
@@ -1073,8 +1100,13 @@ static void gen_stmt(Node *node) {
   }
   case ND_FOR: {
     int c = count();
+    // If the loop body declares a VLA, its block marker is the SP-reclaim target
+    // for `continue`/`break`, which skip the block's own exit restore.
+    Obj *m = node->then->kind == ND_BLOCK ? node->then->vla_mark : NULL;
     if (node->init)
       gen_stmt(node->init);
+    if (m)
+      println("  move.l sp,%d(a6)", m->offset); // seed (valid even if 0 iters)
     println("L_begin_%d:", c);
     if (node->cond) {
       gen_expr(node->cond);
@@ -1083,21 +1115,32 @@ static void gen_stmt(Node *node) {
     }
     gen_stmt(node->then);
     println("%s:", node->cont_label);
+    if (m)
+      println("  move.l %d(a6),sp", m->offset); // reclaim VLAs on `continue`
     if (node->inc)
       gen_expr(node->inc);
     println("  bra L_begin_%d", c);
     println("%s:", node->brk_label);
+    if (m)
+      println("  move.l %d(a6),sp", m->offset); // reclaim VLAs on `break`
     return;
   }
   case ND_DO: {
     int c = count();
+    Obj *m = node->then->kind == ND_BLOCK ? node->then->vla_mark : NULL;
+    if (m)
+      println("  move.l sp,%d(a6)", m->offset);
     println("L_begin_%d:", c);
     gen_stmt(node->then);
     println("%s:", node->cont_label);
+    if (m)
+      println("  move.l %d(a6),sp", m->offset); // reclaim VLAs on `continue`
     gen_expr(node->cond);
     cmp_zero(node->cond->ty);
     println("  bne L_begin_%d", c);
     println("%s:", node->brk_label);
+    if (m)
+      println("  move.l %d(a6),sp", m->offset); // reclaim VLAs on `break`
     return;
   }
   case ND_SWITCH:
@@ -1125,8 +1168,14 @@ static void gen_stmt(Node *node) {
     gen_stmt(node->lhs);
     return;
   case ND_BLOCK:
+    // A block that declares a VLA saves its entry SP and restores it on normal
+    // exit, dropping every alloca done inside (one marker reclaims them all).
+    if (node->vla_mark)
+      println("  move.l sp,%d(a6)", node->vla_mark->offset);
     for (Node *n = node->body; n; n = n->next)
       gen_stmt(n);
+    if (node->vla_mark)
+      println("  move.l %d(a6),sp", node->vla_mark->offset);
     return;
   case ND_GOTO:
     println("  bra %s", node->unique_label);

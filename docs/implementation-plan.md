@@ -242,9 +242,9 @@ suite goes **lockstep** across both OSes.
       `restrict`/`inline` are parsed and honored by the front end.)_
 - [x] Variadic functions end-to-end on the m68k ABI (`<stdarg.h>` `va_*`). _(P4: prologue stores the
       first stack vararg in `__va_area__`; drives the `printf` family.)_
-- [x] VLAs / variably-modified types (or a documented, tested exclusion). _(**Documented exclusion**:
-      c68k rejects a VLA with a clear diagnostic — "variable-length arrays are not supported" — rather
-      than miscompiling; use a fixed bound or `malloc`.)_
+- [x] VLAs / variably-modified types (or a documented, tested exclusion). _(**Implemented** 2026-07-25:
+      block-scoped VLAs + `alloca`, reclaimed on scope exit / each loop iteration; `tests/lockstep/vlatest.c`
+      11/11 on both OSes. A VLA parameter whose size names an earlier parameter must be written as a pointer.)_
 - [x] Bitfield edge cases on big-endian ILP32. _(Codegen does shift/mask extract + load-modify-store;
       signed/unsigned fields and width truncation verified.)_
 - [x] A C99 language conformance battery, green on both OSes. _(`c99test.c`: **C99 PASS 18/18** on both

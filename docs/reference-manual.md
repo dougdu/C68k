@@ -69,9 +69,12 @@ The front end is chibicc's C11 preprocessor + parser, retargeted to **ILP32 big-
 
 `-target` affects **only** preprocessing; the emitted object is byte-identical regardless of target.
 
-### 2.3 Language exclusions
+### 2.3 Language notes
 
-- **Variable-length arrays** are not supported (use a fixed bound or `malloc`).
+- **Variable-length arrays** are supported (C99 §6.7.5.2): block-scoped and reclaimed on scope
+  exit (including each loop iteration); an oversized VLA overflows the stack, as on any C
+  implementation. A VLA *parameter* whose size names an earlier parameter (`int a[n]`) must be
+  written as a pointer (`int *a`) — the size expression is not in scope during parameter parsing.
 - No hardware-FPU codegen (soft-float only); `_Complex`, `<tgmath.h>`, and threads are out of
   scope. `<fenv.h>` exception flags and directed rounding are supported in software.
 

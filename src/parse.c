@@ -106,6 +106,10 @@ static Node *current_switch;
 
 static Obj *builtin_alloca;
 
+// Set by the VLA-lowering path when a compound statement directly declares a
+// VLA, so compound_stmt() can give that block a stack-reclamation marker.
+static bool vla_declared;
+
 static bool is_typename(Token *tok);
 static Type *declspec(Token **rest, Token *tok, VarAttr *attr);
 static Type *typename(Token **rest, Token *tok);
@@ -878,6 +882,8 @@ static Node *declaration(Token **rest, Token *tok, Type *basety, VarAttr *attr) 
     if (ty->kind == TY_VLA) {
       if (equal(tok, "="))
         error_tok(tok, "variable-sized object may not be initialized");
+
+      vla_declared = true; // this block needs a reclamation marker
 
       // Variable length arrays (VLAs) are translated to alloca() calls.
       // For example, `int x[n+2]` is translated to `tmp = n + 2,
@@ -1773,6 +1779,9 @@ static Node *compound_stmt(Token **rest, Token *tok) {
   Node head = {};
   Node *cur = &head;
 
+  bool prev_vla = vla_declared;
+  vla_declared = false;
+
   enter_scope();
 
   while (!equal(tok, "}")) {
@@ -1803,6 +1812,13 @@ static Node *compound_stmt(Token **rest, Token *tok) {
   }
 
   leave_scope();
+
+  // A block that directly declares a VLA gets one reclamation marker; codegen
+  // saves SP on block entry and restores it on exit (dropping every alloca done
+  // inside). Nested VLA blocks manage their own markers.
+  if (vla_declared)
+    node->vla_mark = new_lvar("", pointer_to(ty_char));
+  vla_declared = prev_vla;
 
   node->body = head.next;
   *rest = tok->next;
