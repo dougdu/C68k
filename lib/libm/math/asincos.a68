@@ -1,7 +1,7 @@
 	title	"IEEE 754 single-precision arcsine / arccosine"
 ; ============================================================
-;  _asin / _asinf — arcsine
-;  _acos / _acosf — arccosine
+;  _asin / _asins — arcsine
+;  _acos / _acoss — arccosine
 ;
 ;  float _asin(float x) — returns asin(x) in D0
 ;  float _acos(float x) — returns acos(x) in D0
@@ -23,16 +23,16 @@
 	.model	flat
 	include	ieee754.inc
 
-	public	_asinf, _acosf
+	public	_asins, _acoss
 	extern	_fpadd, _fpsub, _fpmult, _fpdiv
-	extern	_sqrtf, _atanf
+	extern	_sqrts, _atans
 
 	.code
 
 ; ============================================================
-;  _asin / _asinf
+;  _asin / _asins
 ; ============================================================
-_asinf:
+_asins:
 	link	a6,#0
 	movem.l	d2-d4,-(sp)
 	move.l	8(a6),d2		; d2 = x
@@ -61,7 +61,7 @@ _asinf:
 	addq.l	#8,sp
 
 	move.l	d0,-(sp)
-	jsr	_sqrtf			; s = sqrt(1 - x^2)
+	jsr	_sqrts			; s = sqrt(1 - x^2)
 	addq.l	#4,sp
 
 	; --- q = x / s ---
@@ -72,7 +72,7 @@ _asinf:
 
 	; --- asin = atan(q) ---
 	move.l	d0,-(sp)
-	jsr	_atanf
+	jsr	_atans
 	addq.l	#4,sp
 
 _asin_ret:
@@ -93,9 +93,9 @@ _asin_nan:
 	bra	_asin_ret
 
 ; ============================================================
-;  _acos / _acosf
+;  _acos / _acoss
 ; ============================================================
-_acosf:
+_acoss:
 	link	a6,#0
 	movem.l	d2-d4,-(sp)
 	move.l	8(a6),d2		; d2 = x
@@ -126,7 +126,7 @@ _acosf:
 	addq.l	#8,sp
 
 	move.l	d0,-(sp)
-	jsr	_sqrtf			; s = sqrt(1 - x^2)
+	jsr	_sqrts			; s = sqrt(1 - x^2)
 	addq.l	#4,sp
 
 	; --- q = s / |x| ---
@@ -137,7 +137,7 @@ _acosf:
 
 	; --- a = atan(s/|x|) ---
 	move.l	d0,-(sp)
-	jsr	_atanf
+	jsr	_atans
 	addq.l	#4,sp
 
 	; x > 0 -> acos = a ;  x < 0 -> acos = pi - a

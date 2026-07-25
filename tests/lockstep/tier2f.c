@@ -1,9 +1,11 @@
 /* Tier 2 math -- float (single-precision) and long double variants.
  * Verifies the C99 *f API actually runs libm's single-precision kernels
- * (_sqrtf/_expf/...), the derived *f (tanf/asinf/acosf/log10f/atan2f), and
- * the *l API (long double == double).  Prints "TIER2F PASS n/n" on success. */
+ * (_sqrts/_exps/...), the derived *f (tanf/asinf/acosf/log10f/atan2f), the
+ * EDOM/ERANGE errno behavior of the *f wrappers, and the *l API (long double
+ * == double).  Prints "TIER2F PASS n/n" on success. */
 #include <stdio.h>
 #include <math.h>
+#include <errno.h>
 
 static int pass, total;
 #define CHECK(c)                                                               \
@@ -72,6 +74,19 @@ int main(void) {
   CHECK(neart(atan2f(1.0f, -1.0f), 2.3561945, 1e-5));  /* 3pi/4 */
   CHECK(neart(atan2f(-1.0f, -1.0f), -2.3561945, 1e-5));
   CHECK(neart(atan2f(1.0f, 0.0f), 1.5707963, 1e-5));   /* pi/2 */
+
+  /* ---- Bucket 3: errno (EDOM/ERANGE) on the float wrappers ---- */
+  errno = 0; CHECK(isnan(sqrtf(-1.0f)) && errno == EDOM);
+  errno = 0; CHECK(isnan(logf(-1.0f)) && errno == EDOM);
+  errno = 0; CHECK(logf(0.0f) == -HUGE_VALF && errno == ERANGE);
+  errno = 0; CHECK(log10f(0.0f) == -HUGE_VALF && errno == ERANGE); /* inherits logf */
+  errno = 0; CHECK(isinf(expf(200.0f)) && errno == ERANGE);
+  errno = 0; CHECK(isnan(powf(-1.0f, 0.5f)) && errno == EDOM);
+  errno = 0; CHECK(isinf(powf(1e30f, 3.0f)) && errno == ERANGE);
+  errno = 0; CHECK(isnan(fmodf(1.0f, 0.0f)) && errno == EDOM);
+  errno = 0; CHECK(isnan(asinf(2.0f)) && errno == EDOM);
+  errno = 0; CHECK(isnan(acosf(2.0f)) && errno == EDOM);
+  errno = 0; (void)sinf(0.5f); CHECK(errno == 0); /* no-error path leaves errno */
 
   /* ---- long double variants (long double == double on this target) ---- */
   CHECK(neart(sqrtl(2.0), 1.4142135623730951, 1e-6));

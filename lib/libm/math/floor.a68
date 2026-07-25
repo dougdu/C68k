@@ -1,14 +1,14 @@
 	title	"IEEE 754 single-precision floor, ceil, modf"
 ; ============================================================
-;  _floor / _floorf — floor(x): largest integer <= x
-;  _ceil  / _ceilf  — ceil(x): smallest integer >= x
-;  _modf  / _modff  — split into integer and fraction parts
+;  _floor / _floors — floor(x): largest integer <= x
+;  _ceil  / _ceils  — ceil(x): smallest integer >= x
+;  _modf  / _modfs  — split into integer and fraction parts
 ; ============================================================
 
 	.model	flat
 	include	ieee754.inc
 
-	public	_floorf, _ceilf, _modff
+	public	_floors, _ceils, _modfs
 	extern	_fpadd, _fpsub, _fpftol, _fpltof
 
 	.code
@@ -18,7 +18,7 @@ _floor_one	dc.l	SNG_ONE
 ; ============================================================
 ;  _floor — largest integer <= x
 ; ============================================================
-_floorf:
+_floors:
 	link	a6,#0
 	move.l	8(a6),d0		; d0 = x
 
@@ -86,12 +86,12 @@ _floor_small_zero:
 ;  _ceil — smallest integer >= x
 ;  ceil(x) = -floor(-x)
 ; ============================================================
-_ceilf:
+_ceils:
 	link	a6,#0
 	move.l	8(a6),d0
 	eori.l	#IEEE754_SNG_SIGN_MASK,d0 ; negate
 	move.l	d0,-(sp)
-	jsr	_floorf
+	jsr	_floors
 	addq.l	#4,sp
 	eori.l	#IEEE754_SNG_SIGN_MASK,d0 ; negate result
 	unlk	a6
@@ -103,7 +103,7 @@ _ceilf:
 ;  Returns fractional part in D0, stores integer part via pointer.
 ;  C ABI (args pushed right-to-left): 8(a6) = x (arg1), 12(a6) = &ipart (arg2).
 ; ============================================================
-_modff:
+_modfs:
 	link	a6,#0
 	movem.l	d2/a0,-(sp)
 

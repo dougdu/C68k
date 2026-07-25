@@ -136,28 +136,95 @@ static double acos(double x) {
 }
 
 /* ------------------------------------------------------------------------
- * C99 `float` variants.  These bind directly to libm's single-precision
- * kernels (`_sqrtf`/`_expf`/...), so `float` math runs 32-bit soft-float
- * instead of promoting to double.  They are plain externs, pulled from libm
- * only when referenced.  tan/log10/atan2 have no dedicated kernel and are
- * composed, mirroring the double versions above.
+ * C99 `float` variants.  The single-precision kernels are the `s`-suffixed
+ * libm exports (`sqrts`/`exps`/...).  The C99 `f` names with a domain/range
+ * error are `static` inline wrappers that set EDOM/ERANGE (mirroring the double
+ * wrappers above) and then dispatch to the single kernel, so `float` math runs
+ * 32-bit soft-float with conforming errno instead of promoting to double.  The
+ * no-error names are trivial pass-throughs over their kernels; tan/log10/atan2
+ * are composed over the wrappers (log10f inherits logf's errno).
  * ------------------------------------------------------------------------ */
-extern float sqrtf(float);
-extern float expf(float);
-extern float logf(float);
-extern float sinf(float);
-extern float cosf(float);
-extern float atanf(float);
-extern float powf(float, float);
-extern float fmodf(float, float);
-extern float floorf(float);
-extern float ceilf(float);
-extern float fabsf(float);
-extern float modff(float, float *);
-extern float asinf(float);
-extern float acosf(float);
-extern float fmaf(float, float, float);
+extern float sqrts(float);
+extern float exps(float);
+extern float logs(float);
+extern float pows(float, float);
+extern float fmods(float, float);
+extern float asins(float);
+extern float acoss(float);
+extern float sins(float);
+extern float coss(float);
+extern float atans(float);
+extern float floors(float);
+extern float ceils(float);
+extern float fabss(float);
+extern float modfs(float, float *);
+extern float fmas(float, float, float);
 
+static float sqrtf(float x) {
+  if (x < 0.0f) {
+    errno = EDOM;
+    return (float)__nan_val();
+  }
+  return sqrts(x);
+}
+static float expf(float x) {
+  float r = exps(x);
+  if (__isinf((double)r) && __isfinite((double)x))
+    errno = ERANGE; /* overflow */
+  return r;
+}
+static float logf(float x) {
+  if (x < 0.0f) {
+    errno = EDOM;
+    return (float)__nan_val();
+  }
+  if (x == 0.0f) {
+    errno = ERANGE;
+    return -(float)__huge_val();
+  }
+  return logs(x);
+}
+static float powf(float b, float e) {
+  float r = pows(b, e);
+  if (__isnan((double)r) && !__isnan((double)b) && !__isnan((double)e))
+    errno = EDOM;
+  else if (__isinf((double)r) && __isfinite((double)b) && __isfinite((double)e))
+    errno = ERANGE;
+  return r;
+}
+static float fmodf(float a, float b) {
+  if (b == 0.0f) {
+    errno = EDOM;
+    return (float)__nan_val();
+  }
+  return fmods(a, b);
+}
+static float asinf(float x) {
+  if (x < -1.0f || x > 1.0f) {
+    errno = EDOM;
+    return (float)__nan_val();
+  }
+  return asins(x);
+}
+static float acosf(float x) {
+  if (x < -1.0f || x > 1.0f) {
+    errno = EDOM;
+    return (float)__nan_val();
+  }
+  return acoss(x);
+}
+
+/* no domain/range error -- trivial pass-throughs over the single kernels */
+static float sinf(float x) { return sins(x); }
+static float cosf(float x) { return coss(x); }
+static float atanf(float x) { return atans(x); }
+static float floorf(float x) { return floors(x); }
+static float ceilf(float x) { return ceils(x); }
+static float fabsf(float x) { return fabss(x); }
+static float modff(float x, float *ip) { return modfs(x, ip); }
+static float fmaf(float x, float y, float z) { return fmas(x, y, z); }
+
+/* composed over the wrappers; log10f inherits logf's EDOM/ERANGE */
 static float tanf(float x) { return sinf(x) / cosf(x); }
 static float log10f(float x) { return logf(x) / (float)M_LN10; }
 static float atan2f(float y, float x) {

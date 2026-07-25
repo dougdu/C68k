@@ -1,6 +1,6 @@
 vendored library : libm
 upstream source  : C:\git\worm68k\68kTools\libraries\float\ieee754
-synced (UTC)     : 2026-07-25 17:58:02Z
+synced (UTC)     : 2026-07-25 22:57:34Z
 file count       : 34
 
 files (sha256, path):
@@ -15,26 +15,26 @@ files (sha256, path):
   2925418EA60156C6  core\dpfma.a68
   400F501EB67CB801  core\dpmul.a68
   7508AC27E46E8D3D  core\dpneg.a68
-  4622109540512D97  core\fabs.a68
+  F930B4E656653652  core\fabs.a68
   7B4C938427283C83  core\fenv.a68
-  12E5889ED09BF53B  core\fma.a68
-  D125E58EB7B2C578  core\fmod.a68
+  64B3099C54179E44  core\fma.a68
+  C3A91BE548A4C00A  core\fmod.a68
   D040F9ED2F1E7C00  core\fpadd.a68
   E159BB6A42AE7301  core\fpcmp.a68
   DC007422666BB3EB  core\fpdiv.a68
   F455968FA3FBA09D  core\fpmul.a68
   63F6D3ED29CC05D2  core\fpneg.a68
-  1730A9B981A16D93  core\fppwr.a68
+  21E9584980A2CC8F  core\fppwr.a68
   E9AB1DCA26226DAD  fmt\fcvt.a68
   F9BE50079F9DE01C  fmt\FormatDouble.a68
   AB21F070AAF3F4D9  fmt\FormatFloat.a68
   9FC3D85E251211D4  ieee754.inc
-  080CA4B9434161C7  math\asincos.a68
+  F81ED18AD02E00EF  math\asincos.a68
   01F194E8592C677F  math\asincosd.a68
-  A4371770B3C6EFE8  math\atan.a68
-  892C75CB20515660  math\dpmath.a68
-  03D67C77D062F30C  math\exp.a68
-  5BF8B8E184500C64  math\floor.a68
-  21A7745052DB192E  math\log.a68
-  35554ADF42FA7D2A  math\sincos.a68
-  DE430AA59B57B238  math\sqrt.a68
+  8D049EFA97CF8DF0  math\atan.a68
+  DF21CC1F2724077C  math\dpmath.a68
+  269562084181C529  math\exp.a68
+  BB167297EEC92873  math\floor.a68
+  273290C16A58192E  math\log.a68
+  8BF3AB1F73A717B7  math\sincos.a68
+  7A3319F64BEC90B4  math\sqrt.a68

@@ -1,6 +1,6 @@
 	title	"IEEE 754 single-precision modulo"
 ; ============================================================
-;  _fmod / _fmodf — floating-point remainder
+;  _fmod / _fmods — floating-point remainder
 ;
 ;  float _fmod(float x, float y) — returns x mod y in D0
 ;  Result has the sign of x.  EXACT and bounded: instead of O(x/y) repeated
@@ -13,12 +13,12 @@
 	.model	flat
 	include	ieee754.inc
 
-	public	_fmodf
+	public	_fmods
 	extern	_fpsub
 
 	.code
 
-_fmodf:
+_fmods:
 	link	a6,#0
 	movem.l	d3-d7,-(sp)
 

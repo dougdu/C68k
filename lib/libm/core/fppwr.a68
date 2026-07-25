@@ -1,6 +1,6 @@
 	title	"IEEE 754 single-precision power"
 ; ============================================================
-;  _pow / _powf — x raised to the power y
+;  _pow / _pows — x raised to the power y
 ;
 ;  float _pow(float x, float y) — returns x^y in D0
 ;  Uses identity: x^y = exp(y * ln(x))
@@ -10,12 +10,12 @@
 	.model	flat
 	include	ieee754.inc
 
-	public	_powf
-	extern	_fpmult, _logf, _expf, _fpftol, _fpltof
+	public	_pows
+	extern	_fpmult, _logs, _exps, _fpftol, _fpltof
 
 	.code
 
-_powf:
+_pows:
 	link	a6,#0
 	movem.l	d2-d5,-(sp)
 	move.l	8(a6),d2		; d2 = x
@@ -57,14 +57,14 @@ _pow_absx:
 _pow_calc:
 	; x^y = exp(y * ln(x))
 	move.l	d2,-(sp)
-	jsr	_logf			; d0 = ln(x)
+	jsr	_logs			; d0 = ln(x)
 	addq.l	#4,sp
 	move.l	d3,-(sp)		; push y
 	move.l	d0,-(sp)		; push ln(x)
 	jsr	_fpmult			; d0 = y * ln(x)
 	addq.l	#8,sp
 	move.l	d0,-(sp)
-	jsr	_expf			; d0 = exp(y * ln(x))
+	jsr	_exps			; d0 = exp(y * ln(x))
 	addq.l	#4,sp
 	tst.l	d4
 	beq.s	_pow_ret

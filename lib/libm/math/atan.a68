@@ -1,6 +1,6 @@
 	title	"IEEE 754 single-precision arctangent"
 ; ============================================================
-;  _atan / _atanf — arctangent
+;  _atan / _atans — arctangent
 ;
 ;  float _atan(float x) — returns atan(x) in D0
 ;
@@ -18,7 +18,7 @@
 	.model	flat
 	include	ieee754.inc
 
-	public	_atanf
+	public	_atans
 	extern	_fpadd, _fpsub, _fpmult, _fpdiv
 
 	.code
@@ -35,7 +35,7 @@ _at_c5		dc.l	$3E4CCCCD	;  1/5  =  0.2
 _at_c7		dc.l	$BE124925	; -1/7  = -0.142857
 _at_c9		dc.l	$3DC71C72	;  1/9  =  0.111111
 
-_atanf:
+_atans:
 	link	a6,#-8
 	; -4(a6) = flags:  bit 0 = reciprocal (segment 2)
 	;                  bit 1 = mid-range  (segment 1)

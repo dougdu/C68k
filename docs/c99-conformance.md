@@ -87,7 +87,7 @@ OS): `<float.h>`, `<iso646.h>`, `<limits.h>`, `<stdarg.h>`, `<stdbool.h>`,
 | `<iso646.h>` | Alternative operator spellings | ✅ | ✅ | `libc/include/iso646.h` | Complete. |
 | `<limits.h>` | Integer‑type limits | ✅ | ✅ | `include/limits.h`, `libc/include/limits.h` | Complete for ILP32. |
 | `<locale.h>` | Localization | ✅ | ⚠️ | `libc/include/locale.h`, `libc/core/locale.c` | `setlocale`/`localeconv` (`"C"`/`"POSIX"`/native `""`). On Osiris the native locale adopts the OS country (DOS `38h` — real `decimal_point`/`thousands_sep`/currency) **and** its collating sequence (`65h`/`06`), so `strcoll`/`strxfrm` order per the country table. CP/M‑68K has no country service, so `""` falls back to `"C"` (byte‑order collation). |
-| `<math.h>` | Mathematics | ⚠️ | ⚠️ | `libc/include/math.h`, `libc/core/*.c` → **libm** | Base transcendentals inline (double); the full C99 function set + classification/constants added in C (Tier 2 2a/2b/2c, with `EDOM`/`ERANGE`), the `f`/`l` type variants, and native `asin`/`acos`. Underlying libm passed its initial defect sweep (29/30 resolved); `sqrt`/`atan`/`asin`/`acos` ~1–2 ULP double. The double base functions now set `EDOM`/`ERANGE` on domain/range errors (float variants bind directly to libm and do not). Deviation: soft‑float fixed rounding (double transcendentals not correctly‑rounded), no `_Complex`. |
+| `<math.h>` | Mathematics | ⚠️ | ⚠️ | `libc/include/math.h`, `libc/core/*.c` → **libm** | Full C99 function set: base transcendentals + `f`/`l` type variants + classification/constants (Tier 2 2a/2b/2c) + native `asin`/`acos`. **Both** the `double` base functions and the `float` variants set `EDOM`/`ERANGE` on domain/range errors — the `f` names are errno-setting header wrappers over the `s`-suffixed single kernels; `l` == `double`. **Sole deviation: no `_Complex`** (so `<complex.h>`/`<tgmath.h>` absent). Soft-float transcendentals are not correctly-rounded (~1–2 ULP for `sqrt`/`atan`/`asin`/`acos`, more for others) — an *accuracy* note, not a conformance gap: C68K does not define `__STDC_IEC_559__`, so Annex F does not apply. |
 | `<setjmp.h>` | Non‑local jumps | ✅ | ✅ | `lib/runtime/rt68k.a68` + hdr | `setjmp`/`longjmp` asm shim; codegen spills temporaries across the `returns_twice` call so longjmp re‑entry is safe. |
 | `<signal.h>` | Signal handling | ⚠️ | ⚠️ | `libc/include/signal.h`, `libc/core/signal.c` | Synchronous only — no async delivery on these OSes; `raise` calls handlers inline. |
 | `<stdarg.h>` | Variable arguments | ✅ | ✅ | `include/stdarg.h` | m68k `va_list`. Conforming. |
@@ -214,21 +214,19 @@ byte order (`strcoll`==`strcmp`).
 
 ### `<math.h>` — mathematics
 
-Present functions are `double`‑only and implemented as **`static` inline
-wrappers** in the header over libm's `d`‑suffixed primitives.
-
-The **base transcendentals** stay `static` inline wrappers over libm's
-`d`-suffixed kernels.  (Their C names once collided with libm's single-precision
-symbols, but the 2026-07-26 runtime refactor renamed those to `_sqrtf`/`_expf`/etc.,
-so the clash is gone and the base names could now be plain externs -- they stay
-header wrappers for now.)  All **C99 additions** (Tier 2 Phase
-2a/2b/2c) are now present as real extern functions in `libc/core/*.c` over the
-same kernels, plus the standard macros (`HUGE_VAL`/`INFINITY`/`NAN`, `FP_*`,
-classification, comparison), and the `f`/`l` type variants.  Remaining gap:
-`errno` is not set by the inline base functions.
+The base transcendentals (both `double` and `float`) are **`static` inline
+wrappers** in the header: the `double` names wrap libm's `d`‑suffixed kernels and
+the `f` names wrap the `s`‑suffixed single kernels, each adding the C99
+`EDOM`/`ERANGE` behavior before dispatching (see the `float` variants note
+below).  All **C99 additions** (Tier 2 Phase 2a/2b/2c) are real extern functions
+in `libc/core/*.c` over the same kernels, plus the standard macros
+(`HUGE_VAL`/`INFINITY`/`NAN`, `FP_*`, classification, comparison) and the `f`/`l`
+type variants.  **Sole conformance gap: no `_Complex`** (so `<complex.h>` and
+`<tgmath.h>` are absent); everything else in C99 §7.12 is present with conforming
+`errno`.
 
 Notes: `fma` is the libm correctly‑rounded single‑rounding fused multiply‑add
-(`_fmad`), and `fmaf` is `_fmaf` (both correctly rounded); `rint`/`nearbyint`
+(`_fmad`), and `fmaf` wraps `_fmas` (both correctly rounded); `rint`/`nearbyint`
 use a floor‑based ties‑to‑even; `erf`/`erfc` are a compact rational
 approximation (~1e‑7).
 
@@ -251,14 +249,22 @@ are ~1–2 ULP.  The other double kernels are far better than the previous
 single‑grade (~1e‑7) but are **not** correctly‑rounded binary64:
 `expd` ≈ 481, `sind` ≈ 957, `cosd` ≈ 4733, `logd` ≈ 3966, `powd` ≈ 37 000 ULP
 (≈ 11–14 good decimal digits).  Verified single, double, and `long double` on
-both Osiris and CP/M (`tests/lockstep/tier2.c` 133/133, `tier2f.c` 58/58).
+both Osiris and CP/M (`tests/lockstep/tier2.c` 133/133, `tier2f.c` 69/69).
+These ULP figures are a **quality** note, not a conformance requirement — C68K
+does not define `__STDC_IEC_559__`, so C99 Annex F (correctly‑rounded operations)
+does not apply.
 
-**`float` / `long double` variants:** the C99 `f`‑suffixed base functions
-(`sqrtf`/`expf`/`logf`/`sinf`/`cosf`/`atanf`/`asinf`/`acosf`/`powf`/`fmodf`/
-`floorf`/`ceilf`/`fabsf`/`modff`/`fmaf`) bind to libm's real single‑precision kernels,
-so `float` math runs 32‑bit soft‑float instead of promoting to double; only
-`tanf`/`log10f`/`atan2f` are composed in the header.  The `l`‑suffixed variants
-are thin wrappers over the double versions (`long double` == `double`).
+**`float` / `long double` variants:** the C99 `f`‑suffixed base functions run
+libm's real single‑precision (`s`‑suffixed) kernels, so `float` math is 32‑bit
+soft‑float instead of promoting to double.  The seven with a domain/range error
+(`sqrtf`/`logf`/`expf`/`powf`/`fmodf`/`asinf`/`acosf`) are `static` inline
+wrappers that set `EDOM`/`ERANGE` exactly like their `double` counterparts; the
+no‑error names (`sinf`/`cosf`/`atanf`/`floorf`/`ceilf`/`fabsf`/`modff`/`fmaf`) are
+trivial pass‑throughs; `tanf`/`log10f`/`atan2f` are composed over the wrappers
+(so `log10f` inherits `logf`'s `errno`).  The `l`‑suffixed variants are thin
+wrappers over the double versions (`long double` == `double`), inheriting their
+`errno`.  (This `float`/`s`‑kernel design is specified in
+[math-float-errno-refactor.md](math-float-errno-refactor.md).)
 
 | Function | Purpose | Osiris | CP/M‑68K | Library / File | Notes |
 |---|---|:--:|:--:|---|---|
@@ -292,7 +298,7 @@ are thin wrappers over the double versions (`long double` == `double`).
 | `lround` `llround` `lrint` `llrint` | round‑to‑integer | ✅ | ✅ | libc / `lround.c`,`llround.c`,`lrint.c`,`llrint.c` | |
 | `remainder` `remquo` | IEEE remainder | ✅ | ✅ | libc / `remainder.c`,`remquo.c` | via `rint`; `EDOM` on `y==0`. |
 | `copysign` `nan` `nextafter` `nexttoward` | sign/representation | ✅ | ✅ | libc / `copysign.c`,`nan.c`,`nextafter.c`,`nexttoward.c` | |
-| `fdim` `fmax` `fmin` `fma` | difference/max/min/FMA | ✅ | ✅ | libc / `fdim.c`,`fmax.c`,`fmin.c`,`fma.c` | `fma` = libm `_fmad`; `fmaf` = libm `_fmaf` (both correctly rounded). |
+| `fdim` `fmax` `fmin` `fma` | difference/max/min/FMA | ✅ | ✅ | libc / `fdim.c`,`fmax.c`,`fmin.c`,`fma.c` | `fma` = libm `_fmad`; `fmaf` = libm `_fmas` (both correctly rounded). |
 | `fpclassify` `isnan` `isinf` `isfinite` `isnormal` `signbit` | classification | ✅ | ✅ | libc / `__*.c` + hdr | standard macros over `__` helpers. |
 | `HUGE_VAL` `INFINITY` `NAN` | constants | ✅ | ✅ | libc / `__huge_val.c`,`__nan_val.c` + hdr | function‑backed (not constant expressions). |
 

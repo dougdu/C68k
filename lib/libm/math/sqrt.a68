@@ -1,6 +1,6 @@
 	title	"IEEE 754 single-precision square root"
 ; ============================================================
-;  _sqrt / _sqrtf — single-precision square root
+;  _sqrt / _sqrts — single-precision square root
 ;
 ;  float _sqrt(float x) — returns sqrt(x) in D0
 ;  Uses Newton-Raphson iteration: y = (y + x/y) / 2
@@ -11,14 +11,14 @@
 	.model	flat
 	include	ieee754.inc
 
-	public	_sqrtf
+	public	_sqrts
 	extern	_fpadd, _fpdiv, _fpmult
 	extern	_fe_status		; D1 sticky exception flags
 	extern	_fe_round		; D4 directed rounding mode
 
 	.code
 
-_sqrtf:
+_sqrts:
 	link	a6,#0
 	movem.l	d2-d7,-(sp)
 

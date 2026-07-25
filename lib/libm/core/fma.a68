@@ -1,6 +1,6 @@
 	title	"IEEE 754 single-precision fused multiply-add"
 ; ============================================================
-;  _fma / _fmaf -- correctly-rounded single-precision FMA
+;  _fma / _fmas -- correctly-rounded single-precision FMA
 ;
 ;  float _fma(float a, float b, float c)  ->  round(a*b + c)  (single RNE)
 ;  Arguments: 8(a6)=a, 12(a6)=b, 16(a6)=c.  Result in D0.
@@ -19,13 +19,13 @@
 	.model	flat
 	include	ieee754.inc
 
-	public	_fmaf
+	public	_fmas
 	extern	_fe_status		; D1 sticky exception flags
 	extern	_fe_round, _fe_dirup, _fe_ovf_maxf	; D4 directed rounding
 
 	.code
 
-_fmaf:
+_fmas:
 	link	a6,#0
 	movem.l	d2-d7,-(sp)
 	move.l	8(a6),d2		; a

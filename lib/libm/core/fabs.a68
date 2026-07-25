@@ -1,6 +1,6 @@
 	title	"IEEE 754 single-precision absolute value"
 ; ============================================================
-;  _fabs / _fabsf — absolute value of single-precision float
+;  _fabs / _fabss — absolute value of single-precision float
 ;
 ;  float _fabs(float x) — returns |x| in D0
 ;  Clears the sign bit.
@@ -9,11 +9,11 @@
 	.model	flat
 	include	ieee754.inc
 
-	public	_fabsf
+	public	_fabss
 
 	.code
 
-_fabsf:
+_fabss:
 	move.l	4(sp),d0
 	andi.l	#$7FFFFFFF,d0		; clear sign bit
 	rts
