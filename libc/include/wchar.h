@@ -107,4 +107,17 @@ int vfwprintf(FILE *fp, const wchar_t *fmt, va_list ap);
 int vwprintf(const wchar_t *fmt, va_list ap);
 int vswprintf(wchar_t *s, size_t n, const wchar_t *fmt, va_list ap);
 
+/* --- wide formatted input (Tier C) ---
+ * Same conversions as scanf, reading wide characters.  %c/%s/%[ store a
+ * (multibyte) char array by default and a wchar_t array under the l modifier
+ * (%lc/%ls/%l[); numeric conversions read the same digits as the narrow
+ * engine.  Return the number of assigned conversions, or EOF on input
+ * failure before any conversion. */
+int fwscanf(FILE *fp, const wchar_t *fmt, ...);
+int wscanf(const wchar_t *fmt, ...);
+int swscanf(const wchar_t *s, const wchar_t *fmt, ...);
+int vfwscanf(FILE *fp, const wchar_t *fmt, va_list ap);
+int vwscanf(const wchar_t *fmt, va_list ap);
+int vswscanf(const wchar_t *s, const wchar_t *fmt, va_list ap);
+
 #endif /* _WCHAR_H */

@@ -117,4 +117,17 @@ typedef struct {
 } _scan;
 int _vscan(_scan *z, const char *fmt, va_list ap);
 
+/* ---- wide scanf/fwscanf/swscanf core (vwscanf.c) ------------------------
+ * Tier C: the wide scanner mirrors _vscan over a wchar_t source that is
+ * either a wide-oriented FILE (fgetwc/ungetwc) or a NUL-terminated wchar_t
+ * string.  %c/%s/%[ store a multibyte char array by default and a wchar_t
+ * array under the l modifier.  In its own object so narrow-scanf programs
+ * never link the wide engine (dead-stripping). */
+typedef struct {
+  FILE *fp;         /* stream source, or NULL for a wide string */
+  const wchar_t *s; /* wide string cursor, or NULL for a stream */
+  long nread;       /* wide characters consumed (for %n / EOF detection) */
+} _wscan;
+int _vwscan(_wscan *z, const wchar_t *fmt, va_list ap);
+
 #endif /* LIBC_INTERNAL_H */
