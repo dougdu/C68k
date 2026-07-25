@@ -10,15 +10,19 @@
 int ungetc(int c, FILE *fp) {
   if (c == EOF || !(fp->flags & _SF_READ))
     return EOF;
-  if (fp->p > fp->buf) {
+  if (!fp->base) {
+    fp->base = fp->buf;
+    fp->bufsize = BUFSIZ;
+  }
+  if (fp->p > fp->base) {
     fp->p--; /* room to back up over an already-served byte */
   } else {
-    if (fp->cnt >= BUFSIZ)
+    if (fp->cnt >= fp->bufsize)
       return EOF; /* buffer full at the front, nowhere to put it */
     if (fp->p == NULL)
-      fp->p = fp->buf; /* nothing read yet */
-    memmove(fp->buf + 1, fp->buf, fp->cnt);
-    fp->p = fp->buf;
+      fp->p = fp->base; /* nothing read yet */
+    memmove(fp->base + 1, fp->base, fp->cnt);
+    fp->p = fp->base;
   }
   *fp->p = (unsigned char)c;
   fp->cnt++;

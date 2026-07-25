@@ -42,6 +42,8 @@ FILE *fdopen(int fd, const char *mode) {
   fp->flags = flags | _SF_USED;
   fp->drain = 0;
   fp->cnt = 0;
-  fp->p = fp->buf;
+  fp->base = fp->buf;
+  fp->bufsize = BUFSIZ;
+  fp->p = fp->base;
   return fp;
 }

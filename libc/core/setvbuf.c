@@ -1,19 +1,28 @@
 #include <stdio.h>
 
-/* Buffering control.  The stream always uses its built-in BUFSIZ buffer, so a
- * caller-supplied buffer is accepted but ignored; only the mode is honored:
- * _IONBF flushes after every write, _IOFBF/_IOLBF keep the built-in buffering
- * (flush on full, and on newline for text).  Returns 0 on success, -1 on a bad
- * argument. */
+/* Buffering control.  A caller-supplied buffer of `size` bytes is adopted for a
+ * buffered stream (_IOFBF/_IOLBF); a NULL buffer keeps the stream's built-in
+ * BUFSIZ buffer.  _IONBF makes the stream unbuffered (flush after every write).
+ * Per C99 this must be called after the stream is opened and before any I/O.
+ * Returns 0 on success, -1 on a bad argument. */
 int setvbuf(FILE *fp, char *buf, int mode, size_t size) {
-  (void)buf;
-  (void)size;
   if (!fp || (mode != _IOFBF && mode != _IOLBF && mode != _IONBF))
     return -1;
-  if (mode == _IONBF)
+  if (mode == _IONBF) {
     fp->flags |= _SF_NBF;
-  else
+  } else {
     fp->flags &= ~_SF_NBF;
+    if (buf && size > 0) { /* adopt the caller's buffer */
+      fp->base = (unsigned char *)buf;
+      fp->bufsize = (int)size;
+      fp->p = fp->base;
+      fp->cnt = 0;
+    }
+  }
+  if (!fp->base) { /* stream not yet touched: fall back to the built-in buffer */
+    fp->base = fp->buf;
+    fp->bufsize = BUFSIZ;
+  }
   return 0;
 }
 

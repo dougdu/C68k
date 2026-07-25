@@ -45,7 +45,9 @@ FILE *_fopen_fp(FILE *fp, const char *path, const char *mode) {
   fp->flags = flags | _SF_USED;
   fp->drain = 0; /* a fresh file stream is not a memstream */
   fp->cnt = 0;
-  fp->p = fp->buf;
+  fp->base = fp->buf;
+  fp->bufsize = BUFSIZ;
+  fp->p = fp->base;
   return fp;
 }
 

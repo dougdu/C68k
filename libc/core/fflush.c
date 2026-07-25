@@ -10,11 +10,11 @@ int fflush(FILE *fp) {
   }
   if ((fp->flags & _SF_WRITING) && fp->cnt > 0) {
     if (fp->drain) {
-      if (fp->drain(fp, fp->buf, fp->cnt) != 0) {
+      if (fp->drain(fp, fp->base, fp->cnt) != 0) {
         fp->flags |= _SF_ERR;
         return EOF;
       }
-    } else if (sys_write(fp->fd, fp->buf, fp->cnt) != fp->cnt) {
+    } else if (sys_write(fp->fd, fp->base, fp->cnt) != fp->cnt) {
       fp->flags |= _SF_ERR;
       return EOF;
     }

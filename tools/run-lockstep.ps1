@@ -34,7 +34,7 @@ $cases = @(
   @{ Run = 'MEMTEST';  Src = 'tests\lockstep\memtest.c';  Expect = @('MEM PASS 15/15') }
   @{ Run = 'TIMETEST'; Src = 'tests\lockstep\timetest.c'; Expect = @('TIME PASS') }
   @{ Run = 'SETJMP';   Src = 'tests\lockstep\setjmp.c';   Expect = @('SETJMP PASS 6/6') }
-  @{ Run = 'IOTEST';   Src = 'tests\lockstep\iotest.c';   Expect = @('IOTEST PASS 44/44') }
+  @{ Run = 'IOTEST';   Src = 'tests\lockstep\iotest.c';   Expect = @('IOTEST PASS 60/60') }
   @{ Run = 'FDTEST';   Src = 'tests\lockstep\fdtest.c';   Expect = @('FDTEST PASS 18/18') }
   @{ Run = 'STATDIR';  Src = 'tests\lockstep\statdir.c';  Expect = @('STATDIR PASS 20/20') }
   @{ Run = 'ENVTEST';  Src = 'tests\lockstep\envtest.c';  Expect = @('ENVTEST PASS 11/11') }

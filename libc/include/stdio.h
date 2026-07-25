@@ -48,7 +48,9 @@ struct _FILE {
   int flags;   /* _SF_* */
   int cnt;     /* input: bytes left in buf; output: bytes buffered */
   unsigned char *p;              /* input: next byte to serve */
-  unsigned char buf[BUFSIZ];
+  unsigned char buf[BUFSIZ];     /* built-in buffer (default backing store) */
+  unsigned char *base;           /* active buffer: buf, or a setvbuf() buffer */
+  int bufsize;                   /* capacity of *base (BUFSIZ, or setvbuf size) */
   /* open_memstream() backing store (mem == NULL for ordinary streams). */
   unsigned char *mem;
   size_t memcap;

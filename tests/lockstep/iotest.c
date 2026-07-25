@@ -1,6 +1,7 @@
-/* <stdio.h> additions: tmpnam, setvbuf/setbuf, fgetpos/fsetpos (+ buffer-aware
- * ftell), and freopen.  Writes temp files on the local drive and cleans up.
- * Prints "IOTEST PASS n/n" when every check holds. */
+/* <stdio.h> additions: tmpnam, setvbuf/setbuf (mode + a caller-supplied
+ * buffer), fgetpos/fsetpos (+ buffer-aware ftell), and freopen (both the path
+ * form and the NULL-path in-place mode change).  Writes temp files on the local
+ * drive and cleans up.  Prints "IOTEST PASS n/n" when every check holds. */
 #include <stdio.h>
 #include <string.h>
 
@@ -73,6 +74,44 @@ int main(void) {
     ub[7] = 0;
     CHECK(!strcmp(ub, "update!"));
     CHECK(fclose(u) == 0);
+  }
+
+  /* setvbuf adopts a caller-supplied buffer: bytes buffered (no newline, under
+     the buffer size) land in the caller's array before any flush -- proof the
+     stream writes through it -- and still reach the file intact. */
+  {
+    FILE *sb = fopen(name, "wb");
+    CHECK(sb != NULL);
+    char mybuf[64];
+    memset(mybuf, 0, sizeof mybuf);
+    CHECK(setvbuf(sb, mybuf, _IOFBF, sizeof mybuf) == 0);
+    CHECK(fwrite("hello", 1, 5, sb) == 5);   /* buffered into mybuf */
+    CHECK(memcmp(mybuf, "hello", 5) == 0);   /* the caller buffer holds it */
+    CHECK(fflush(sb) == 0);
+    CHECK(fclose(sb) == 0);
+    FILE *rb = fopen(name, "rb");
+    CHECK(rb != NULL);
+    char rbuf[8];
+    CHECK(fread(rbuf, 1, 5, rb) == 5);
+    rbuf[5] = 0;
+    CHECK(!strcmp(rbuf, "hello"));
+    CHECK(fclose(rb) == 0);
+  }
+
+  /* freopen(NULL, mode, fp): change an open stream's mode in place (this form
+     previously returned NULL).  The fd is kept and the stream stays usable. */
+  {
+    FILE *rf = fopen(name, "rb"); /* name still holds "hello" */
+    CHECK(rf != NULL);
+    CHECK(fgetc(rf) == 'h');
+    FILE *rf2 = freopen(NULL, "rb", rf);
+    CHECK(rf2 == rf);
+    rewind(rf2);
+    char fb[8];
+    CHECK(fread(fb, 1, 5, rf2) == 5);
+    fb[5] = 0;
+    CHECK(!strcmp(fb, "hello"));
+    CHECK(fclose(rf2) == 0);
   }
 
   /* tmpfile: write, rewind, read back; removed automatically on close */

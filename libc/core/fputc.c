@@ -6,17 +6,21 @@ int fputc(int c, FILE *fp) {
     fp->flags |= _SF_ERR;
     return EOF;
   }
+  if (!fp->base) {
+    fp->base = fp->buf;
+    fp->bufsize = BUFSIZ;
+  }
   /* Update stream turning around from reading: drop any read-ahead (put the fd
      back at the logical position) and enter write orientation. */
   if (!(fp->flags & _SF_WRITING)) {
     if (fp->cnt > 0)
       sys_seek(fp->fd, -(long)fp->cnt, SEEK_CUR);
     fp->cnt = 0;
-    fp->p = fp->buf;
+    fp->p = fp->base;
     fp->flags |= _SF_WRITING;
   }
-  fp->buf[fp->cnt++] = (unsigned char)c;
-  if (fp->cnt == BUFSIZ || c == '\n' || (fp->flags & _SF_NBF))
+  fp->base[fp->cnt++] = (unsigned char)c;
+  if (fp->cnt == fp->bufsize || c == '\n' || (fp->flags & _SF_NBF))
     if (fflush(fp) == EOF)
       return EOF;
   return (unsigned char)c;
