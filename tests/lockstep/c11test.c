@@ -63,12 +63,23 @@ int main(void) {
   CHECK(c16rtomb(utf8, 0xD83D, &st) == 0); /* high surrogate held */
   CHECK(c16rtomb(utf8, 0xDE00, &st) == 4 && memcmp(utf8, emoji, 4) == 0);
 
-  /* <fenv.h> */
+  /* <fenv.h> -- real sticky flags + directed rounding via the libm _fe_* ABI */
   CHECK(fegetround() == FE_TONEAREST);
-  CHECK(fesetround(FE_TONEAREST) == 0);
-  CHECK(fesetround(FE_UPWARD) == -1);
+  CHECK(fesetround(FE_UPWARD) == 0);        /* directed rounding is supported  */
+  CHECK(fegetround() == FE_UPWARD);
+  CHECK(fesetround(FE_TONEAREST) == 0);     /* restore round-to-nearest        */
+  CHECK(fesetround(99) == -1);              /* an unsupported mode is rejected */
+  feclearexcept(FE_ALL_EXCEPT);
   CHECK(fetestexcept(FE_ALL_EXCEPT) == 0);
-  CHECK(feraiseexcept(FE_OVERFLOW) == 0);
+  feraiseexcept(FE_INVALID | FE_INEXACT);
+  CHECK(fetestexcept(FE_ALL_EXCEPT) == (FE_INVALID | FE_INEXACT));
+  CHECK(fetestexcept(FE_INVALID) == FE_INVALID);
+  feclearexcept(FE_INVALID);
+  CHECK(fetestexcept(FE_ALL_EXCEPT) == FE_INEXACT);
+  feclearexcept(FE_ALL_EXCEPT);
+  { volatile double a = 1.0, b = 3.0, q = a / b; (void)q; } /* inexact -> flag */
+  CHECK((fetestexcept(FE_INEXACT) & FE_INEXACT) != 0);
+  feclearexcept(FE_ALL_EXCEPT);
 
   printf("C11TEST PASS %d/%d\n", pass, total);
   return 0;

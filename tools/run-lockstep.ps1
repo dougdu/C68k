@@ -41,7 +41,7 @@ $cases = @(
   @{ Run = 'CONIOT';   Src = 'tests\lockstep\coniot.c';   Expect = @('CONIOT PASS 3/3') }
   @{ Run = 'POLISH';   Src = 'tests\lockstep\polish.c';   Expect = @('POLISH PASS 13/13') }
   @{ Run = 'CONVTEST'; Src = 'tests\lockstep\convtest.c'; Expect = @('CONVTEST PASS 26/26') }
-  @{ Run = 'C11TEST';  Src = 'tests\lockstep\c11test.c';  Expect = @('C11TEST PASS 18/18') }
+  @{ Run = 'C11TEST';  Src = 'tests\lockstep\c11test.c';  Expect = @('C11TEST PASS 23/23') }
   @{ Run = 'WCHART';   Src = 'tests\lockstep\wchart.c';   Expect = @('WCHART PASS 32/32') }
   @{ Run = 'TZTEST';   Src = 'tests\lockstep\tztime.c';   Expect = @('TZTEST PASS 10/10') }
   @{ Run = 'LOCTEST';  Src = 'tests\lockstep\loctest.c';  Expect = @('LOCTEST PASS 26/26') }
