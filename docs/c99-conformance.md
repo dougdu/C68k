@@ -217,16 +217,18 @@ byte order (`strcoll`==`strcmp`).
 Present functions are `double`‑only and implemented as **`static` inline
 wrappers** in the header over libm's `d`‑suffixed primitives.
 
-The **base transcendentals** stay `static` inline (their C names would collide
-with libm's internal single‑precision `_sqrt`/`_exp`/… symbols, so extern
-linkage needs a vendored‑libm fork).  All **C99 additions** (Tier 2 Phase
+The **base transcendentals** stay `static` inline wrappers over libm's
+`d`-suffixed kernels.  (Their C names once collided with libm's single-precision
+symbols, but the 2026-07-26 runtime refactor renamed those to `_sqrtf`/`_expf`/etc.,
+so the clash is gone and the base names could now be plain externs -- they stay
+header wrappers for now.)  All **C99 additions** (Tier 2 Phase
 2a/2b/2c) are now present as real extern functions in `libc/core/*.c` over the
 same kernels, plus the standard macros (`HUGE_VAL`/`INFINITY`/`NAN`, `FP_*`,
 classification, comparison), and the `f`/`l` type variants.  Remaining gap:
 `errno` is not set by the inline base functions.
 
 Notes: `fma` is the libm correctly‑rounded single‑rounding fused multiply‑add
-(`_fmad`); `rint`/`nearbyint`
+(`_fmad`), and `fmaf` is `_fmaf` (both correctly rounded); `rint`/`nearbyint`
 use a floor‑based ties‑to‑even; `erf`/`erfc` are a compact rational
 approximation (~1e‑7).
 
@@ -253,7 +255,7 @@ both Osiris and CP/M (`tests/lockstep/tier2.c` 133/133, `tier2f.c` 58/58).
 
 **`float` / `long double` variants:** the C99 `f`‑suffixed base functions
 (`sqrtf`/`expf`/`logf`/`sinf`/`cosf`/`atanf`/`asinf`/`acosf`/`powf`/`fmodf`/
-`floorf`/`ceilf`/`fabsf`/`modff`) bind to libm's real single‑precision kernels,
+`floorf`/`ceilf`/`fabsf`/`modff`/`fmaf`) bind to libm's real single‑precision kernels,
 so `float` math runs 32‑bit soft‑float instead of promoting to double; only
 `tanf`/`log10f`/`atan2f` are composed in the header.  The `l`‑suffixed variants
 are thin wrappers over the double versions (`long double` == `double`).
@@ -290,7 +292,7 @@ are thin wrappers over the double versions (`long double` == `double`).
 | `lround` `llround` `lrint` `llrint` | round‑to‑integer | ✅ | ✅ | libc / `lround.c`,`llround.c`,`lrint.c`,`llrint.c` | |
 | `remainder` `remquo` | IEEE remainder | ✅ | ✅ | libc / `remainder.c`,`remquo.c` | via `rint`; `EDOM` on `y==0`. |
 | `copysign` `nan` `nextafter` `nexttoward` | sign/representation | ✅ | ✅ | libc / `copysign.c`,`nan.c`,`nextafter.c`,`nexttoward.c` | |
-| `fdim` `fmax` `fmin` `fma` | difference/max/min/FMA | ✅ | ✅ | libc / `fdim.c`,`fmax.c`,`fmin.c`,`fma.c` | `fma` = libm `_fmad` (correctly rounded). |
+| `fdim` `fmax` `fmin` `fma` | difference/max/min/FMA | ✅ | ✅ | libc / `fdim.c`,`fmax.c`,`fmin.c`,`fma.c` | `fma` = libm `_fmad`; `fmaf` = libm `_fmaf` (both correctly rounded). |
 | `fpclassify` `isnan` `isinf` `isfinite` `isnormal` `signbit` | classification | ✅ | ✅ | libc / `__*.c` + hdr | standard macros over `__` helpers. |
 | `HUGE_VAL` `INFINITY` `NAN` | constants | ✅ | ✅ | libc / `__huge_val.c`,`__nan_val.c` + hdr | function‑backed (not constant expressions). |
 

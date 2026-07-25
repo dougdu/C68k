@@ -156,10 +156,11 @@ under `sim68k`.
       `__lshrdi3`, `__cmpdi2`/`__ucmpdi2`; add/sub/logical inline via `addx`/`subx`.)_
 - [x] Soft **single** float: add/sub/mul/div/compare/convert.
 - [x] Soft **double** float: add/sub/mul/div/compare/convert/extend/truncate (big-endian word order).
-      _(Both provided by the worm68k **IEEE754** library `libieee754d.a` — C-stack ABI, pure 68000,
+      _(Both provided by the vendored **IEEE-754** library (`lib/libm/libm.a`) — C-stack ABI, pure 68000,
       PIC; the codegen lowers float/double ops and conversions to its `_fpadd`/`_fpaddd`/`_fpltof`/…
-      entries. **TODO:** vendor/build the IEEE754 source into c68k's own `librt` for a self-owned,
-      Osiris/CP/M-linkable runtime. `long long`↔`float` conversions are deferred, the lib has no
+      entries. The IEEE-754 source is vendored and built in-tree as `libm.a` (self-owned,
+      Osiris/CP/M-linkable); the single-precision math kernels use the `f`-suffixed names
+      (`_sqrtf`/`_expf`/etc.) after the 2026-07-26 runtime refactor. `long long`↔`float` conversions are deferred, the lib has no
       64-bit int convert.)_
 - [x] `memcpy`/`memset` fast paths + struct-copy thunks. _(`_memcpy`/`_memset`/`_memmove` in
       `rt68k.a68`; aggregate copy is emitted inline by the code generator.)_
@@ -261,7 +262,7 @@ suite goes **lockstep** across both OSes.
 - [x] `printf`/`scanf` full conversion coverage (incl. `%lld`, `%f`/`%g`, `%p`, width/precision/flags). `printf` family + `sscanf`/`vsscanf`.
 - [x] `<stdlib.h>` breadth: `strtol`/`strtoul`/`strtod`, `qsort`/`bsearch`, `rand`, `div`/`ldiv`, `labs`, `atof`.
 - [x] `<string.h>` full set; `<time.h>` formatting over the seam clock. *(string set done; `<time.h>` wall clock over Osiris DOS `2Ah`/`2Ch` and CP/M-68K BDOS `105` — `time`/`gmtime`/`localtime`/`mktime`/`difftime`/`asctime`/`ctime`/`strftime`.)*
-- [x] `<math.h>` via the `libieee754d` soft-float donor (double transcendentals) on soft-float.
+- [x] `<math.h>` over the vendored `libm` soft-float library (double transcendentals) on soft-float.
 - [x] `<inttypes.h>`, `<stdint.h>`, `<float.h>` completeness; `<assert.h>`, `<signal.h>` (minimal, synchronous).
 - [x] Freestanding mode (`-ffreestanding`) validated (headers-only + runtime lib). *(`-ffreestanding` sets `__STDC_HOSTED__=0`; full C99 freestanding header set — `<stddef.h>`, `<stdint.h>`, `<limits.h>`, `<stdbool.h>`, `<stdarg.h>`, `<float.h>`, `<iso646.h>`; `tests/m68k/freestd.c` links no libc, 40/40 bare-metal.)*
 - [x] Library conformance suite, green lockstep on both OSes (`mathtest` 14/14, `libtest` 26/26, `timetest` 15/15).

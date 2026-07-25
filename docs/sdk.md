@@ -149,13 +149,13 @@ libc core, the integer runtime, and the soft-float archive.
 
 ```
 m68k-elf-ld -pie --no-dynamic-linker -z max-page-size=0x20 -s \
-    -T osiris-prg.ld  osiris_sys.o  prog.o  libc.o  rt68k.o  libieee754d.a  -o HELLO.PRG
+    -T osiris-prg.ld  osiris_sys.o  prog.o  libc.o  rt68k.o  libm.a  -o HELLO.PRG
 ```
 
 **CP/M-68K `.68K`** (link at the TPA base `0x500`, then convert ELF → DRI contiguous):
 
 ```
-m68k-elf-ld -T cpm68k.ld -Ttext 0x500  cpm_sys.o  prog.o  cpm.o  libc.o  rt68k.o  libieee754d.a \
+m68k-elf-ld -T cpm68k.ld -Ttext 0x500  cpm_sys.o  prog.o  cpm.o  libc.o  rt68k.o  libm.a \
     -o prog.elf
 mkdri -b500 -y -o HELLO.68K prog.elf
 ```

@@ -328,7 +328,7 @@ selection is already visible: `bare.PRG` (references no libc) dropped **88,268 �
 full — extra motivation for the Phase 4 split.
 
 ### Phase 2 — Vendor float → `libm.a`  ✅
-- [x] Vendored the **28** `.a68` sources (`core/ conv/ fmt/ math/`) + `ieee754.inc`/`ieee754d.inc` into `lib/libm/`; provenance recorded in the [build-libm.ps1](../tools/build-libm.ps1) header.
+- [x] Vendored the **28** `.a68` sources (`core/ conv/ fmt/ math/`) + the `ieee754.inc` include into `lib/libm/`; provenance recorded in the [build-libm.ps1](../tools/build-libm.ps1) header.  *(The double constants originally lived in a separate `ieee754d.inc`, merged into `ieee754.inc` by the 2026-07-26 runtime refactor.)*
 - [x] Build `libm.a` in-tree via [tools/build-libm.ps1](../tools/build-libm.ps1) (`asm68K` + `ar rcs` + `ranlib`) — **28 objects, 93,440 bytes** (leaner than the upstream 125,564: no `/Zi` DWARF, which the linker strips anyway).
 - [x] Grep-audited and repointed **all 7** scripts off `worm68k\…\libieee754d.a` to in-tree `lib/libm/libm.a` (param defaults via `$PSScriptRoot` + doc-comment examples).
 - [x] Lockstep **9/9 on both OSes** — `MATHTEST` (transcendentals), `PRINTF` (`%f`), and float cases pass against the vendored `libm.a`.

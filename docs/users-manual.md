@@ -256,7 +256,7 @@ links with `osiris-prg.ld`. It also writes a `MYPROG.map` linker map alongside t
 
 ```
 m68k-elf-ld -pie --no-dynamic-linker -z max-page-size=0x20 -s \
-    -T osiris-prg.ld  osiris_sys.o  prog.o  libc.o  rt68k.o  libieee754d.a  -o MYPROG.PRG
+    -T osiris-prg.ld  osiris_sys.o  prog.o  libc.o  rt68k.o  libm.a  -o MYPROG.PRG
 ```
 
 Link order puts the seam/`crt0` first; `ENTRY(_start)` fixes the entry regardless.
@@ -286,7 +286,7 @@ pwsh tools/cpm/build-68k.ps1 -Src myprog.c -Name MYPROG
 ### 8.2 Manual link recipe
 
 ```
-m68k-elf-ld -T cpm68k.ld -Ttext 0x500  cpm_sys.o  prog.o  cpm.o  libc.o  rt68k.o  libieee754d.a \
+m68k-elf-ld -T cpm68k.ld -Ttext 0x500  cpm_sys.o  prog.o  cpm.o  libc.o  rt68k.o  libm.a \
     -o prog.elf
 mkdri -b500 -y -o MYPROG.68K prog.elf
 ```
