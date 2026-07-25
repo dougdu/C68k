@@ -320,9 +320,9 @@ of scope — these OSes are single‑threaded.
 | `quick_exit` | `<stdlib.h>` | `exit.c` | run them, then `_Exit` | ✅ |
 | `timespec_get` | `<time.h>` | `time.c` | `TIME_UTC` via `sys_time` | ✅ |
 | `<uchar.h>` (`char16_t`/`char32_t`, `mbrtoc16`/`c16rtomb`/`mbrtoc32`/`c32rtomb`) | `<uchar.h>` | `uchar.c` | UTF‑8 ↔ UTF‑16/32; C locale | ✅ |
-| `<fenv.h>` stubs | `<fenv.h>` | `fenv.c` | fixed round‑to‑nearest soft‑float: `fegetround`→`FE_TONEAREST`, `fesetround` no‑op, exception ops unsupported | ✅ |
+| `<fenv.h>` | `<fenv.h>` | `fenv.c` | real: sticky exception flags + all four rounding directions via the libm `_fe_*` ABI | ✅ |
 
-> **Status (both targets):** shipped and verified by `C11TEST` (18/18 on Osiris
+> **Status (both targets):** shipped and verified by `C11TEST` (23/23 on Osiris
 > and CP/M‑68K, wired into `run-lockstep.ps1`).
 > - `aligned_alloc`/`posix_memalign`: the libheap SOA allocator already returns
 > ≥ 8‑byte (`max_align_t`) blocks, so alignments ≤ 8 forward to `malloc` and stay
@@ -332,8 +332,9 @@ of scope — these OSes are single‑threaded.
 > - `<uchar.h>`: full UTF‑8 ↔ UTF‑16/UTF‑32 with overlong/surrogate/out‑of‑range
 > rejection; `mbrtoc16` emits a surrogate pair across two calls (2nd returns
 > `(size_t)-3`) and `c16rtomb` holds a high surrogate until its low half.
-> - `<fenv.h>`: conforming‑but‑inert — exception ops are no‑ops and only
-> `FE_TONEAREST` can be selected (`math_errhandling` is `MATH_ERRNO`).
+> - `<fenv.h>`: real — the core ops raise sticky exception flags and honour all
+> four directed rounding modes via the libm `_fe_*` ABI; the `FE_*` values match
+> the runtime (`math_errhandling` stays `MATH_ERRNO`).
 
 ---
 

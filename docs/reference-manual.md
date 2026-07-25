@@ -72,8 +72,8 @@ The front end is chibicc's C11 preprocessor + parser, retargeted to **ILP32 big-
 ### 2.3 Language exclusions
 
 - **Variable-length arrays** are not supported (use a fixed bound or `malloc`).
-- No hardware-FPU codegen (soft-float only); `_Complex`, `<fenv.h>` exceptions, `<tgmath.h>`, and
-  threads are out of scope.
+- No hardware-FPU codegen (soft-float only); `_Complex`, `<tgmath.h>`, and threads are out of
+  scope. `<fenv.h>` exception flags and directed rounding are supported in software.
 
 ## 3. Calling convention & ABI
 

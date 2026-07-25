@@ -37,8 +37,9 @@ CP/M‑68K). The data model is **ILP32, big‑endian**:
 | `float` | 32 | IEEE‑754 single |
 | `double`, `long double` | 64 | IEEE‑754 double (`long double` == `double`) |
 
-Floating point is provided by a soft‑float runtime (`lib/libm`), with fixed
-round‑to‑nearest and no floating‑point exception machinery.
+Floating point is provided by a soft‑float runtime (`lib/libm`); the default is
+round‑to‑nearest, and `<fenv.h>` exposes sticky exception flags and all four
+directed rounding modes.
 
 ## How the library is organised
 
@@ -80,7 +81,7 @@ OS): `<float.h>`, `<iso646.h>`, `<limits.h>`, `<stdarg.h>`, `<stdbool.h>`,
 | `<complex.h>` | Complex arithmetic (`_Complex`) | ❌ | ❌ | — | Not provided; compiler has no `_Complex` support. |
 | `<ctype.h>` | Character classification | ✅ | ✅ | `libc/include/ctype.h`, `libc/core/is*.c` | Complete (C/ASCII locale). |
 | `<errno.h>` | Error numbers | ✅ | ✅ | `libc/include/errno.h`, `libc/core/errno.c` | `EDOM`/`ERANGE`/`EILSEQ` + a POSIX subset. Base double math now *sets* `EDOM`/`ERANGE`; seam wrappers map OS error codes via `__oserr_to_errno` (`oserr.c`, DOS 59h). |
-| `<fenv.h>` | Floating‑point environment | ⚠️ | ⚠️ | `libc/include/fenv.h`, `libc/core/fenv.c` | Conforming‑but‑inert stubs: exception ops are no‑ops, only `FE_TONEAREST` selectable (soft‑float is fixed round‑to‑nearest). |
+| `<fenv.h>` | Floating‑point environment | ✅ | ✅ | `libc/include/fenv.h`, `libc/core/fenv.c` | Real, backed by the libm `_fe_*` ABI: sticky exception flags (raised by the core ops) and all four rounding directions; the `FE_*` values match the runtime. `math_errhandling` stays `MATH_ERRNO`. |
 | `<float.h>` | Floating‑type characteristics | ✅ | ✅ | `include/float.h`, `libc/include/float.h` | Complete. |
 | `<inttypes.h>` | Integer format conversions | ✅ | ✅ | `libc/include/inttypes.h`, `libc/core/imax*.c`, `strto[iu]max.c` | Full `PRI*`/`SCN*` set; `imaxabs`/`imaxdiv`/`strtoimax`/`strtoumax` present. |
 | `<iso646.h>` | Alternative operator spellings | ✅ | ✅ | `libc/include/iso646.h` | Complete. |
@@ -103,8 +104,8 @@ OS): `<float.h>`, `<iso646.h>`, `<limits.h>`, `<stdarg.h>`, `<stdbool.h>`,
 
 **Beyond C99:** C68K also ships the C11 freestanding headers `include/stdalign.h`,
 `include/stdatomic.h`, `include/stdnoreturn.h`, plus the C11 *hosted* headers
-`libc/include/uchar.h` (UTF‑8 ↔ UTF‑16/32) and `libc/include/fenv.h` (inert
-soft‑float environment). Non‑standard (POSIX‑ish) extension headers present:
+`libc/include/uchar.h` (UTF‑8 ↔ UTF‑16/32) and `libc/include/fenv.h` (a real
+soft‑float environment: exception flags + directed rounding). Non‑standard (POSIX‑ish) extension headers present:
 `libc/include/{strings.h, unistd.h, fcntl.h, dirent.h, utime.h, conio.h,
 osiris.h, cpm.h, getopt.h, alloca.h, err.h, libgen.h, sys/stat.h, sys/types.h}`.
 
@@ -160,13 +161,18 @@ Also provided (POSIX numbers): `ENOENT`, `EIO`, `EBADF`, `ENOMEM`, `EACCES`,
 
 ### `<fenv.h>` — floating‑point environment
 
-Present as conforming‑but‑inert stubs (`libc/core/fenv.c`), because the soft‑float
-runtime has fixed round‑to‑nearest and no exception flags. `fegetround` returns
-`FE_TONEAREST`; `fesetround` succeeds only for `FE_TONEAREST` (else `-1`); the
-exception ops (`feclearexcept`, `fegetexceptflag`, `feraiseexcept`,
-`fesetexceptflag`, `fetestexcept`) are no‑ops returning 0; `fegetenv`/`feholdexcept`/
-`fesetenv`/`feupdateenv` zero/ignore the environment. (`math_errhandling` is
-`MATH_ERRNO`, so numeric errors surface via `errno`, not these flags.)
+Real (`libc/core/fenv.c`), backed by the libm IEEE‑754 `_fe_*` ABI
+(`lib/libm/core/fenv.a68`). The core arithmetic ops raise **sticky exception
+flags** (`FE_INVALID`/`FE_DIVBYZERO`/`FE_OVERFLOW`/`FE_UNDERFLOW`/`FE_INEXACT`)
+and honour all four **rounding directions**. `feclearexcept`/`fetestexcept`/
+`feraiseexcept`/`fegetexceptflag`/`fesetexceptflag` read and update the shared
+status word; `fegetround`/`fesetround` select the mode (an unsupported argument
+is rejected with `-1`); `fegetenv`/`feholdexcept`/`fesetenv`/`feupdateenv` save
+and restore the flags + rounding mode (`FE_DFL_ENV` resets to round‑to‑nearest
+with flags clear). The `FE_*` values match the library's encoding, so the bits
+the ops raise are the bits the C macros name. (`math_errhandling` stays
+`MATH_ERRNO`: the math functions report domain/range errors via `errno`, not via
+these flags.) Verified `tests/lockstep/c11test.c` 23/23 on both OSes.
 
 ### `<uchar.h>` — UTF‑16/UTF‑32 conversions (C11)
 
@@ -219,7 +225,8 @@ same kernels, plus the standard macros (`HUGE_VAL`/`INFINITY`/`NAN`, `FP_*`,
 classification, comparison), and the `f`/`l` type variants.  Remaining gap:
 `errno` is not set by the inline base functions.
 
-Notes: `fma` is a double‑rounded `x*y+z` (no hardware FMA); `rint`/`nearbyint`
+Notes: `fma` is the libm correctly‑rounded single‑rounding fused multiply‑add
+(`_fmad`); `rint`/`nearbyint`
 use a floor‑based ties‑to‑even; `erf`/`erfc` are a compact rational
 approximation (~1e‑7).
 
@@ -283,7 +290,7 @@ are thin wrappers over the double versions (`long double` == `double`).
 | `lround` `llround` `lrint` `llrint` | round‑to‑integer | ✅ | ✅ | libc / `lround.c`,`llround.c`,`lrint.c`,`llrint.c` | |
 | `remainder` `remquo` | IEEE remainder | ✅ | ✅ | libc / `remainder.c`,`remquo.c` | via `rint`; `EDOM` on `y==0`. |
 | `copysign` `nan` `nextafter` `nexttoward` | sign/representation | ✅ | ✅ | libc / `copysign.c`,`nan.c`,`nextafter.c`,`nexttoward.c` | |
-| `fdim` `fmax` `fmin` `fma` | difference/max/min/FMA | ✅ | ✅ | libc / `fdim.c`,`fmax.c`,`fmin.c`,`fma.c` | `fma` double‑rounded. |
+| `fdim` `fmax` `fmin` `fma` | difference/max/min/FMA | ✅ | ✅ | libc / `fdim.c`,`fmax.c`,`fmin.c`,`fma.c` | `fma` = libm `_fmad` (correctly rounded). |
 | `fpclassify` `isnan` `isinf` `isfinite` `isnormal` `signbit` | classification | ✅ | ✅ | libc / `__*.c` + hdr | standard macros over `__` helpers. |
 | `HUGE_VAL` `INFINITY` `NAN` | constants | ✅ | ✅ | libc / `__huge_val.c`,`__nan_val.c` + hdr | function‑backed (not constant expressions). |
 
@@ -573,7 +580,7 @@ length modifiers); both the narrow and the wide (`wprintf`/`wscanf` in
 
 ### Tier 3 — large or blocked
 10. **`<wchar.h>` / `<wctype.h>`**: ✅ present (`wchar_t` = 32‑bit UTF‑32, multibyte = UTF‑8, reusing the `<uchar.h>` codec). Wide **character** stream I/O + `fwide` and the full wide **formatted** I/O — `fwprintf`/`wprintf`/`swprintf` and `fwscanf`/`wscanf`/`swscanf` (+ `v*`) — are present.
-11. **`<fenv.h>`**: present as inert stubs — fixed round‑to‑nearest, no exception flags (soft‑float runtime).
+11. **`<fenv.h>`**: ✅ real — sticky exception flags + directed rounding via the libm `_fe_*` ABI (`c11test.c` 23/23 both OSes).
 12. **`<complex.h>` / `<tgmath.h>`**: blocked on **compiler** `_Complex` support;
     defer until the front end grows complex types.
 
