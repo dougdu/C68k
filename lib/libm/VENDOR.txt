@@ -1,6 +1,6 @@
 vendored library : libm
 upstream source  : C:\git\worm68k\68kTools\libraries\float\ieee754
-synced (UTC)     : 2026-07-25 22:57:34Z
+synced (UTC)     : 2026-07-26 15:54:10Z
 file count       : 34
 
 files (sha256, path):
@@ -32,7 +32,7 @@ files (sha256, path):
   F81ED18AD02E00EF  math\asincos.a68
   01F194E8592C677F  math\asincosd.a68
   8D049EFA97CF8DF0  math\atan.a68
-  DF21CC1F2724077C  math\dpmath.a68
+  EA7313768949FFB6  math\dpmath.a68
   269562084181C529  math\exp.a68
   BB167297EEC92873  math\floor.a68
   273290C16A58192E  math\log.a68

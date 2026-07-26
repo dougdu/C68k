@@ -1075,6 +1075,14 @@ _sincos_body:
 	move.l	DBL_ARG1_HI(a6),d2
 	move.l	DBL_ARG1_LO(a6),d3
 
+	; sin/cos(+/-inf) = NaN, sin/cos(NaN) = NaN (BUG-0013).  Double sin/cos were
+	; unguarded: an inf/NaN has exp field all-ones >= the 2^20 threshold, so it
+	; fell into __rem_pio2_big and returned garbage.
+	move.l	d2,d0
+	andi.l	#$7FF00000,d0
+	cmpi.l	#$7FF00000,d0
+	beq	_sincos_nan
+
 	move.l	d2,d0
 	andi.l	#$7FFFFFFF,d0
 	or.l	d3,d0
@@ -1156,6 +1164,29 @@ _sincos_cw:
 	move.l	d1,-8(a6)
 	move.l	d0,d4
 	move.l	d1,d5
+
+	; Near-zero accuracy fix: when x is close to a multiple of pi/2 the reduced
+	; |r| is tiny and sin/cos(x) ~= r ~ 1e-16.  There the 2-part Cody-Waite
+	; representation of pi/2 (PIO2_HI+PIO2_LO ~ 2^-88 absolute) is the dominant
+	; error, so the tiny result loses most of its significant bits (hundreds of
+	; thousands of ULP at the exact zeros).  Fall back to the full Payne-Hanek
+	; reducer (same path as |x| >= 2^20), which resolves r to ~1 ULP.  Guarded by
+	; k != 0 (for k == 0, |x| < pi/4 so r == x exactly and needs no reduction)
+	; and |r| < 2^-11, so the common fast path is unaffected.
+	tst.l	-4(a6)			; k == 0 ?  -> no reduction happened, r = x exact
+	beq.s	_sincos_haveR
+	move.l	d4,d0
+	andi.l	#$7FFFFFFF,d0
+	cmpi.l	#$3F400000,d0		; |r| >= 2^-11 ?  -> fast path is accurate
+	bhs.s	_sincos_haveR
+	move.l	DBL_ARG1_HI(a6),d2	; reload x and reduce with Payne-Hanek
+	move.l	DBL_ARG1_LO(a6),d3
+	bsr	__rem_pio2_big		; d0 = quadrant; rp_r = reduced r
+	move.l	d0,-4(a6)
+	move.l	rp_r,d4
+	move.l	rp_r+4,d5
+	move.l	d4,-12(a6)
+	move.l	d5,-8(a6)
 
 _sincos_haveR:
 	; x²
@@ -1397,6 +1428,10 @@ _sind_retx:
 	move.l	d2,d0
 	move.l	d3,d1
 	bra.s	_sind_ret
+_sincos_nan:
+	move.l	#DBL_QNAN_HI,d0
+	move.l	#DBL_QNAN_LO,d1
+	bra.s	_sind_ret
 
 
 ; ============================================================
@@ -1587,6 +1622,12 @@ _rp_haveT:
 	DBINOP	_fpmultd,rp_hi,rp_shi,_d_pio2_hi
 	DBINOP	_fpmultd,rp_lo,rp_shi,_d_pio2_lo
 	DBINOP	_fpmultd,rp_tmp,rp_rlo,_d_pio2_hi
+	DBINOP	_fpaddd,rp_lo,rp_lo,rp_tmp
+	; Fold rlo_frac * PIO2_LO too: when the reduced result is tiny (x near a
+	; multiple of pi/2) the significant fraction bits live in the low words
+	; (rp_rlo).  Multiplying them by PIO2_HI alone (31-bit pi/2) loses ~25 ULP;
+	; the PIO2_LO term restores full precision for near-zero r.
+	DBINOP	_fpmultd,rp_tmp,rp_rlo,_d_pio2_lo
 	DBINOP	_fpaddd,rp_lo,rp_lo,rp_tmp
 	DBINOP	_fpaddd,rp_r,rp_hi,rp_lo
 	; quadrant: n = q0 (x>0) or -q0 (x<0), mod 4
