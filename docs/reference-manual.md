@@ -141,7 +141,8 @@ success; non-zero on any error (or on a warning under `-Werror`).
 
 **Passes.** `cc1` preprocesses → parses → runs the code generator (Motorola-syntax text) into an
 in-memory buffer; the driver then either writes `.s` (`-S`), or assembles it to an ELF `.o` — via the
-**integrated emitter** (`-fintegrated-as` / `C68K_INTEGRATED_AS`) or external `asm68K`.
+**integrated emitter** (`-fintegrated-as` / `C68K_INTEGRATED_AS`) or the external **`asm68K`**
+(located via `C68K_AS`, else `asm68K` on `PATH`; the vendored copy is [`tools/bin/asm68K.exe`](../tools/bin)).
 
 ## 6. Optimizations
 

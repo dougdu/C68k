@@ -95,6 +95,37 @@ int main(void) {
   CHECK(lrint(2.5) == 2);
   CHECK(llrint(3.5) == 4LL);
 
+  /* 64-bit long long <-> float/double conversions via the soft-float
+   * _fplltod/_fpdtoll/... family.  `volatile` operands force the runtime cast
+   * (no compile-time folding); magnitudes exceed 2^31/2^32 to exercise the true
+   * 64-bit path, and the unsigned cases set bit 63 to prove the unsigned
+   * routines don't read them as negative. */
+  {
+    volatile long long vll = 1000000000000LL;      /* 1e12, exact in double */
+    volatile long long vlln = -1234567890123LL;
+    volatile unsigned long long vull = 0x8000000000000000ULL; /* 2^63 */
+    volatile unsigned long long vumax = 0xFFFFFFFFFFFFFFFFULL;
+    volatile double vd = 1e12;
+    volatile double vd63 = 9223372036854775808.0;  /* 2^63 */
+    volatile double vdneg = -3000000000.0;         /* > 2^31 magnitude */
+    volatile float vf = 1000000.0f;
+    volatile long long vsmall = 1000000LL;
+    CHECK((double)vll == 1e12);                     /* _fplltod */
+    CHECK((long long)(double)vll == 1000000000000LL);
+    CHECK((long long)(double)vlln == -1234567890123LL);
+    CHECK((long long)vd == 1000000000000LL);        /* _fpdtoll */
+    CHECK((long long)vdneg == -3000000000LL);
+    CHECK((double)vull == 9223372036854775808.0);   /* _fpulltod: +2^63 */
+    CHECK((double)vumax > 1.8e19);                  /* unsigned, not -1.0 */
+    CHECK((unsigned long long)vd63 == 0x8000000000000000ULL); /* _fpdtoull */
+    CHECK((float)vll == 1e12f);                     /* _fplltof */
+    CHECK((long long)(float)vsmall == 1000000LL);   /* _fplltof + _fpftoll */
+    CHECK((unsigned long long)vf == 1000000ULL);    /* _fpftoull */
+    CHECK((float)-vsmall == -1000000.0f);           /* signed _fplltof */
+  }
+  CHECK(llround(3000000000.0) == 3000000000LL);     /* >2^31 -> true 64-bit */
+  CHECK(llrint(5000000000.0) == 5000000000LL);      /* >2^32 */
+
   /* nextafter */
   CHECK(nextafter(1.0, 2.0) > 1.0);
   CHECK(nextafter(1.0, 2.0) < 1.0000001);

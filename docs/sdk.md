@@ -27,6 +27,10 @@ toolchain reference see [libc-and-toolchain.md](libc-and-toolchain.md).
 | `libc/`, `lib/` (this repo) | the C library, soft-float, and integer runtime sources |
 | `c68k-sim68k` | the 68000 system simulator, to run and test the result |
 
+`asm68K` and `m68k-elf-ld` are **vendored in-repo** under [`tools/bin/`](../tools/bin) (and copied
+into `out/cross/bin` by [`tools/binplace.ps1`](../tools/binplace.ps1)); c68k finds the assembler via
+`C68K_AS` (the build scripts set it) or `asm68K` on `PATH`. `mkdri` and `c68k-sim68k` stay external.
+
 The one-shot build scripts [`tools/osiris/build-prg.ps1`](../tools/osiris/build-prg.ps1) and
 [`tools/cpm/build-68k.ps1`](../tools/cpm/build-68k.ps1) wire all of this together; start from them.
 
@@ -143,19 +147,19 @@ container is decided at link time, not by the compiler.
 ## 5. Manual link recipes
 
 If you are not using the build scripts, link the compiled program object with one `crt0`/seam, the
-libc core, the integer runtime, and the soft-float archive.
+libc core, the integer runtime, the soft-float archive, and the heap allocator (`libheap`).
 
 **Osiris `.PRG`** (ELF32-MSB static-PIE — the ELF *is* the `.PRG`):
 
 ```
 m68k-elf-ld -pie --no-dynamic-linker -z max-page-size=0x20 -s \
-    -T osiris-prg.ld  osiris_sys.o  prog.o  libc.o  rt68k.o  libm.a  -o HELLO.PRG
+    -T osiris-prg.ld  osiris_sys.o  prog.o  libc.a  rt68k.o  libm.a  libheap.a  -o HELLO.PRG
 ```
 
 **CP/M-68K `.68K`** (link at the TPA base `0x500`, then convert ELF → DRI contiguous):
 
 ```
-m68k-elf-ld -T cpm68k.ld -Ttext 0x500  cpm_sys.o  prog.o  cpm.o  libc.o  rt68k.o  libm.a \
+m68k-elf-ld -T cpm68k.ld -Ttext 0x500  cpm_sys.o  prog.o  cpm.o  libc.a  rt68k.o  libm.a  libheap.a \
     -o prog.elf
 mkdri -b500 -y -o HELLO.68K prog.elf
 ```

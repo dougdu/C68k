@@ -11,18 +11,33 @@ function, see the [Programmer's Reference Manual](reference-manual.md).
 
 ## Contents
 
-1. [What c68k is](#1-what-c68k-is)
-2. [Prerequisites & installation](#2-prerequisites--installation)
-3. [Quick start](#3-quick-start)
-4. [The compiler driver](#4-the-compiler-driver)
-5. [Optimization](#5-optimization)
-6. [Debugging](#6-debugging)
-7. [Building for Osiris (`.PRG`)](#7-building-for-osiris-prg)
-8. [Building for CP/M-68K (`.68K`)](#8-building-for-cpm-68k)
-9. [The toolchain tools](#9-the-toolchain-tools)
-10. [Testing your programs](#10-testing-your-programs)
-11. [Platform notes & limitations](#11-platform-notes--limitations)
-12. [Troubleshooting](#12-troubleshooting)
+- [c68k — User's Manual](#c68k--users-manual)
+  - [Contents](#contents)
+  - [1. What c68k is](#1-what-c68k-is)
+  - [2. Prerequisites \& installation](#2-prerequisites--installation)
+    - [2.1 What the SDK gives you](#21-what-the-sdk-gives-you)
+    - [2.2 The external link-time toolchain](#22-the-external-link-time-toolchain)
+    - [2.3 Building the cross-compiler from source](#23-building-the-cross-compiler-from-source)
+    - [2.4 Staging the simulator environment](#24-staging-the-simulator-environment)
+  - [3. Quick start](#3-quick-start)
+  - [4. The compiler driver](#4-the-compiler-driver)
+    - [Predefined macros](#predefined-macros)
+    - [Environment variables (build scripts)](#environment-variables-build-scripts)
+  - [5. Optimization](#5-optimization)
+  - [6. Debugging](#6-debugging)
+  - [7. Building for Osiris (`.PRG`)](#7-building-for-osiris-prg)
+    - [7.1 With the build script (recommended)](#71-with-the-build-script-recommended)
+    - [7.2 Manual link recipe](#72-manual-link-recipe)
+    - [7.3 Running under the simulator](#73-running-under-the-simulator)
+  - [8. Building for CP/M-68K (`.68K`)](#8-building-for-cpm-68k-68k)
+    - [8.1 With the build script (recommended)](#81-with-the-build-script-recommended)
+    - [8.2 Manual link recipe](#82-manual-link-recipe)
+    - [8.3 Running under the simulator](#83-running-under-the-simulator)
+  - [9. The toolchain tools](#9-the-toolchain-tools)
+  - [10. Testing your programs](#10-testing-your-programs)
+  - [11. Platform notes \& limitations](#11-platform-notes--limitations)
+  - [12. Troubleshooting](#12-troubleshooting)
+    - [Changelog](#changelog)
 
 ---
 
@@ -66,18 +81,20 @@ contains everything c68k owns:
 
 ### 2.2 The external link-time toolchain
 
-c68k **compiles**; it does not link. Linking and image conversion use tools that are **prerequisites**
-(documented, not vendored by the SDK):
+c68k **compiles**; it does not link. The assembler and linker it drives are now **vendored in-repo**
+under [`tools/bin/`](../tools/bin) (`asm68K`, `m68k-elf-ld`), so a Windows build/link is
+self-contained; the remaining tools below are external **prerequisites** (documented, not vendored):
 
 | Tool | Needed for | Source |
 | --- | --- | --- |
-| `m68k-elf-ld` | linking objects into the executable ELF | GNU binutils (Osiris `toolchain/`) |
+| `asm68K` | assembling the per-OS `crt0`/seam + integer runtime (`.a68`) | **vendored — [`tools/bin/`](../tools/bin)** |
+| `m68k-elf-ld` | linking objects into the executable ELF | **vendored — [`tools/bin/`](../tools/bin)** |
 | `m68k-elf-ar`, `m68k-elf-objdump`, `m68k-elf-nm`, `m68k-elf-readelf`, `m68k-elf-addr2line`, `m68k-elf-gdb` | archiving, inspection, debugging | GNU binutils |
-| `asm68K` | assembling the per-OS `crt0`/seam + integer runtime (`.a68`) | worm68k `68kTools/` |
 | `mkdri` | ELF → DRI `.68K` conversion (CP/M target only) | worm68k `68kTools/` |
 | `sim68k` | running and testing the result under emulation | worm68k `68kTools/` |
 
-The one-shot build scripts wire all of this together; you normally never call the linker by hand.
+The one-shot build scripts wire all of this together and point c68k at the vendored assembler via
+`C68K_AS` (else `asm68K` on `PATH`); you normally never call the linker by hand.
 
 ### 2.3 Building the cross-compiler from source
 
@@ -256,7 +273,7 @@ links with `osiris-prg.ld`. It also writes a `MYPROG.map` linker map alongside t
 
 ```
 m68k-elf-ld -pie --no-dynamic-linker -z max-page-size=0x20 -s \
-    -T osiris-prg.ld  osiris_sys.o  prog.o  libc.o  rt68k.o  libm.a  -o MYPROG.PRG
+    -T osiris-prg.ld  osiris_sys.o  prog.o  libc.a  rt68k.o  libm.a  libheap.a  -o MYPROG.PRG
 ```
 
 Link order puts the seam/`crt0` first; `ENTRY(_start)` fixes the entry regardless.
@@ -286,7 +303,7 @@ pwsh tools/cpm/build-68k.ps1 -Src myprog.c -Name MYPROG
 ### 8.2 Manual link recipe
 
 ```
-m68k-elf-ld -T cpm68k.ld -Ttext 0x500  cpm_sys.o  prog.o  cpm.o  libc.o  rt68k.o  libm.a \
+m68k-elf-ld -T cpm68k.ld -Ttext 0x500  cpm_sys.o  prog.o  cpm.o  libc.a  rt68k.o  libm.a  libheap.a \
     -o prog.elf
 mkdri -b500 -y -o MYPROG.68K prog.elf
 ```

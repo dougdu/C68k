@@ -108,6 +108,27 @@ static char *sym(char *name) {
   return format("_%s", name);
 }
 
+// The translation unit currently being generated (set by codegen()).  Lets the
+// reference sites below ask whether a symbol is defined in this module.
+static Obj *cur_prog;
+
+// True if `name` is DEFINED (not merely declared) somewhere in this module.
+static bool obj_defined(char *name) {
+  for (Obj *o = cur_prog; o; o = o->next)
+    if (o->is_definition && !strcmp(o->name, name))
+      return true;
+  return false;
+}
+
+// Format a symbol *reference*.  A symbol defined in this module resolves
+// locally (`_name`); one only referenced here is external and carries asm68K's
+// inline-external marker `##` (equivalent to EXTERN).  Each import is thus
+// self-declaring -- no EXTERN/EXTERNDEF list is needed, and a symbol that is
+// neither defined nor referenced never appears, so it forces no linkage.
+static char *symref(char *name) {
+  return obj_defined(name) ? format("_%s", name) : format("_%s##", name);
+}
+
 // Round up `n` to the nearest multiple of `align`.
 int align_to(int n, int align) {
   return (n + align - 1) / align * align;
@@ -196,7 +217,7 @@ static void gen_addr(Node *node) {
     // loader applies; in a fixed-load image (CP/M .68K, bare metal) it resolves
     // directly. Absolute avoids the +/-32 KB reach of PC-relative (R_68K_PC16),
     // which truncates once a global sits far from the referencing code.
-    println("  lea %s,a0", sym(node->var->name));
+    println("  lea %s,a0", symref(node->var->name));
     println("  move.l a0,d0");
     return;
   case ND_DEREF:
@@ -365,7 +386,9 @@ static void cast_call(int argsz, char *fn) {
     push64();
   else
     push();
-  println("  jsr %s", fn);
+  // `fn` (e.g. "_fpdtoll") is external unless this TU defines it -- fp64.c
+  // implements the ll<->fp helpers, and there the call must not carry `##`.
+  println("  jsr %s%s", fn, obj_defined(fn + 1) ? "" : "##");
   println("  adda.w #%d,sp", argsz);
   depth -= argsz / 4;
 }
@@ -518,17 +541,17 @@ static void gen_flonum_binop(Node *node) {
 
   bool cmp = false;
   switch (node->kind) {
-  case ND_ADD: println("  jsr _fpadd%s", suf); break;
-  case ND_SUB: println("  jsr _fpsub%s", suf); break;
-  case ND_MUL: println("  jsr _fpmult%s", suf); break;
-  case ND_DIV: println("  jsr _fpdiv%s", suf); break;
+  case ND_ADD: println("  jsr _fpadd%s##", suf); break;
+  case ND_SUB: println("  jsr _fpsub%s##", suf); break;
+  case ND_MUL: println("  jsr _fpmult%s##", suf); break;
+  case ND_DIV: println("  jsr _fpdiv%s##", suf); break;
   case ND_EQ: case ND_NE: case ND_LT: case ND_LE:
     // _fpcmp (single) / _fpcmpd (double) set the CCR as (lhs - rhs):
     // N = lhs<rhs, Z = lhs==rhs, V = 0 for an ORDERED compare. A NaN operand
     // makes the compare UNORDERED (IEEE 754 5.11, delta D9): the routine then
     // sets V=1 (N=0, Z=0) and returns D0=2, so the signed Scc below must
     // special-case `<`/`<=` (see the cmp block); ordered paths keep V=0.
-    println("  jsr %s", dbl ? "_fpcmpd" : "_fpcmp");
+    println("  jsr %s##", dbl ? "_fpcmpd" : "_fpcmp");
     cmp = true;
     break;
   default: error_tok(node->tok, "unsupported float operator");
@@ -569,9 +592,9 @@ static void gen_int64_binop(Node *node) {
     gen_expr(node->lhs);                 // value -> D0:D1
     pop("d2");                           // count -> D2
     if (node->kind == ND_SHL)
-      println("  jsr __ashldi3");
+      println("  jsr __ashldi3##");
     else
-      println("  jsr %s", u ? "__lshrdi3" : "__ashrdi3");
+      println("  jsr %s##", u ? "__lshrdi3" : "__ashrdi3");
     return;
   }
 
@@ -602,19 +625,19 @@ static void gen_int64_binop(Node *node) {
     println("  eor.l d2,d0");
     return;
   case ND_MUL:
-    println("  jsr __muldi3");
+    println("  jsr __muldi3##");
     return;
   case ND_DIV:
-    println("  jsr %s", u ? "__udivdi3" : "__divdi3");
+    println("  jsr %s##", u ? "__udivdi3" : "__divdi3");
     return;
   case ND_MOD:
-    println("  jsr %s", u ? "__umoddi3" : "__moddi3");
+    println("  jsr %s##", u ? "__umoddi3" : "__moddi3");
     return;
   case ND_EQ:
   case ND_NE:
   case ND_LT:
   case ND_LE: {
-    println("  jsr %s", u ? "__ucmpdi2" : "__cmpdi2");
+    println("  jsr %s##", u ? "__ucmpdi2" : "__cmpdi2");
     println("  tst.l d0");
     char *cc = node->kind == ND_EQ ? "seq" :
                node->kind == ND_NE ? "sne" :
@@ -974,7 +997,7 @@ static void gen_expr(Node *node) {
     }
 
     if (node->lhs->kind == ND_VAR && node->lhs->ty->kind == TY_FUNC) {
-      println("  jsr %s", sym(node->lhs->var->name));
+      println("  jsr %s", symref(node->lhs->var->name));
     } else {
       gen_expr(node->lhs);
       println("  movea.l d0,a0");
@@ -1031,14 +1054,14 @@ static void gen_expr(Node *node) {
     return;
   case ND_MUL:
     // 68000 has no 32x32 multiply; use the runtime helper (d0*d1 -> d0).
-    println("  jsr __mulsi3");
+    println("  jsr __mulsi3##");
     return;
   case ND_DIV:
   case ND_MOD:
     if (node->ty->is_unsigned)
-      println("  jsr %s", node->kind == ND_DIV ? "__udivsi3" : "__umodsi3");
+      println("  jsr %s##", node->kind == ND_DIV ? "__udivsi3" : "__umodsi3");
     else
-      println("  jsr %s", node->kind == ND_DIV ? "__divsi3" : "__modsi3");
+      println("  jsr %s##", node->kind == ND_DIV ? "__divsi3" : "__modsi3");
     return;
   case ND_BITAND:
     println("  and.l d1,d0");
@@ -1280,7 +1303,7 @@ static void emit_data(Obj *prog) {
       while (pos < var->ty->size) {
         char *dir;
         if (rel && rel->offset == pos) {
-          dir = format("DC.L %s%+ld", sym(*rel->label), rel->addend);
+          dir = format("DC.L %s%+ld", symref(*rel->label), rel->addend);
           rel = rel->next;
           pos += 4;
         } else {
@@ -1442,37 +1465,18 @@ static void flush_output(void) {
 
 void codegen(Obj *prog, FILE *out) {
   output_file = out;
+  cur_prog = prog;
 
   last_loc = 0;
   if (opt_g && base_file)
     println(";@file \"%s\"", base_file);
   println("  .model flat");
-  // Runtime helpers the 68000 lacks as single instructions: 32/64-bit integer
-  // mul/div/mod/shift/compare (rt68k) and IEEE soft-float (libieee754d).
-  println("  EXTERN __mulsi3,__divsi3,__udivsi3,__modsi3,__umodsi3");
-  println("  EXTERN __muldi3,__divdi3,__udivdi3,__moddi3,__umoddi3");
-  println("  EXTERN __ashldi3,__ashrdi3,__lshrdi3,__cmpdi2,__ucmpdi2");
-  println("  EXTERN _fpadd,_fpsub,_fpmult,_fpdiv,_fpcmp");
-  println("  EXTERN _fpaddd,_fpsubd,_fpmultd,_fpdivd,_fpcmpd");
-  println("  EXTERN _fpltof,_fpftol,_fpltod,_fpdtol,_fpftod,_fpdtof");
-
-  // Import every global declared but not defined here (external functions like
-  // memcpy, extern variables) so asm68K can resolve the references (A2006).
-  // A name that is both extern-declared and defined in this module (e.g.
-  // `extern FILE *stdout;` in a header + its definition) must NOT be imported,
-  // else asm68K rejects the later definition (A2005/A2014).
-  for (Obj *var = prog; var; var = var->next) {
-    if (var->is_local || var->is_definition)
-      continue;
-    bool defined = false;
-    for (Obj *o = prog; o; o = o->next)
-      if (o != var && o->is_definition && !strcmp(o->name, var->name)) {
-        defined = true;
-        break;
-      }
-    if (!defined)
-      println("  EXTERN %s", sym(var->name));
-  }
+  // Imports are self-declaring: symref() appends asm68K's inline-external
+  // marker `##` to every reference whose target is not defined in this module,
+  // and the runtime-helper calls (soft-float and 32/64-bit mul/div/shift) do
+  // the same.  So no EXTERN/EXTERNDEF list is emitted -- a symbol that is
+  // neither defined nor referenced produces no undefined entry and thus forces
+  // no needless linkage (the old blanket EXTERN import bloated objects ~20x).
 
   assign_lvar_offsets(prog);
   emit_data(prog);

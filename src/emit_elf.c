@@ -210,7 +210,18 @@ static bool in_list(StringArray *a, char *name) {
 
 static char *xstrndup(char *p, int n);
 
+// Strip asm68K's inline-external marker "##" that codegen appends to imports
+// (e.g. "_printf##").  A symbol undefined in this module is already bound
+// global, so only the clean name is needed for interning and the reloc record.
+static char *strip_extmark(char *name) {
+  int n = (int)strlen(name);
+  if (n >= 2 && name[n - 2] == '#' && name[n - 1] == '#')
+    return xstrndup(name, n - 2);
+  return name;
+}
+
 static void add_reloc(int sec, uint32_t off, char *sym, int type, int32_t add) {
+  sym = strip_extmark(sym);
   sym_intern(sym); // ensure the referenced symbol exists in the table
   if (nrel == caprel) {
     caprel = caprel ? caprel * 2 : 64;
@@ -1039,7 +1050,7 @@ static void build_debug(Buf *abbrev, Buf *info, Buf *line, int *info_abbrev_off,
     }
     b8(line, 1); // DW_LNS_copy -> append a row
   }
-  if (text.len > cur_addr) {
+  if ((uint32_t)text.len > cur_addr) {
     b8(line, 2); // advance_pc to end of text
     uleb(line, text.len - cur_addr);
   }

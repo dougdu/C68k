@@ -87,8 +87,9 @@ c68k **reuses the toolchain that builds Osiris** — no new tools are invented:
 - **Test** headless under **`sim68k`**, in **lockstep**: every conformance program is compiled for
   *both* OSes and must produce identical, golden-matched output.
 
-The toolchain lives in the sibling **Osiris** repo (`osiris/toolchain/` — `asm68K`, GNU
-`m68k-elf` binutils 2.44, `sim68k`); `mkdri` and `cpm68k.ld` come from the **worm68k** toolchain.
+The assembler (`asm68K`) and the GNU `m68k-elf` linker (binutils 2.44) are **vendored in-repo**
+under [`tools/bin/`](tools/bin); the rest of the `m68k-elf` binutils and `sim68k` come from the
+sibling **Osiris** repo, and `mkdri`/`cpm68k.ld` from the **worm68k** toolchain.
 
 ## Repository layout
 

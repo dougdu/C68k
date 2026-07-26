@@ -34,8 +34,10 @@ operating systems from a **single source tree**:
 - **CP/M-68K** — Digital Research's 1983 68000 CP/M (BDOS on `TRAP #2`), whose programs are
   **`.68K` DRI-format** images.
 
-It is built **with, and tested on, the same toolchain that builds Osiris**: the GNU `m68k-elf`
-binutils, `asm68K`, and the `sim68k` emulator, plus `mkdri`/`cpm68k.ld` from the worm68k toolchain.
+It is built **with, and tested on, the same toolchain that builds Osiris**. The assembler
+(`asm68K`) and the GNU `m68k-elf` linker are **vendored in-repo** under [`tools/bin/`](../tools/bin)
+(committed), so a Windows build/link is self-contained; the remaining GNU `m68k-elf` binutils, the
+`sim68k` emulator, and `mkdri`/`cpm68k.ld` (worm68k) stay external prerequisites.
 As a deliberate by-product it yields a **maintained cross-compiler** for building other tools for
 both operating systems, and — via a standard bootstrap — a **self-hosting native compiler**.
 
@@ -259,6 +261,13 @@ Both paths share the same instruction-selection layer; only the *encoder* differ
 binary opcodes + relocation records). The integrated emitter is validated by **byte-comparing** its
 objects against the `asm68K` output for the same input during P8.
 
+**Imports are self-declaring.** Rather than emit a module-wide import list, the code generator marks
+each reference to a symbol it does not define with asm68K's inline-external suffix `##` (e.g.
+`jsr _printf##`), and exports a definition with `PUBLIC`. A symbol that is neither defined nor
+referenced therefore never appears, so no unreferenced import can force needless linkage (the old
+blanket-`EXTERN` import bloated objects ~20×). The integrated emitter strips the `##` on input and
+binds the still-undefined symbol global, so both paths emit identical symbol tables.
+
 ## 9. The C library platform split
 
 Summarized here; specified in [libc-and-toolchain.md](libc-and-toolchain.md).
@@ -297,9 +306,10 @@ flowchart LR
     SC --> G
 ```
 
-- **Toolchain (reused from Osiris/worm68k):** the assembler is **`asm68K`** (Motorola syntax → ELF +
-  DWARF); `m68k-elf` binutils 2.44 (`ld`/`ar`) provide the linker/archiver at
-  `osiris/toolchain/binutils`; `asm68K` at `osiris/toolchain/asm68k`; `sim68k` at
+- **Toolchain.** The assembler **`asm68K`** (Motorola syntax → ELF + DWARF) and the `m68k-elf`
+  linker `ld` (binutils 2.44) are **vendored in-repo** at [`tools/bin/`](../tools/bin) and copied
+  into `out/cross/bin` by binplace; c68k selects the assembler via `C68K_AS`. The remaining
+  `m68k-elf` binutils (`ar`/`nm`/`objdump`/…) live at `osiris/toolchain/binutils`; `sim68k` at
   `osiris/toolchain/sim68k` (it runs **both** Osiris and CP/M-68K); `mkdri` + `cpm68k.ld` from
   `worm68k`.
 - **Lockstep testing.** Every conformance test is compiled for **both** OSes, run headless under
