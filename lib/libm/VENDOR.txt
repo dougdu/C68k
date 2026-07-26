@@ -1,13 +1,14 @@
 vendored library : libm
 upstream source  : C:\git\worm68k\68kTools\libraries\float\ieee754
-synced (UTC)     : 2026-07-26 15:54:10Z
-file count       : 34
+synced (UTC)     : 2026-07-26 16:12:08Z
+file count       : 35
 
 files (sha256, path):
   B8D5DA01E6CCDA0E  conv\atod.a68
   1D2E19A0B56FADE6  conv\atof.a68
   E446676564590497  conv\dpconv.a68
   4D1AD28A70B2E1BD  conv\ftol.a68
+  8EDA9CD088D2E71D  conv\llconv.a68
   29F06CC76476E1B6  conv\ltof.a68
   1C48E4A6A0F953AC  core\dpadd.a68
   418FD7F76F152F6C  core\dpcmp.a68

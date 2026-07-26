@@ -77,11 +77,7 @@ function Sync-Vendor {
 # --- libm: the ieee754 core/conv/fmt/math .a68 + ieee754*.inc ---
 Sync-Vendor 'libm' $Libm (Join-Path $repo 'lib\libm') {
   param($s)
-  # Exclude conv/llconv.a68: the long long <-> float/double conversions
-  # (_fplltod.._fpftoull) are owned by libc/core/fp64.c (C).  Vendoring the asm
-  # copy too would duplicate those 8 public symbols in libm.a vs libc.a.
-  @(Get-ChildItem -Path (@('core', 'conv', 'fmt', 'math') | ForEach-Object { Join-Path $s $_ }) -Filter *.a68 -Recurse |
-      Where-Object { $_.Name -ne 'llconv.a68' }) +
+  @(Get-ChildItem -Path (@('core', 'conv', 'fmt', 'math') | ForEach-Object { Join-Path $s $_ }) -Filter *.a68 -Recurse) +
   @(Get-ChildItem -Path $s -Filter *.inc)
 }
 

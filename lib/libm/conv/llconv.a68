@@ -1,0 +1,661 @@
+	title	"IEEE 754 long long <-> single/double conversions"
+; ============================================================
+;  64-bit integer <-> IEEE 754 conversions (the `long long` siblings of the
+;  32-bit ltof/ftol/dpconv routines).  The C68k compiler's cast() emits calls
+;  to these for every C cast between a 64-bit integer and float/double.
+;
+;    _fplltod   signed   long long -> double   (8-byte arg -> D0:D1)
+;    _fpulltod  unsigned long long -> double   (8-byte arg -> D0:D1)
+;    _fplltof   signed   long long -> float    (8-byte arg -> D0)
+;    _fpulltof  unsigned long long -> float    (8-byte arg -> D0)
+;    _fpdtoll   double -> signed   long long   (8-byte arg -> D0:D1)
+;    _fpdtoull  double -> unsigned long long   (8-byte arg -> D0:D1)
+;    _fpftoll   float  -> signed   long long   (4-byte arg -> D0:D1)
+;    _fpftoull  float  -> unsigned long long   (4-byte arg -> D0:D1)
+;
+;  Calling convention (m68k C ABI, matches the compiler byte-for-byte):
+;    * The argument is on the stack above the return address AND live in the
+;      registers on entry: 8-byte arg = D0 (high) : D1 (low); 4-byte arg = D0.
+;      This code reads it from the registers (movem below does not touch D0/D1).
+;    * 8-byte result = D0 (high) : D1 (low); 4-byte result = D0.
+;    * The CALLER removes the argument -- end every path with a plain `rts`.
+;    * D0/D1/A0/A1 are scratch; D2-D7/A2-A6 are preserved (movem at entry).
+;
+;  Numeric semantics (matches the existing conv family + <fenv.h>):
+;    * int -> fp: round-to-nearest-even by default, honouring the directed mode
+;      in _fe_round via _fe_dirup (as _fpltof does).  FE_INEXACT whenever a bit
+;      is dropped.  Signed variants take the sign from bit 63 and convert the
+;      magnitude; unsigned variants use the full 64-bit magnitude.  0 -> +0.0.
+;    * fp -> int: truncate toward zero (mode-independent, as _fpdtol/_fpftol).
+;      Saturate out-of-range/inf/NaN; FE_INVALID on a saturated result,
+;      FE_INEXACT when a nonzero fraction is discarded.  See each routine.
+; ============================================================
+
+	.model	flat
+	include	ieee754.inc
+
+	public	_fplltod, _fpulltod, _fplltof, _fpulltof
+	public	_fpdtoll, _fpdtoull, _fpftoll, _fpftoull
+	extern	_fe_status		; sticky exception flags
+	extern	_fe_round, _fe_dirup	; directed-rounding decision helper
+
+	.code
+
+; ============================================================
+;  int64 -> double            (_fplltod signed, _fpulltod unsigned)
+;
+;  A 64-bit integer has up to 64 significant bits; a double keeps 53, so the
+;  low bits are rounded (round-to-nearest-even / directed).  Registers:
+;    D0:D1 = 64-bit magnitude (high:low)   D2 = sign (bit31, double-hi form)
+;    D4    = biased exponent               D5 = 11 dropped bits (guard+sticky)
+; ============================================================
+_fpulltod:
+	movem.l	d2-d7,-(sp)
+	moveq	#0,d2			; unsigned: sign = +
+	bra	_lltod_common
+_fplltod:
+	movem.l	d2-d7,-(sp)
+	moveq	#0,d2			; assume positive
+	tst.l	d0			; high longword: bit31 = value bit63 = sign
+	bpl	_lltod_common
+	move.l	#IEEE754_DBL_SIGN_MASK_HI,d2 ; remember negative
+	neg.l	d1			; magnitude = -value  (64-bit negate)
+	negx.l	d0
+_lltod_common:
+	move.l	d0,d3
+	or.l	d1,d3
+	beq	_lltod_zero		; 0 -> +0.0 (signed 0 handled: sign only on nonzero)
+	move.l	#1023+63,d4		; biased exponent if leading 1 is at bit 63
+_lltod_norm:
+	btst.l	#31,d0
+	bne	_lltod_normed
+	lsl.l	#1,d1			; 64-bit shift left by 1
+	roxl.l	#1,d0
+	subq.l	#1,d4
+	bra	_lltod_norm
+_lltod_normed:
+	; d0:d1 normalized (bit63 set).  Significand = top 53 bits; the low 11 bits
+	; (d1 bits 10..0) are dropped -> guard = bit10, sticky = bits 9..0.
+	move.l	d1,d5
+	andi.l	#$7FF,d5		; d5 = 11 dropped bits
+	; shift d0:d1 right by 11 so the implied 1 lands at bit20 of d0.
+	moveq	#11,d6
+	lsr.l	d6,d1			; d1 >>= 11
+	move.l	d0,d7
+	moveq	#21,d6
+	lsl.l	d6,d7			; d7 = d0 << 21  (low 11 bits of d0 -> top)
+	or.l	d7,d1			; d1 = mantissa_low (bits 42..11 of value)
+	moveq	#11,d6
+	lsr.l	d6,d0			; d0 = implied-bit(20) | mantissa_high(19..0)
+	tst.l	d5
+	beq	_lltod_pack		; exact -> no rounding
+	ori.l	#FE_INEXACT,_fe_status
+	tst.l	_fe_round
+	bne	_lltod_rdir		; directed rounding
+	cmpi.l	#$400,d5		; guard bit = bit10 ($400) = half
+	blo	_lltod_pack		; below half -> truncate
+	bhi	_lltod_roundup		; above half -> round up
+	btst	#0,d1			; exactly half -> round to even
+	beq	_lltod_pack
+_lltod_roundup:
+	addq.l	#1,d1			; +1 ULP into the 53-bit significand
+	bcc.s	_lltod_rndhi
+	addq.l	#1,d0			; carry into the high half
+_lltod_rndhi:
+	btst.l	#21,d0			; significand carried out to 2^53?
+	beq	_lltod_pack
+	lsr.l	#1,d0			; renormalize (low half is 0 in this case)
+	addq.l	#1,d4			; bump exponent
+_lltod_pack:
+	andi.l	#IEEE754_DBL_MANT_MASK_HI,d0 ; strip implied bit -> mantissa_high
+	move.l	d4,d3
+	INSERT_DBL_EXP d3
+	or.l	d3,d0			; sign|exp|mant_hi
+	or.l	d2,d0
+	movem.l	(sp)+,d2-d7
+	rts
+_lltod_zero:
+	moveq	#0,d0
+	moveq	#0,d1
+	movem.l	(sp)+,d2-d7
+	rts
+_lltod_rdir:
+	; directed mode, inexact: ask _fe_dirup whether to round the magnitude up.
+	movem.l	d0-d1,-(sp)		; save the 53-bit significand pair
+	move.l	d2,d1			; sign (bit31)
+	moveq	#1,d0			; inexact
+	bsr	_fe_dirup		; d0 = 1 (up) / 0 (truncate); preserves d1-d7
+	tst.l	d0
+	movem.l	(sp)+,d0-d1		; restore significand (movem leaves CCR intact)
+	beq	_lltod_pack
+	bra	_lltod_roundup
+
+; ============================================================
+;  int64 -> float             (_fplltof signed, _fpulltof unsigned)
+;
+;  Float keeps 24 significant bits.  After normalising the magnitude so the
+;  leading 1 is at bit 63, the whole significand + guard live in the high
+;  longword (D0); the sticky is the rest of D0 plus all of D1.
+; ============================================================
+_fpulltof:
+	movem.l	d2-d7,-(sp)
+	moveq	#0,d2			; unsigned: sign = +
+	bra	_lltof_common
+_fplltof:
+	movem.l	d2-d7,-(sp)
+	moveq	#0,d2
+	tst.l	d0
+	bpl	_lltof_common
+	move.l	#IEEE754_SNG_SIGN_MASK,d2
+	neg.l	d1
+	negx.l	d0
+_lltof_common:
+	move.l	d0,d3
+	or.l	d1,d3
+	beq	_lltof_zero
+	move.l	#127+63,d4		; biased exponent if leading 1 is at bit 63
+_lltof_norm:
+	btst.l	#31,d0
+	bne	_lltof_normed
+	lsl.l	#1,d1
+	roxl.l	#1,d0
+	subq.l	#1,d4
+	bra	_lltof_norm
+_lltof_normed:
+	; significand = d0 >> 8 (top 24 bits); guard = d0 bit7;
+	; sticky = (d0 & $7F) OR (d1 != 0).
+	move.l	d0,d5
+	andi.l	#$FF,d5			; low 8 bits of d0 (guard + round)
+	tst.l	d1			; any lower bits?
+	beq.s	_lltof_nostick
+	ori.l	#1,d5			; fold d1 into sticky (bit7 untouched)
+_lltof_nostick:
+	lsr.l	#8,d0			; d0 = 24-bit significand (implied bit at bit23)
+	tst.l	d5
+	beq	_lltof_pack		; exact
+	ori.l	#FE_INEXACT,_fe_status
+	tst.l	_fe_round
+	bne	_lltof_rdir
+	cmpi.l	#$80,d5			; guard = bit7 ($80) = half
+	blo	_lltof_pack
+	bhi	_lltof_roundup
+	btst	#0,d0			; exactly half -> round to even
+	beq	_lltof_pack
+_lltof_roundup:
+	addq.l	#1,d0
+	cmpi.l	#$1000000,d0		; carried out to 2^24?
+	blo	_lltof_pack
+	lsr.l	#1,d0			; renormalize
+	addq.l	#1,d4			; bump exponent
+_lltof_pack:
+	andi.l	#IEEE754_SNG_MANT_MASK,d0
+	move.l	d4,d3
+	INSERT_EXP d3
+	or.l	d3,d0
+	or.l	d2,d0
+	movem.l	(sp)+,d2-d7
+	rts
+_lltof_zero:
+	moveq	#0,d0
+	movem.l	(sp)+,d2-d7
+	rts
+_lltof_rdir:
+	move.l	d0,-(sp)		; save the 24-bit significand
+	move.l	d2,d1			; sign (bit31)
+	moveq	#1,d0			; inexact
+	bsr	_fe_dirup		; preserves d1-d7 (exponent in d4 survives)
+	tst.l	d0
+	move.l	(sp)+,d0		; restore significand (CCR intact)
+	beq	_lltof_pack
+	bra	_lltof_roundup
+
+; ============================================================
+;  double -> signed long long (_fpdtoll)   -- truncate toward zero
+;
+;  Saturation: x >= 2^63 / +inf -> LLONG_MAX ($7FFFFFFFFFFFFFFF);
+;  x < -2^63 / -inf -> LLONG_MIN ($8000000000000000); NaN by its sign bit;
+;  x == -2^63 exactly is in range -> LLONG_MIN.  FE_INVALID on a saturated
+;  result; FE_INEXACT when a nonzero fraction is discarded.
+;    D2:D3 = significand / result magnitude   D4 = sign   D5 = unbiased exp
+; ============================================================
+_fpdtoll:
+	movem.l	d2-d7,-(sp)
+	move.l	d0,d2			; d2 = high (D0:D1 hold the double)
+	move.l	d1,d3			; d3 = low
+	move.l	d2,d4
+	andi.l	#IEEE754_DBL_SIGN_MASK_HI,d4 ; d4 = sign
+	move.l	d2,d5
+	andi.l	#IEEE754_DBL_EXP_MASK_HI,d5
+	EXTRACT_DBL_EXP d5		; d5 = biased exponent 0..2047
+	cmpi.l	#IEEE754_DBL_EXP_BIAS,d5
+	blt	_dtoll_zero		; |x| < 1 -> 0
+	subi.l	#IEEE754_DBL_EXP_BIAS,d5 ; d5 = unbiased exponent (>= 0)
+	cmpi.l	#63,d5
+	bgt	_dtoll_of		; unbiased > 63 (incl inf/NaN) -> saturate
+	beq	_dtoll_boundary		; unbiased == 63: only -2^63 is in range
+	; in range: build the 53-bit significand, then shift to an integer.
+	andi.l	#IEEE754_DBL_MANT_MASK_HI,d2
+	ori.l	#IEEE754_DBL_IMPLIED_BIT_HI,d2 ; d2:d3 = significand (bit52 = d2 bit20)
+	move.l	d5,d6
+	subi.l	#52,d6			; d6 = shift = unbiased - 52
+	bmi	_dtoll_right		; shift < 0 -> right shift (has a fraction)
+	beq	_dtoll_sign		; shift == 0 -> significand is the integer
+	; shift > 0 (1..10): left shift the significand by d6.
+	moveq	#32,d7
+	sub.l	d6,d7			; d7 = 32 - shift
+	move.l	d3,d0
+	lsr.l	d7,d0			; sig_lo >> (32-shift)
+	lsl.l	d6,d2			; sig_hi <<= shift
+	or.l	d0,d2			; result high
+	lsl.l	d6,d3			; result low
+	bra	_dtoll_sign
+_dtoll_right:
+	neg.l	d6			; d6 = s_r = 52 - unbiased (1..52)
+	cmpi.l	#32,d6
+	bge	_dtoll_right_big
+	; s_r in [1,31]: fraction = sig_lo & ((1<<s_r)-1)
+	moveq	#1,d0
+	lsl.l	d6,d0
+	subq.l	#1,d0
+	and.l	d3,d0			; d0 = dropped fraction (sticky)
+	moveq	#32,d7
+	sub.l	d6,d7
+	move.l	d2,d1
+	lsl.l	d7,d1			; sig_hi << (32-s_r)
+	lsr.l	d6,d3
+	or.l	d1,d3			; result low
+	lsr.l	d6,d2			; result high
+	tst.l	d0
+	beq	_dtoll_sign
+	ori.l	#FE_INEXACT,_fe_status
+	bra	_dtoll_sign
+_dtoll_right_big:
+	subi.l	#32,d6			; d6 = s' = s_r - 32 (0..20)
+	move.l	d3,d0			; sticky starts as the whole low word
+	moveq	#1,d1
+	lsl.l	d6,d1
+	subq.l	#1,d1
+	and.l	d2,d1			; low s' bits of sig_hi
+	or.l	d1,d0			; d0 = sticky
+	move.l	d2,d3
+	lsr.l	d6,d3			; result low = sig_hi >> s'
+	moveq	#0,d2			; result high = 0
+	tst.l	d0
+	beq	_dtoll_sign
+	ori.l	#FE_INEXACT,_fe_status
+_dtoll_sign:
+	tst.l	d4			; negative?
+	beq	_dtoll_done
+	neg.l	d3
+	negx.l	d2
+_dtoll_done:
+	move.l	d2,d0
+	move.l	d3,d1
+	movem.l	(sp)+,d2-d7
+	rts
+_dtoll_zero:
+	move.l	d2,d0			; |x| < 1: 0, INEXACT unless exactly +/-0
+	andi.l	#$7FFFFFFF,d0
+	or.l	d3,d0
+	beq.s	_dtoll_zret
+	ori.l	#FE_INEXACT,_fe_status
+_dtoll_zret:
+	moveq	#0,d0
+	moveq	#0,d1
+	movem.l	(sp)+,d2-d7
+	rts
+_dtoll_boundary:
+	; unbiased == 63 (|x| in [2^63,2^64)): in range only for exactly -2^63.
+	tst.l	d4
+	beq	_dtoll_of_pos		; +2^63.. -> overflow
+	move.l	d2,d0
+	andi.l	#IEEE754_DBL_MANT_MASK_HI,d0
+	or.l	d3,d0
+	bne	_dtoll_of_neg		; -(2^63+..) -> overflow
+	move.l	#$80000000,d0		; exactly -2^63 = LLONG_MIN (in range)
+	moveq	#0,d1
+	movem.l	(sp)+,d2-d7
+	rts
+_dtoll_of:
+	tst.l	d4
+	bne	_dtoll_of_neg
+_dtoll_of_pos:
+	move.l	#$7FFFFFFF,d0		; +overflow / +inf / +NaN -> LLONG_MAX
+	moveq	#-1,d1
+	ori.l	#FE_INVALID,_fe_status
+	movem.l	(sp)+,d2-d7
+	rts
+_dtoll_of_neg:
+	move.l	#$80000000,d0		; -overflow / -inf / -NaN -> LLONG_MIN
+	moveq	#0,d1
+	ori.l	#FE_INVALID,_fe_status
+	movem.l	(sp)+,d2-d7
+	rts
+
+; ============================================================
+;  double -> unsigned long long (_fpdtoull)   -- truncate toward zero
+;
+;  Saturation: x <= 0 (any negative, -inf) -> 0; x >= 2^64 / +inf ->
+;  ULLONG_MAX ($FFFFFFFFFFFFFFFF); NaN -> 0.  FE_INVALID on a saturated result
+;  (out-of-range / inf / NaN, and negative |x| >= 1); FE_INEXACT when a nonzero
+;  fraction is discarded (including a negative -1 < x < 0 -> 0).
+; ============================================================
+_fpdtoull:
+	movem.l	d2-d7,-(sp)
+	move.l	d0,d2			; high
+	move.l	d1,d3			; low
+	move.l	d2,d4
+	andi.l	#IEEE754_DBL_SIGN_MASK_HI,d4
+	move.l	d2,d5
+	andi.l	#IEEE754_DBL_EXP_MASK_HI,d5
+	EXTRACT_DBL_EXP d5
+	; NaN (either sign) -> 0, INVALID (before the sign split; +NaN must not
+	; take the +inf overflow path to ULLONG_MAX).
+	cmpi.l	#2047,d5
+	bne.s	_dtoull_nonnan
+	move.l	d2,d0
+	andi.l	#IEEE754_DBL_MANT_MASK_HI,d0
+	or.l	d3,d0
+	beq.s	_dtoull_nonnan		; mantissa 0 -> inf, not NaN
+	ori.l	#FE_INVALID,_fe_status
+	bra	_dtoull_zret
+_dtoull_nonnan:
+	tst.l	d4
+	beq	_dtoull_pos
+	; negative input
+	cmpi.l	#2047,d5
+	beq	_dtoull_ninv		; -inf or -NaN -> 0, INVALID
+	cmpi.l	#IEEE754_DBL_EXP_BIAS,d5
+	bge	_dtoull_ninv		; negative |x| >= 1 -> out of range -> 0, INVALID
+	move.l	d2,d0			; -1 < x < 0: truncates to 0
+	andi.l	#$7FFFFFFF,d0
+	or.l	d3,d0
+	beq	_dtoull_zret		; exactly -0 -> 0, no flag
+	ori.l	#FE_INEXACT,_fe_status	; nonzero fraction dropped
+	bra	_dtoull_zret
+_dtoull_ninv:
+	ori.l	#FE_INVALID,_fe_status
+_dtoull_zret:
+	moveq	#0,d0
+	moveq	#0,d1
+	movem.l	(sp)+,d2-d7
+	rts
+_dtoull_pos:
+	cmpi.l	#IEEE754_DBL_EXP_BIAS,d5
+	blt	_dtoull_zpos		; 0 <= x < 1 -> 0
+	subi.l	#IEEE754_DBL_EXP_BIAS,d5
+	cmpi.l	#63,d5
+	bgt	_dtoull_of		; unbiased > 63 (incl +inf/+NaN) -> ULLONG_MAX
+	andi.l	#IEEE754_DBL_MANT_MASK_HI,d2
+	ori.l	#IEEE754_DBL_IMPLIED_BIT_HI,d2
+	move.l	d5,d6
+	subi.l	#52,d6
+	bmi	_dtoull_right
+	beq	_dtoull_ret		; shift 0
+	; left shift by d6 (1..11) -- unbiased up to 63 fits unsigned
+	moveq	#32,d7
+	sub.l	d6,d7
+	move.l	d3,d0
+	lsr.l	d7,d0
+	lsl.l	d6,d2
+	or.l	d0,d2
+	lsl.l	d6,d3
+	bra	_dtoull_ret
+_dtoull_right:
+	neg.l	d6
+	cmpi.l	#32,d6
+	bge	_dtoull_right_big
+	moveq	#1,d0
+	lsl.l	d6,d0
+	subq.l	#1,d0
+	and.l	d3,d0
+	moveq	#32,d7
+	sub.l	d6,d7
+	move.l	d2,d1
+	lsl.l	d7,d1
+	lsr.l	d6,d3
+	or.l	d1,d3
+	lsr.l	d6,d2
+	tst.l	d0
+	beq	_dtoull_ret
+	ori.l	#FE_INEXACT,_fe_status
+	bra	_dtoull_ret
+_dtoull_right_big:
+	subi.l	#32,d6
+	move.l	d3,d0
+	moveq	#1,d1
+	lsl.l	d6,d1
+	subq.l	#1,d1
+	and.l	d2,d1
+	or.l	d1,d0
+	move.l	d2,d3
+	lsr.l	d6,d3
+	moveq	#0,d2
+	tst.l	d0
+	beq	_dtoull_ret
+	ori.l	#FE_INEXACT,_fe_status
+_dtoull_ret:
+	move.l	d2,d0
+	move.l	d3,d1
+	movem.l	(sp)+,d2-d7
+	rts
+_dtoull_zpos:
+	move.l	d2,d0
+	andi.l	#$7FFFFFFF,d0
+	or.l	d3,d0
+	beq	_dtoull_zret
+	ori.l	#FE_INEXACT,_fe_status
+	bra	_dtoull_zret
+_dtoull_of:
+	moveq	#-1,d0			; ULLONG_MAX
+	moveq	#-1,d1
+	ori.l	#FE_INVALID,_fe_status
+	movem.l	(sp)+,d2-d7
+	rts
+
+; ============================================================
+;  float -> signed long long (_fpftoll)   -- truncate toward zero
+;
+;  Same saturation rules as _fpdtoll (LLONG_MAX / LLONG_MIN / NaN by sign /
+;  exact -2^63 in range).  The 24-bit significand lives in one longword.
+;    D2 = float bits / significand / result-hi   D3 = result-lo
+;    D4 = sign   D5 = unbiased exponent
+; ============================================================
+_fpftoll:
+	movem.l	d2-d7,-(sp)
+	move.l	d0,d2			; d2 = IEEE single (D0 holds the arg)
+	move.l	d2,d4
+	andi.l	#IEEE754_SNG_SIGN_MASK,d4
+	move.l	d2,d5
+	andi.l	#IEEE754_SNG_EXP_MASK,d5
+	EXTRACT_EXP d5			; biased exponent 0..255
+	cmpi.l	#IEEE754_SNG_EXP_BIAS,d5
+	blt	_ftoll_zero
+	subi.l	#IEEE754_SNG_EXP_BIAS,d5
+	cmpi.l	#63,d5
+	bgt	_ftoll_of
+	beq	_ftoll_boundary
+	andi.l	#IEEE754_SNG_MANT_MASK,d2
+	ori.l	#IEEE754_SNG_IMPLIED_BIT,d2 ; 24-bit significand, leading 1 at bit23
+	move.l	d5,d6
+	subi.l	#23,d6			; shift = unbiased - 23
+	bmi	_ftoll_right
+	beq	_ftoll_int1
+	cmpi.l	#32,d6
+	bge	_ftoll_left_big
+	; s in [1,31]: result_lo = sig << s ; result_hi = sig >> (32-s)
+	move.l	d2,d3
+	lsl.l	d6,d3			; result low
+	moveq	#32,d7
+	sub.l	d6,d7
+	lsr.l	d7,d2			; result high (d2 still held sig)
+	bra	_ftoll_sign2
+_ftoll_left_big:
+	subi.l	#32,d6			; s' = s - 32 (0..7)
+	lsl.l	d6,d2			; result high = sig << s'
+	moveq	#0,d3			; result low = 0
+	bra	_ftoll_sign2
+_ftoll_int1:
+	move.l	d2,d3			; result low = sig
+	moveq	#0,d2			; result high = 0
+	bra	_ftoll_sign2
+_ftoll_right:
+	neg.l	d6			; s_r = 23 - unbiased (1..23)
+	moveq	#1,d0
+	lsl.l	d6,d0
+	subq.l	#1,d0
+	and.l	d2,d0			; dropped fraction
+	lsr.l	d6,d2			; integer = sig >> s_r
+	move.l	d2,d3			; result low
+	moveq	#0,d2			; result high = 0
+	tst.l	d0
+	beq	_ftoll_sign2
+	ori.l	#FE_INEXACT,_fe_status
+_ftoll_sign2:
+	tst.l	d4
+	beq	_ftoll_done
+	neg.l	d3
+	negx.l	d2
+_ftoll_done:
+	move.l	d2,d0
+	move.l	d3,d1
+	movem.l	(sp)+,d2-d7
+	rts
+_ftoll_zero:
+	move.l	d2,d0			; |x| < 1 -> 0, INEXACT unless exactly +/-0
+	andi.l	#$7FFFFFFF,d0
+	beq.s	_ftoll_zret
+	ori.l	#FE_INEXACT,_fe_status
+_ftoll_zret:
+	moveq	#0,d0
+	moveq	#0,d1
+	movem.l	(sp)+,d2-d7
+	rts
+_ftoll_boundary:
+	; unbiased == 63: in range only for exactly -2^63 (mantissa == 0).
+	tst.l	d4
+	beq	_ftoll_of_pos
+	move.l	d2,d0
+	andi.l	#IEEE754_SNG_MANT_MASK,d0
+	bne	_ftoll_of_neg
+	move.l	#$80000000,d0		; -2^63 = LLONG_MIN
+	moveq	#0,d1
+	movem.l	(sp)+,d2-d7
+	rts
+_ftoll_of:
+	tst.l	d4
+	bne	_ftoll_of_neg
+_ftoll_of_pos:
+	move.l	#$7FFFFFFF,d0
+	moveq	#-1,d1
+	ori.l	#FE_INVALID,_fe_status
+	movem.l	(sp)+,d2-d7
+	rts
+_ftoll_of_neg:
+	move.l	#$80000000,d0
+	moveq	#0,d1
+	ori.l	#FE_INVALID,_fe_status
+	movem.l	(sp)+,d2-d7
+	rts
+
+; ============================================================
+;  float -> unsigned long long (_fpftoull)   -- truncate toward zero
+;
+;  Saturation: x <= 0 (any negative, -inf) -> 0; x >= 2^64 / +inf ->
+;  ULLONG_MAX; NaN -> 0.  Flags as _fpdtoull.
+; ============================================================
+_fpftoull:
+	movem.l	d2-d7,-(sp)
+	move.l	d0,d2
+	move.l	d2,d4
+	andi.l	#IEEE754_SNG_SIGN_MASK,d4
+	move.l	d2,d5
+	andi.l	#IEEE754_SNG_EXP_MASK,d5
+	EXTRACT_EXP d5
+	; NaN (either sign) -> 0, INVALID (before the sign split).
+	cmpi.l	#255,d5
+	bne.s	_ftoull_nonnan
+	move.l	d2,d0
+	andi.l	#IEEE754_SNG_MANT_MASK,d0
+	beq.s	_ftoull_nonnan		; mantissa 0 -> inf, not NaN
+	ori.l	#FE_INVALID,_fe_status
+	bra	_ftoull_zret
+_ftoull_nonnan:
+	tst.l	d4
+	beq	_ftoull_pos
+	cmpi.l	#255,d5
+	beq	_ftoull_ninv		; -inf / -NaN -> 0, INVALID
+	cmpi.l	#IEEE754_SNG_EXP_BIAS,d5
+	bge	_ftoull_ninv		; negative |x| >= 1 -> 0, INVALID
+	move.l	d2,d0			; -1 < x < 0 -> 0
+	andi.l	#$7FFFFFFF,d0
+	beq	_ftoull_zret		; -0 -> 0, no flag
+	ori.l	#FE_INEXACT,_fe_status
+	bra	_ftoull_zret
+_ftoull_ninv:
+	ori.l	#FE_INVALID,_fe_status
+_ftoull_zret:
+	moveq	#0,d0
+	moveq	#0,d1
+	movem.l	(sp)+,d2-d7
+	rts
+_ftoull_pos:
+	cmpi.l	#IEEE754_SNG_EXP_BIAS,d5
+	blt	_ftoull_zpos
+	subi.l	#IEEE754_SNG_EXP_BIAS,d5
+	cmpi.l	#63,d5
+	bgt	_ftoull_of		; unbiased > 63 (incl +inf/+NaN) -> ULLONG_MAX
+	andi.l	#IEEE754_SNG_MANT_MASK,d2
+	ori.l	#IEEE754_SNG_IMPLIED_BIT,d2
+	move.l	d5,d6
+	subi.l	#23,d6
+	bmi	_ftoull_right
+	beq	_ftoull_int1
+	cmpi.l	#32,d6
+	bge	_ftoull_left_big
+	move.l	d2,d3
+	lsl.l	d6,d3
+	moveq	#32,d7
+	sub.l	d6,d7
+	lsr.l	d7,d2
+	bra	_ftoull_ret
+_ftoull_left_big:
+	subi.l	#32,d6			; s' = s - 32 (0..8): unbiased up to 63 fits u64
+	lsl.l	d6,d2
+	moveq	#0,d3
+	bra	_ftoull_ret
+_ftoull_int1:
+	move.l	d2,d3
+	moveq	#0,d2
+	bra	_ftoull_ret
+_ftoull_right:
+	neg.l	d6
+	moveq	#1,d0
+	lsl.l	d6,d0
+	subq.l	#1,d0
+	and.l	d2,d0
+	lsr.l	d6,d2
+	move.l	d2,d3
+	moveq	#0,d2
+	tst.l	d0
+	beq	_ftoull_ret
+	ori.l	#FE_INEXACT,_fe_status
+_ftoull_ret:
+	move.l	d2,d0
+	move.l	d3,d1
+	movem.l	(sp)+,d2-d7
+	rts
+_ftoull_zpos:
+	move.l	d2,d0
+	andi.l	#$7FFFFFFF,d0
+	beq	_ftoull_zret
+	ori.l	#FE_INEXACT,_fe_status
+	bra	_ftoull_zret
+_ftoull_of:
+	moveq	#-1,d0
+	moveq	#-1,d1
+	ori.l	#FE_INVALID,_fe_status
+	movem.l	(sp)+,d2-d7
+	rts
+
+	end
