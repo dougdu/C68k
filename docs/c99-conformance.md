@@ -87,7 +87,7 @@ OS): `<float.h>`, `<iso646.h>`, `<limits.h>`, `<stdarg.h>`, `<stdbool.h>`,
 | `<iso646.h>` | Alternative operator spellings | ✅ | ✅ | `libc/include/iso646.h` | Complete. |
 | `<limits.h>` | Integer‑type limits | ✅ | ✅ | `include/limits.h`, `libc/include/limits.h` | Complete for ILP32. |
 | `<locale.h>` | Localization | ✅ | ⚠️ | `libc/include/locale.h`, `libc/core/locale.c` | `setlocale`/`localeconv` (`"C"`/`"POSIX"`/native `""`). On Osiris the native locale adopts the OS country (DOS `38h` — real `decimal_point`/`thousands_sep`/currency) **and** its collating sequence (`65h`/`06`), so `strcoll`/`strxfrm` order per the country table. CP/M‑68K has no country service, so `""` falls back to `"C"` (byte‑order collation). |
-| `<math.h>` | Mathematics | ⚠️ | ⚠️ | `libc/include/math.h`, `libc/core/*.c` → **libm** | Full C99 function set: base transcendentals + `f`/`l` type variants + classification/constants (Tier 2 2a/2b/2c) + native `asin`/`acos`. **Both** the `double` base functions and the `float` variants set `EDOM`/`ERANGE` on domain/range errors — the `f` names are errno-setting header wrappers over the `s`-suffixed single kernels; `l` == `double`. **Sole deviation: no `_Complex`** (so `<complex.h>`/`<tgmath.h>` absent). Soft-float transcendentals are not correctly-rounded (~1–2 ULP for `sqrt`/`atan`/`asin`/`acos`, more for others) — an *accuracy* note, not a conformance gap: C68K does not define `__STDC_IEC_559__`, so Annex F does not apply. |
+| `<math.h>` | Mathematics | ⚠️ | ⚠️ | `libc/include/math.h`, `libc/core/*.c` → **libm** | Full C99 function set: base transcendentals + `f`/`l` type variants + classification/constants (Tier 2 2a/2b/2c) + native `asin`/`acos`. **Both** the `double` base functions and the `float` variants set `EDOM`/`ERANGE` on domain/range errors — the `f` names are errno-setting header wrappers over the `s`-suffixed single kernels; `l` == `double`. **Sole deviation: no `_Complex`** (so `<complex.h>`/`<tgmath.h>` absent). Double soft-float transcendentals are **≤ 2 ULP** and `sqrt` is correctly rounded (measured on target, incl. the function zeros) — an *accuracy* note, not a conformance gap: C68K does not define `__STDC_IEC_559__`, so Annex F does not apply. |
 | `<setjmp.h>` | Non‑local jumps | ✅ | ✅ | `lib/runtime/rt68k.a68` + hdr | `setjmp`/`longjmp` asm shim; codegen spills temporaries across the `returns_twice` call so longjmp re‑entry is safe. |
 | `<signal.h>` | Signal handling | ⚠️ | ⚠️ | `libc/include/signal.h`, `libc/core/signal.c` | Synchronous only — no async delivery on these OSes; `raise` calls handlers inline. |
 | `<stdarg.h>` | Variable arguments | ✅ | ✅ | `include/stdarg.h` | m68k `va_list`. Conforming. |
@@ -244,12 +244,16 @@ downstream‑visible defects — double `exp` (2× for negatives), single `exp`
 (`x >= 0.0f` mis‑compare), and double `atand` (mid‑range reduction) — are all
 fixed, so `pow` is correct for results < 1 with no C‑layer workaround.
 
-**Accuracy (measured dense on target).**  `sqrtd`, `atand`, `asind`, `acosd`
-are ~1–2 ULP.  The other double kernels are far better than the previous
-single‑grade (~1e‑7) but are **not** correctly‑rounded binary64:
-`expd` ≈ 481, `sind` ≈ 957, `cosd` ≈ 4733, `logd` ≈ 3966, `powd` ≈ 37 000 ULP
-(≈ 11–14 good decimal digits).  Verified single, double, and `long double` on
-both Osiris and CP/M (`tests/lockstep/tier2.c` 133/133, `tier2f.c` 69/69).
+**Accuracy (measured on target, 2026‑07‑26).**  Every double kernel is **≤ 2 ULP**
+and `sqrtd` is **correctly rounded (0 ULP)** — measured on the Osiris sim over
+~1400 arguments spanning the domain out to 1e18 and *including the function
+zeros*: `expd` 1, `logd` 1, `sind` ≤ 2, `cosd` 1, `sqrtd` 0, `atand` 1, `asind` 2,
+`acosd` 1, `powd` 1 ULP.  (The libm kernels are OS‑neutral, so CP/M‑68K is
+identical; correctness on both OSes is gated by `tests/lockstep/tier2.c`/
+`tier2f.c`.)  An earlier `sind`/`cosd` blow‑up to ~10⁵–10⁶ ULP *at* multiples of
+π/2 — the reduced argument going tiny while the 2‑part Cody–Waite π/2 dominated
+the error — was fixed 2026‑07‑26 by falling back to the full Payne–Hanek reducer
+for near‑zero reduced arguments ([`dpmath.a68`](../lib/libm/math/dpmath.a68)).
 These ULP figures are a **quality** note, not a conformance requirement — C68K
 does not define `__STDC_IEC_559__`, so C99 Annex F (correctly‑rounded operations)
 does not apply.
