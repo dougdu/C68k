@@ -24,7 +24,7 @@
 #>
 [CmdletBinding()]
 param(
-  [string]$Asm    = 'C:\git\worm68k\68kTools\builds\win64\bin\Release\asm68K.exe',
+  [string]$Asm    = (Join-Path (Split-Path $PSScriptRoot -Parent) 'tools\bin\asm68K.exe'),
   [string]$Ar     = 'C:\git\osiris\toolchain\binutils\m68k-elf-ar.exe',
   [string]$Ranlib = 'C:\git\osiris\toolchain\binutils\m68k-elf-ranlib.exe'
 )

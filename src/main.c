@@ -742,7 +742,12 @@ static void assemble(char *input, char *output) {
     return;
   }
 #ifndef C68K_SELFHOST
-  char *cmd[] = {"asm68K", "/Cx", "/elf", "/c", "/nologo",
+  // The assembler is `asm68K` on PATH by default; C68K_AS overrides it with an
+  // explicit path (e.g. the vendored tools/bin/asm68K.exe).
+  char *as = getenv("C68K_AS");
+  if (!as || !*as)
+    as = "asm68K";
+  char *cmd[] = {as, "/Cx", "/elf", "/c", "/nologo",
                  format("/Fo%s", output), input, NULL};
   run_subprocess(cmd);
 #endif

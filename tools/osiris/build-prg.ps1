@@ -9,7 +9,7 @@
   into a directly-loadable .PRG (the same recipe pascal68k uses):
 
       m68k-elf-ld -pie --no-dynamic-linker -z max-page-size=0x20 -s \
-          -T osiris-prg.ld  osiris_sys.o prog.o libc.o rt68k.o libm.a
+          -T osiris-prg.ld  osiris_sys.o prog.o libc.a rt68k.o libm.a libheap.a
 
   Link order puts the crt0/seam first; ENTRY(_start) fixes the entry regardless.
 #>
@@ -17,14 +17,17 @@ param(
   [Parameter(Mandatory)][string]$Src,        # program .c source
   [string]$Name = '',                        # output basename (default: source stem, upper)
   [string]$Cc = 'c68k.exe',
-  [string]$Asm = 'C:\git\worm68k\68kTools\builds\win64\bin\Release\asm68K.exe',
-  [string]$Ld = 'C:\git\osiris\toolchain\binutils\m68k-elf-ld.exe',
+  [string]$Asm = (Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tools\bin\asm68K.exe'),
+  [string]$Ld = (Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'tools\bin\m68k-elf-ld.exe'),
   [string]$Ar = 'C:\git\osiris\toolchain\binutils\m68k-elf-ar.exe',
   [string]$LdScript = 'C:\git\osiris\ld\osiris-prg.ld',
   [string]$FloatLib = (Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'lib\libm\libm.a'),
   [string]$OutDir = ''
 )
 $ErrorActionPreference = 'Stop'
+
+# Point the compiler's C-file assembler at the vendored asm68K (env-overridable).
+$env:C68K_AS = $Asm
 
 # Integrated ELF emitter (P8): set C68K_INTEGRATED_AS=1 to bypass asm68K for
 # the C compiles (crt0/runtime .a68 still go through asm68K).
@@ -76,8 +79,6 @@ function Invoke-Step($desc, $sb) {
 
 $sysO  = Join-Path $OutDir 'osiris_sys.o'
 $rtO   = Join-Path $OutDir 'rt68k.o'
-$libcO = Join-Path $OutDir 'libc.o'
-$libcA = Join-Path $OutDir 'libc.a'
 $progO = Join-Path $OutDir "$Name.o"
 $prg   = Join-Path $OutDir "$Name.PRG"
 

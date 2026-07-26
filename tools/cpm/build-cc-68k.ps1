@@ -12,7 +12,7 @@
   contiguous transient with mkdri:
 
       m68k-elf-ld -T cpm68k.ld -Ttext 0x500 cpm_sys.o <compiler>.o... \
-          cpm.o libc.o rt68k.o libm.a -o CC.elf
+          cpm.o libc.a rt68k.o libm.a libheap.a -o CC.elf
       mkdri -b500 -y -o CC.68K CC.elf
 
   cpm_sys.o MUST be first so _start lands at the TPA base (CP/M has no ENTRY).

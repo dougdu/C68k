@@ -9,8 +9,8 @@
   base (0x500) via cpm68k.ld, then converts the ELF to a DRI contiguous .68K
   with mkdri (the same recipe pascal68k uses):
 
-      m68k-elf-ld -T cpm68k.ld -Ttext 0x500 cpm_sys.o prog.o cpm.o libc.o \
-          rt68k.o libm.a -o prog.elf
+      m68k-elf-ld -T cpm68k.ld -Ttext 0x500 cpm_sys.o prog.o cpm.o libc.a \
+          rt68k.o libm.a libheap.a -o prog.elf
       mkdri -b500 -y -o PROG.68K prog.elf
 
   cpm_sys.o MUST be first so _start lands at the TPA base (CP/M has no ENTRY).
@@ -73,8 +73,6 @@ function Invoke-Step($desc, $sb) {
 $sysO  = Join-Path $OutDir 'cpm_sys.o'
 $rtO   = Join-Path $OutDir 'rt68k.o'
 $seamO = Join-Path $OutDir 'cpm.o'
-$libcO = Join-Path $OutDir 'libc.o'
-$libcA = Join-Path $OutDir 'libc.a'
 $progO = Join-Path $OutDir "$Name.o"
 $elf   = Join-Path $OutDir "$Name.elf"
 $out68 = Join-Path $OutDir "$Name.68K"

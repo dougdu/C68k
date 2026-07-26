@@ -44,8 +44,8 @@
 param(
   [string]$Cc       = (Join-Path (Split-Path $PSScriptRoot -Parent) 'build\Release\c68k.exe'),
   [string]$OutDir   = (Join-Path (Split-Path $PSScriptRoot -Parent) 'out'),
-  [string]$Asm      = 'C:\git\worm68k\68kTools\builds\win64\bin\Release\asm68K.exe',
-  [string]$Ld       = 'C:\git\osiris\toolchain\binutils\m68k-elf-ld.exe',
+  [string]$Asm      = (Join-Path (Split-Path $PSScriptRoot -Parent) 'tools\bin\asm68K.exe'),
+  [string]$Ld       = (Join-Path (Split-Path $PSScriptRoot -Parent) 'tools\bin\m68k-elf-ld.exe'),
   [string]$Mkdri    = 'C:\git\worm68k\68kTools\builds\win64\bin\Release\mkdri.exe',
   [string]$OsirisLd = 'C:\git\osiris\ld\osiris-prg.ld'
 )
@@ -70,7 +70,7 @@ Write-Host "== c68k binplace -> $OutDir ==" -ForegroundColor Cyan
 # --- fresh output tree ---
 if (Test-Path $OutDir) { Remove-Item $OutDir -Recurse -Force }
 foreach ($d in @(
-    'cross', 'cross\include', 'cross\lib\osiris', 'cross\lib\cpm',
+    'cross', 'cross\bin', 'cross\include', 'cross\lib\osiris', 'cross\lib\cpm',
     'osiris', 'osiris\include', 'osiris\lib',
     'cpm', 'cpm\include', 'cpm\lib')) {
   New-Item -ItemType Directory -Force -Path (Join-Path $OutDir $d) | Out-Null
@@ -119,6 +119,9 @@ Copy-Item $cpmLd (Join-Path $cLib 'cpm68k.ld') -Force
 
 # --- cross: the host compiler + BOTH targets' libraries -----------------------
 Copy-Item $Cc (Join-Path $OutDir 'cross\c68k.exe') -Force
+# vendored assembler + linker (tools/bin) so the packaged cross tree is
+# self-contained (c68k finds asm68K via PATH / C68K_AS; link uses m68k-elf-ld).
+Copy-Item (Join-Path $repo 'tools\bin\*') (Join-Path $OutDir 'cross\bin') -Force
 Copy-Item (Join-Path $oLib '*') (Join-Path $OutDir 'cross\lib\osiris') -Force
 Copy-Item (Join-Path $cLib '*') (Join-Path $OutDir 'cross\lib\cpm')    -Force
 

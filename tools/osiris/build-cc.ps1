@@ -10,8 +10,8 @@
   + integer runtime + soft-float archive into a directly-loadable .PRG:
 
       m68k-elf-ld -pie --no-dynamic-linker -z max-page-size=0x20 -s \
-          -T osiris-prg.ld  osiris_sys.o <compiler>.o... libc.o rt68k.o \
-          libm.a
+          -T osiris-prg.ld  osiris_sys.o <compiler>.o... libc.a rt68k.o \
+          libm.a libheap.a
 
   This is stage2 of the P10 self-hosting bootstrap; running CC.PRG under sim68k
   to recompile the same source yields stage3 (must be byte-identical).

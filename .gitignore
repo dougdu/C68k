@@ -27,6 +27,11 @@
 /cc
 /c68k
 
+# Vendored, committed toolchain binaries: override the *.exe rule above so a
+# bare clone ships the assembler (asm68K) + linker (m68k-elf-ld) without needing
+# the sibling repos built. See tools/vendor-bin.ps1.
+!/tools/bin/*.exe
+
 # Emulator / test transcripts
 *.tee
 *.log
