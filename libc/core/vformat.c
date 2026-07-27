@@ -244,14 +244,34 @@ int _vformat(_psink *s, const char *fmt, va_list ap) {
         break;
     }
     int width = 0;
-    while (*fmt >= '0' && *fmt <= '9')
-      width = width * 10 + (*fmt++ - '0');
+    if (*fmt == '*') {
+      /* C99 7.19.6.1: width supplied by an int argument. A negative value is
+         taken as a '-' flag followed by a positive field width. */
+      width = va_arg(ap, int);
+      fmt++;
+      if (width < 0) {
+        left = 1;
+        width = -width;
+      }
+    } else {
+      while (*fmt >= '0' && *fmt <= '9')
+        width = width * 10 + (*fmt++ - '0');
+    }
     int prec = -1;
     if (*fmt == '.') {
       fmt++;
       prec = 0;
-      while (*fmt >= '0' && *fmt <= '9')
-        prec = prec * 10 + (*fmt++ - '0');
+      if (*fmt == '*') {
+        /* Precision supplied by an int argument; a negative value is taken
+           as if the precision were omitted. */
+        prec = va_arg(ap, int);
+        fmt++;
+        if (prec < 0)
+          prec = -1;
+      } else {
+        while (*fmt >= '0' && *fmt <= '9')
+          prec = prec * 10 + (*fmt++ - '0');
+      }
     }
     int lng = 0;
     while (*fmt == 'l') {
