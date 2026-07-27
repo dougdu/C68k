@@ -21,6 +21,10 @@
 
 .EXAMPLE
   pwsh tools/osiris/run-native-link.ps1 -Src samples/hello.c -Run HELLO -Expect 'Hello, Osiris'
+.EXAMPLE
+  # Resolve the archives via the C68KLIB search path (staged in \LIB, not the CWD),
+  # and rely on LINK's strip-by-default:
+  pwsh tools/osiris/run-native-link.ps1 -Src samples/hello.c -Run HELLO -C68klib -Expect 'Hello, Osiris'
 #>
 [CmdletBinding()]
 param(
@@ -40,7 +44,9 @@ param(
   [switch]$NoIntegrated,    # compile C via asm68K (isolate integrated-emitter issues)
   [switch]$Bare,            # link crt0/seam + program + runtime only (no archives)
   [switch]$NoFloat,         # link libc.a/libheap.a but not libm.a (isolate the float archive)
-  [switch]$NoStrip,         # keep the .symtab (unstripped) -- exercises LINK's symtab path
+  [switch]$NoHeap,          # omit libheap.a (a program that never calls malloc/free)
+  [switch]$NoStrip,         # keep the .symtab (unstripped) -- passes /NOSTRIP
+  [switch]$C68klib,         # stage archives in \LIB + SET C68KLIB=\LIB (search demo, not CWD)
   [string]$Cpu = '',        # sim68k --cpu (e.g. 68000 for the full 24-bit/16MB model)
   [string]$Mem = '',        # sim68k --mem (e.g. MAX)
   [int]$BootWait = 5,
@@ -78,7 +84,7 @@ function Name11([string]$name){
   if ($stem.Length -gt 8){ $stem=$stem.Substring(0,8) }
   ($stem.ToUpper().PadRight(8)) + ($ext.ToUpper().PadRight(3))
 }
-function Add-Fat12File($img, [string]$name11, [byte[]]$data){
+function Add-Fat12File($img, [string]$name11, [byte[]]$data, [int]$dirCluster = 0){
   $FatSz=9; $RootEnts=224; $Bpc=512
   $f1 = 512; $f2 = (1+$FatSz)*512
   $rootLba = 1 + 2*$FatSz
@@ -91,12 +97,16 @@ function Add-Fat12File($img, [string]$name11, [byte[]]$data){
     if ((_fat12get $img $f1 $c) -eq 0) { $chain += $c }
   }
   if ($chain.Count -lt $ncl) { throw "Add-Fat12File: not enough free clusters ($($chain.Count)/$ncl)" }
+  # Directory to place the entry in: the fixed root region ($dirCluster 0) or a
+  # subdirectory's data cluster (16 entries) for a C68KLIB staging dir.
+  if ($dirCluster -eq 0) { $dirBase = $rootLba*512;                     $dirEnts = $RootEnts }
+  else                   { $dirBase = ($dataLba + ($dirCluster-2))*512; $dirEnts = [int]($Bpc/32) }
   $slot = -1
-  for ($i=0; $i -lt $RootEnts; $i++){
-    $b = $img[$rootLba*512 + $i*32]
+  for ($i=0; $i -lt $dirEnts; $i++){
+    $b = $img[$dirBase + $i*32]
     if ($b -eq 0x00 -or $b -eq 0xE5) { $slot = $i; break }
   }
-  if ($slot -lt 0) { throw "Add-Fat12File: no free root-dir slot" }
+  if ($slot -lt 0) { throw "Add-Fat12File: no free dir slot" }
   for ($i=0; $i -lt $ncl; $i++){
     $c = $chain[$i]
     $dst = ($dataLba + ($c-2))*512
@@ -105,10 +115,41 @@ function Add-Fat12File($img, [string]$name11, [byte[]]$data){
     $nv = if ($i -lt ($ncl-1)) { $chain[$i+1] } else { 0xFFF }
     _fat12set $img $f1 $c $nv; _fat12set $img $f2 $c $nv
   }
-  $r = $rootLba*512 + $slot*32
+  $r = $dirBase + $slot*32
   [Text.Encoding]::ASCII.GetBytes($name11).CopyTo($img, $r)
   $img[$r+0x0B] = 0x20
   _w16 $img ($r+0x1A) $chain[0]; _w32 $img ($r+0x1C) $data.Length
+}
+# Create a subdirectory in the root; returns its first data cluster (pass to
+# Add-Fat12File -dirCluster). Used to stage the C68KLIB search dir (\LIB).
+function Add-Fat12Dir($img, [string]$dirname){
+  $FatSz=9; $RootEnts=224; $Bpc=512
+  $f1 = 512; $f2 = (1+$FatSz)*512
+  $rootLba = 1 + 2*$FatSz
+  $rootSecs = [int][math]::Ceiling($RootEnts*32/512.0)
+  $dataLba = $rootLba + $rootSecs
+  $maxCl = (2880 - $dataLba) + 1
+  $dc = -1
+  for ($c=2; $c -le $maxCl; $c++){ if ((_fat12get $img $f1 $c) -eq 0) { $dc=$c; break } }
+  if ($dc -lt 0) { throw "Add-Fat12Dir: no free cluster" }
+  _fat12set $img $f1 $dc 0xFFF; _fat12set $img $f2 $dc 0xFFF
+  $cbase = ($dataLba + ($dc-2))*512
+  for ($k=0; $k -lt $Bpc; $k++){ $img[$cbase+$k] = 0 }
+  # '.' -> self, '..' -> root (cluster 0); both ATTR_DIRECTORY (0x10).
+  $dot    = '.'  + (' '*10)
+  $dotdot = '..' + (' '*9)
+  [Text.Encoding]::ASCII.GetBytes($dot).CopyTo($img, $cbase)
+  $img[$cbase+0x0B] = 0x10; _w16 $img ($cbase+0x1A) $dc; _w32 $img ($cbase+0x1C) 0
+  [Text.Encoding]::ASCII.GetBytes($dotdot).CopyTo($img, $cbase+32)
+  $img[$cbase+32+0x0B] = 0x10; _w16 $img ($cbase+32+0x1A) 0; _w32 $img ($cbase+32+0x1C) 0
+  $slot = -1
+  for ($i=0; $i -lt $RootEnts; $i++){ $b=$img[$rootLba*512+$i*32]; if ($b -eq 0x00 -or $b -eq 0xE5){ $slot=$i; break } }
+  if ($slot -lt 0) { throw "Add-Fat12Dir: no free root-dir slot" }
+  $r = $rootLba*512 + $slot*32
+  $n11 = ((($dirname.ToUpper()).PadRight(8)).Substring(0,8)) + (' '*3)
+  [Text.Encoding]::ASCII.GetBytes($n11).CopyTo($img, $r)
+  $img[$r+0x0B] = 0x10; _w16 $img ($r+0x1A) $dc; _w32 $img ($r+0x1C) 0
+  return $dc
 }
 function Remove-Fat12File($img, [string]$name11){
   $FatSz=9; $RootEnts=224
@@ -181,13 +222,21 @@ $stage=@(
   @{ N="$Run.O";   F=$progO }
 )
 foreach($eo in $extraObjs){ $stage += $eo }
+$arch = @()
 if (-not $Bare) {
-  $stage += @{ N='LIBC.A';    F=$libcA }
-  if (-not $NoFloat) { $stage += @{ N='LIBM.A';    F=$FloatLib } }
-  $stage += @{ N='LIBHEAP.A'; F=$HeapLib }
+  $arch += @{ N='LIBC.A';    F=$libcA }
+  if (-not $NoFloat) { $arch += @{ N='LIBM.A';    F=$FloatLib } }
+  if (-not $NoHeap)  { $arch += @{ N='LIBHEAP.A'; F=$HeapLib } }
+  # Default: archives live in the CWD (floppy root). With -C68klib they go into
+  # the \LIB subdir instead, so the link must resolve them via the C68KLIB search.
+  if (-not $C68klib) { $stage += $arch }
 }
 if ($UseLib) { $stage += @{ N='LIB.PRG'; F=$LibPrg } }
 foreach($s in $stage){ $n=Name11 $s.N; Remove-Fat12File $bz $n; Add-Fat12File $bz $n ([IO.File]::ReadAllBytes($s.F)) }
+if ($C68klib -and -not $Bare) {
+  $libcl = Add-Fat12Dir $bz 'LIB'
+  foreach($s in $arch){ Add-Fat12File $bz (Name11 $s.N) ([IO.File]::ReadAllBytes($s.F)) $libcl }
+}
 [IO.File]::WriteAllBytes($img,$bz)
 Remove-Item $log -ErrorAction SilentlyContinue
 if (-not (Test-Path $rtc)) { [IO.File]::WriteAllBytes($rtc,(New-Object byte[] 64)) }
@@ -210,13 +259,19 @@ $useArchive = ($UseLib -and $extraObjs.Count -gt 0)
 if ($useArchive) { $linkObjs += 'EXTRA.A' }
 else { foreach($eo in $extraObjs){ $linkObjs += $eo.N } }
 $linkObjs += 'RT68K.O'
-if (-not $Bare) { $linkObjs += 'LIBC.A'; if (-not $NoFloat) { $linkObjs += 'LIBM.A' }; $linkObjs += 'LIBHEAP.A' }
-# Strip the output (-s) by default, matching the cross ld default. -NoStrip
-# keeps the full .symtab (LINK sizes it to the actual symbol count).
-$sflag = if ($NoStrip) { '' } else { '-s ' }
+if (-not $Bare) { $linkObjs += 'LIBC.A'; if (-not $NoFloat) { $linkObjs += 'LIBM.A' }; if (-not $NoHeap) { $linkObjs += 'LIBHEAP.A' } }
+# Strip is the native LINK default (R5); -NoStrip passes /NOSTRIP to keep the
+# full .symtab (LINK sizes it to the actual symbol count).
+$sflag = if ($NoStrip) { '/NOSTRIP ' } else { '' }
 $linkCmd = "LINK ${sflag}-o $Run.PRG " + ($linkObjs -join ' ')
 try {
   Start-Sleep -Seconds $BootWait
+  if ($C68klib) {
+    # The archives live in \LIB, not the CWD: point the linker's library search
+    # there so the bare LIBC.A/LIBM.A/LIBHEAP.A names resolve via C68KLIB.
+    _send $p ("SET C68KLIB=\LIB`r"); Start-Sleep -Seconds 2
+    Write-Host 'SET C68KLIB=\LIB' -ForegroundColor DarkCyan
+  }
   if ($useArchive) {
     $libCmd = 'LIB rcs EXTRA.A ' + (($extraObjs | ForEach-Object { $_.N }) -join ' ')
     _send $p ("{0}`r" -f $libCmd); Start-Sleep -Seconds 5
