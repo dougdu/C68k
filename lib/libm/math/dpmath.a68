@@ -23,9 +23,11 @@
 	extern	_fe_round		; D4 directed rounding mode
 
 ; one Horner step for the powd log tail series P2:  s = coeff + (pw_t2 hi)*s
-; (s in d0:d1 on entry and exit).  Defined here (not inline in the code stream)
-; because asm68K miscounts an inline macro body's length when resolving forward
-; branch displacements, skewing every forward bsr past the definition point.
+; (s in d0:d1 on entry and exit).  Kept at file top by convention.  (Historical
+; note: an older asm68K miscounted an inline macro DEFINITION's body length when
+; resolving forward branch displacements, skewing forward bsr's past the
+; definition point.  Verified fixed on current asm68K 2026-07-27 -- an inline
+; `macro`...`endm` emits zero bytes, so this placement is now cosmetic.)
 PW_HORN	macro	coeff
 	move.l	d1,-(sp)
 	move.l	d0,-(sp)
@@ -42,7 +44,7 @@ PW_HORN	macro	coeff
 	endm
 
 ; dst = op(sa, sb) for a double binary op, all operands ABSOLUTE (bss/const)
-; addresses.  Defined at file top (never inline) -- see PW_HORN note above.
+; addresses.  Kept at file top by convention -- see PW_HORN note above.
 DBINOP	macro	op,dst,sa,sb
 	move.l	sb+4,-(sp)
 	move.l	sb,-(sp)
