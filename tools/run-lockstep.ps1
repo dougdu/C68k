@@ -62,7 +62,7 @@ foreach ($c in $cases) {
   $src = Join-Path $repo $c.Src
   Write-Host ("== {0} ({1}) ==" -f $c.Run, $c.Src) -ForegroundColor Cyan
 
-  & $osRun -Src $src -Run $c.Run -Expect $c.Expect -Cc $Cc *> $null
+  & $osRun -Src $src -Run $c.Run -Expect $c.Expect -Cc $Cc -Model $Model *> $null
   $osOk = ($LASTEXITCODE -eq 0)
   Write-Host ("   Osiris  : {0}" -f ($(if ($osOk) { 'PASS' } else { 'FAIL' }))) -ForegroundColor ($(if ($osOk) { 'Green' } else { 'Red' }))
 

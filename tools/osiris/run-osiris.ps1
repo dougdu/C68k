@@ -11,6 +11,10 @@
   name at the A> shell, captures the ACIA console with --tee-acia, and asserts
   the expected substrings. Auto-bootstraps simenv/ if needed.
 
+  -Model selects the address model: '16mb' (cpu=68000, default) or '1mb'
+  (cpu=68008). The 1 MB model has limited free RAM after the RAMdrive +
+  SMARTDRV, so large programs may fail to EXEC there.
+
 .EXAMPLE
   pwsh tools/osiris/run-osiris.ps1 -Src samples/hello.c -Run HELLO -Expect 'Hello, Osiris'
 #>
@@ -20,6 +24,7 @@ param(
   [string]$Run = '',                      # command typed at the shell (default: source stem, upper)
   [string[]]$Expect = @(),                # substrings that must all appear
   [string]$Cc = (Join-Path ([System.IO.Path]::GetTempPath()) 'c68k-p2\c68k.exe'),
+  [ValidateSet('16mb','1mb')][string]$Model = '16mb',
   [int]$BootWait = 5,
   [int]$RunWait = 3,
   [switch]$KeepArtifacts
@@ -145,9 +150,10 @@ Add-Fat12File $bz $n11 ([IO.File]::ReadAllBytes($prg))
 Remove-Item $log -ErrorAction SilentlyContinue
 if (-not (Test-Path $rtc)) { [IO.File]::WriteAllBytes($rtc, (New-Object byte[] 64)) }
 
+$cpu = if ($Model -eq '1mb') { '68008' } else { '68000' }
 $psi = New-Object System.Diagnostics.ProcessStartInfo
 $psi.FileName = $sim
-foreach ($arg in @("--rom:$rom",'--fd0',$img,'--acia-port','none','--fdc-threads','off','--rtc-nv',$rtc,'--tee-acia',$log)) {
+foreach ($arg in @('--cpu',$cpu,"--rom:$rom",'--fd0',$img,'--acia-port','none','--fdc-threads','off','--rtc-nv',$rtc,'--tee-acia',$log)) {
   [void]$psi.ArgumentList.Add($arg)
 }
 $psi.RedirectStandardInput = $true
