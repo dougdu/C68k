@@ -968,7 +968,11 @@ int main(int argc, char **argv) {
       __heap_release(heap_mark);
     assemble_to_elf(tmp, output);
   }
-  return 0;
+  // Exit through exit() rather than returning: the native crt0 shortcuts a
+  // main() return straight to _sys_exit, which does NOT run atexit handlers,
+  // so a plain `return` would leak the CC_TMP.S intermediate (cleanup() is an
+  // atexit handler). exit() runs the atexit chain -> unlink(CC_TMP.S).
+  exit(0);
 }
 #else
 int main(int argc, char **argv) {
