@@ -33,16 +33,23 @@ int fgetc(FILE *fp) {
   }
   if (fp->flags & _SF_EOF) /* sticky: stay at EOF until clearerr/rewind/seek */
     return EOF;
-  if (fp->cnt == 0 && _fill(fp) == EOF)
-    return EOF;
-  fp->cnt--;
-  int c = *fp->p++;
-  /* Text streams honor the CP/M / DOS Ctrl-Z (0x1A) end-of-file marker so a
-     record-padded CP/M file reads back at its logical length; binary streams
-     ("...b") deliver 0x1A as an ordinary byte. */
-  if (c == 0x1A && !(fp->flags & _SF_BIN)) {
-    fp->flags |= _SF_EOF;
-    return EOF;
+  for (;;) {
+    if (fp->cnt == 0 && _fill(fp) == EOF)
+      return EOF;
+    fp->cnt--;
+    int c = *fp->p++;
+    /* Text streams honor the CP/M / DOS Ctrl-Z (0x1A) end-of-file marker so a
+       record-padded CP/M file reads back at its logical length; binary streams
+       ("...b") deliver 0x1A as an ordinary byte. */
+    if (c == 0x1A && !(fp->flags & _SF_BIN)) {
+      fp->flags |= _SF_EOF;
+      return EOF;
+    }
+    /* Text-mode CR stripping -- the inverse of fputc's '\n' -> CR LF: a text
+       stream reads back the logical '\n', dropping the CR of a CR LF pair (a
+       bare CR is dropped too).  Binary ("...b") streams pass CR through. */
+    if (c == '\r' && !(fp->flags & _SF_BIN))
+      continue;
+    return c;
   }
-  return c;
 }
