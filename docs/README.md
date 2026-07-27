@@ -5,7 +5,8 @@ targets both **Osiris DOS** and **CP/M-68K**.
 
 **Using c68k?** Start with the [User's Manual](users-manual.md); keep the
 [Programmer's Reference Manual](reference-manual.md) open for the language model, ABI, and the full
-library. **Understanding or contributing to the compiler?** Read the design docs (1–3) in order.
+library. **Understanding or contributing to the compiler?** Read the design docs (1–3) in order, then
+[codegen.md](codegen.md) for the code generator and its optimization roadmap.
 
 | # | Document | What it covers |
 | --- | --- | --- |
@@ -15,6 +16,7 @@ library. **Understanding or contributing to the compiler?** Read the design docs
 | 4 | [users-manual.md](users-manual.md) | **User's Manual** — installing the SDK, quick start, the compiler driver and every switch, optimization, debugging with `-g`, building and running for each OS, the toolchain tools, testing, limitations, and troubleshooting. |
 | 5 | [reference-manual.md](reference-manual.md) | **Programmer's Reference Manual** — the language & ILP32 type model, the calling convention/ABI, the ELF object format, the driver, the optimizations, **every supported standard-library function**, the syscall seam, the runtime helpers, the toolchain, and the Osiris/CP/M-68K platform table. |
 | 6 | [sdk.md](sdk.md) | **SDK quickstart** for third-party programs: how to compile with `c68k`, the driver options and predefined macros (`__c68k__`/`__osiris__`/`__CPM68K__`), the per-OS link recipes (`.PRG` / `.68K`), and a worked one-source, two-target `hello` example. |
+| 7 | [codegen.md](codegen.md) | **Code generation** — the MC68000 back end in depth: the machine/stack-machine model, expression & statement generation, function frames, object emission, the current `-O1` optimizations, an analysis of the code it emits today, and a phased **optimization roadmap** (peephole → local instruction selection → condition-context branching → IR/CFG → register allocation → global optimizations) toward a full optimizing compiler. |
 
 ## External references (consumed as-is)
 
