@@ -519,7 +519,14 @@ static int push_args(Node *arg) {
     push_struct(arg->ty);
     return rest + align_to(arg->ty->size, 4);
   }
-  if (arg->ty->size == 8) {
+  // An array or function argument decays to a pointer (gen_expr left its
+  // 4-byte address in d0), so it takes a single longword slot. Only a true
+  // 8-byte SCALAR (long long / double) occupies the d0:d1 pair pushed by
+  // push64(). Guarding on size alone would mis-push a char[8]/int[2] arg as
+  // two longwords with a garbage high half (d1) -- e.g. a variadic "unknown"
+  // (char[8]), which parse.c does not cast to a pointer.
+  if (arg->ty->size == 8 && arg->ty->kind != TY_ARRAY &&
+      arg->ty->kind != TY_FUNC) {
     push64();                // long long or double (8-byte stack slot)
     return rest + 8;
   }
