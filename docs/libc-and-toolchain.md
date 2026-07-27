@@ -197,10 +197,19 @@ bit-comparable objects.
   pulls libc `printf` + libm's `%f` members, cross-archive) — the same dead-stripping as the cross
   `ld`. The native `LINK.PRG` handles **multiple archives per link**, so
   `libc.a`+`libm.a`+`libheap.a` are passed as three separate archives — no host-side merge
-  ([run-native-link.ps1](../tools/osiris/run-native-link.ps1)). The native link **strips** by default
-  (`-s`, like the cross `ld`, and fastest); unstripped native links also work (the symtab scales to the
-  symbol count and every internal table is bounds-checked). **Heap programs link and run natively**
-  (`memtest` `MEM PASS 15/15` on-target).
+  ([run-native-link.ps1](../tools/osiris/run-native-link.ps1)). Unstripped native links also work (the
+  symtab scales to the symbol count and every internal table is bounds-checked). **Heap programs link
+  and run natively** (`memtest` `MEM PASS 15/15` on-target).
+- **Native `LINK` command ergonomics** (spec: `osiris/commands/docs/link.md`). `LINK.PRG` matches the
+  host linker's usability: **strip is the default** — a plain `LINK /O:x.prg in.o` yields a stripped
+  image; pass **`/NOSTRIP`** (or `--nostrip`) to keep the `.symtab`/`.strtab` for debugging, and
+  `/S`/`-s` simply re-assert the default. File arguments may carry a **full or partial path**
+  (`D:\C68K\LIB\LIBC.A`, `sub\file.o`, `X:file.o`); a **`C68KLIB`** environment variable — a
+  `;`-separated directory list (`SET C68KLIB=C:\C68K\LIB;D:\LIBS`) — is searched for **bare-name**
+  objects/libraries not found in the current directory, so the runtime objects and libraries no longer
+  have to sit in the link directory (a name that already carries a path is never searched); and
+  **`LINK @respfile`** reads files, libraries, and switches from a response file. These are
+  input-acquisition conveniences only — the linked output stays byte-identical to `m68k-elf-ld`.
 - **CP/M-68K native ports:** port `LINK` and `LIB` from their Osiris sources to run **on CP/M-68K**
   (their own file I/O moves from DOS handles to BDOS FCBs — the same seam concern as libc). The
   ported `LINK.68K` produces a linked ELF laid out per `cpm68k.ld`; **`mkdri`** (itself buildable

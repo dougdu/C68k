@@ -223,4 +223,6 @@ The whole standalone `samples/` gallery can be built for both OSes (a build-cove
   (`libc.a`/`libm.a`/`libheap.a`), so a program links only the objects it references — a `puts`-only
   program is ~10 KB, not the ~88 KB of the old whole-`libc` link. The native Osiris `LINK.PRG`
   member-selects these archives too (non-heap programs; see
-  [libc-and-toolchain.md](libc-and-toolchain.md) §7.2).
+  [libc-and-toolchain.md](libc-and-toolchain.md) §7.2). It **strips by default** (`/NOSTRIP` keeps
+  symbols) and finds runtime objects/libraries on a `;`-separated **`C68KLIB`** search path
+  (`SET C68KLIB=C:\C68K\LIB`), so they need not sit in the link directory.

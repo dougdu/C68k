@@ -329,6 +329,10 @@ pwsh tools/cpm/run-cpm.ps1 -Src myprog.c -Run MYPROG -Expect 'expected output'
 | **`m68k-elf-addr2line`** | ✔ | — | address → source `file:line` |
 | **`m68k-elf-gdb`** | ✔ | — | source-level debugging (with `-g`) |
 
+The native Osiris **`LINK.PRG`** strips by default (`/NOSTRIP` keeps symbols), accepts full/partial
+paths, searches a `;`-separated **`C68KLIB`** path for bare-name objects/libraries not in the current
+directory, and reads `@response` files (command spec: `osiris/commands/docs/link.md`).
+
 Convenience scripts in `tools/`:
 
 | Script | What it does |
