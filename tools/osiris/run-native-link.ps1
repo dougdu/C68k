@@ -16,8 +16,10 @@
   (libc + the program) is emitted DIRECTLY by c68k with no assembler. The
   linker is the real native LINK.PRG from the Osiris toolchain.
 
-  Everything is staged on one FAT12 boot floppy; the shell is driven over the
-  ACIA: type the LINK command, wait, type the program name, capture output.
+  A: is the pristine boot floppy; the toolchain + inputs are staged on a fresh
+  B: data floppy (fd1, ~1.42 MB free -- the grown archives no longer fit beside
+  the OS on the 1.44 MB boot floppy). The shell is driven over the ACIA: switch
+  to B:, type the LINK command, wait, type the program name, capture output.
 
 .EXAMPLE
   pwsh tools/osiris/run-native-link.ps1 -Src samples/hello.c -Run HELLO -Expect 'Hello, Osiris'
@@ -151,6 +153,28 @@ function Add-Fat12Dir($img, [string]$dirname){
   $img[$r+0x0B] = 0x10; _w16 $img ($r+0x1A) $dc; _w32 $img ($r+0x1C) 0
   return $dc
 }
+# Create a fresh, blank 1.44 MB FAT12 image for the B: data floppy (~1.42 MB
+# free -- room the grown archives no longer have on the boot floppy). BPB from
+# the osiris link-oracle New-Fat12Image; proven to mount as B: under Osiris.
+function New-Fat12Image {
+  $img = New-Object 'byte[]' (2880*512)
+  $img[0]=0xEB; $img[1]=0x3C; $img[2]=0x90
+  [Text.Encoding]::ASCII.GetBytes('C68KLINK').CopyTo($img,3)
+  $img[11]=0x00; $img[12]=0x02; $img[13]=1                       # 512 B/sector, 1 sec/clus
+  $img[14]=1; $img[15]=0                                          # 1 reserved sector
+  $img[16]=2                                                      # 2 FATs
+  $img[17]=0xE0; $img[18]=0x00                                    # 224 root entries
+  $img[19]=0x40; $img[20]=0x0B                                    # 2880 total sectors
+  $img[21]=0xF0                                                   # media descriptor
+  $img[22]=9; $img[23]=0                                          # 9 sectors/FAT
+  $img[24]=18; $img[25]=0; $img[26]=2; $img[27]=0                 # 18 sec/track, 2 heads
+  $img[38]=0x29; $img[39]=0x11; $img[40]=0x22; $img[41]=0x33; $img[42]=0x44
+  [Text.Encoding]::ASCII.GetBytes('C68K DATA  ').CopyTo($img,43) # 11-byte volume label
+  [Text.Encoding]::ASCII.GetBytes('FAT12   ').CopyTo($img,54)
+  $img[510]=0x55; $img[511]=0xAA
+  foreach($fat in @(1,10)){ $o=$fat*512; $img[$o]=0xF0; $img[$o+1]=0xFF; $img[$o+2]=0xFF }
+  return ,$img
+}
 function Remove-Fat12File($img, [string]$name11){
   $FatSz=9; $RootEnts=224
   $f1 = 512; $f2 = (1+$FatSz)*512
@@ -211,10 +235,14 @@ foreach($ex in $Extra){
   $extraObjs += @{ N=("EX{0}.O" -f $ei); F=$exO }; $ei++
 }
 
-# ---- stage floppy ----
+# ---- stage a fresh B: data floppy (fd1); A: stays the pristine boot floppy ----
+# The grown archives (libc.a+libm.a+libheap.a ~1 MB) no longer fit beside the OS
+# on the 1.44 MB boot floppy, so the toolchain + inputs go on a fresh B: data
+# floppy (~1.42 MB free) and the link runs there. Osiris maps fd1 -> B:.
 Stop-AllSim
-$img=Join-Path $work 'os.img'; $log=Join-Path $work 'con.log'; $rtc=Join-Path $work 'rtc.nv'
-$bz=[IO.File]::ReadAllBytes($baseImg)
+$fd0=Join-Path $work 'a.img'; $img=Join-Path $work 'b.img'; $log=Join-Path $work 'con.log'; $rtc=Join-Path $work 'rtc.nv'
+Copy-Item $baseImg $fd0 -Force
+$bz=New-Fat12Image
 $stage=@(
   @{ N='LINK.PRG'; F=$LinkPrg },
   @{ N='SYS.O';    F=$sysO },
@@ -227,12 +255,12 @@ if (-not $Bare) {
   $arch += @{ N='LIBC.A';    F=$libcA }
   if (-not $NoFloat) { $arch += @{ N='LIBM.A';    F=$FloatLib } }
   if (-not $NoHeap)  { $arch += @{ N='LIBHEAP.A'; F=$HeapLib } }
-  # Default: archives live in the CWD (floppy root). With -C68klib they go into
-  # the \LIB subdir instead, so the link must resolve them via the C68KLIB search.
+  # Default: archives sit in B:\ (the CWD). With -C68klib they go into B:\LIB
+  # instead, so the link must resolve them via the C68KLIB search.
   if (-not $C68klib) { $stage += $arch }
 }
 if ($UseLib) { $stage += @{ N='LIB.PRG'; F=$LibPrg } }
-foreach($s in $stage){ $n=Name11 $s.N; Remove-Fat12File $bz $n; Add-Fat12File $bz $n ([IO.File]::ReadAllBytes($s.F)) }
+foreach($s in $stage){ Add-Fat12File $bz (Name11 $s.N) ([IO.File]::ReadAllBytes($s.F)) }
 if ($C68klib -and -not $Bare) {
   $libcl = Add-Fat12Dir $bz 'LIB'
   foreach($s in $arch){ Add-Fat12File $bz (Name11 $s.N) ([IO.File]::ReadAllBytes($s.F)) $libcl }
@@ -247,7 +275,7 @@ $psi.FileName=$sim
 $simArgs=@()
 if ($Cpu) { $simArgs += @('--cpu',$Cpu) }
 if ($Mem) { $simArgs += @('--mem',$Mem) }
-$simArgs += @("--rom:$rom",'--fd0',$img,'--acia-port','none','--fdc-threads','off','--rtc-nv',$rtc,'--tee-acia',$log)
+$simArgs += @("--rom:$rom",'--fd0',$fd0,'--fd1',$img,'--acia-port','none','--fdc-threads','off','--rtc-nv',$rtc,'--tee-acia',$log)
 foreach($a in $simArgs){ [void]$psi.ArgumentList.Add($a) }
 $psi.RedirectStandardInput=$true; $psi.UseShellExecute=$false
 $p=[System.Diagnostics.Process]::Start($psi)
@@ -266,11 +294,12 @@ $sflag = if ($NoStrip) { '/NOSTRIP ' } else { '' }
 $linkCmd = "LINK ${sflag}-o $Run.PRG " + ($linkObjs -join ' ')
 try {
   Start-Sleep -Seconds $BootWait
+  _send $p ("B:`r"); Start-Sleep -Seconds 1   # switch to the B: data floppy (the work drive)
   if ($C68klib) {
-    # The archives live in \LIB, not the CWD: point the linker's library search
-    # there so the bare LIBC.A/LIBM.A/LIBHEAP.A names resolve via C68KLIB.
+    # The archives live in B:\LIB, not the CWD: point the linker's library
+    # search there so the bare LIBC.A/... names resolve via C68KLIB.
     _send $p ("SET C68KLIB=\LIB`r"); Start-Sleep -Seconds 2
-    Write-Host 'SET C68KLIB=\LIB' -ForegroundColor DarkCyan
+    Write-Host 'SET C68KLIB=\LIB (B:\LIB)' -ForegroundColor DarkCyan
   }
   if ($useArchive) {
     $libCmd = 'LIB rcs EXTRA.A ' + (($extraObjs | ForEach-Object { $_.N }) -join ' ')
