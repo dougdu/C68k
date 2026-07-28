@@ -27,6 +27,9 @@
   # Resolve the archives via the C68KLIB search path (staged in \LIB, not the CWD),
   # and rely on LINK's strip-by-default:
   pwsh tools/osiris/run-native-link.ps1 -Src samples/hello.c -Run HELLO -C68klib -Expect 'Hello, Osiris'
+.EXAMPLE
+  # Also emit + verify the /map link map and the /sym sid68k symbol file:
+  pwsh tools/osiris/run-native-link.ps1 -Src samples/printftest.c -Run PRINTF -Map -Sym -Expect 'int=42'
 #>
 [CmdletBinding()]
 param(
@@ -49,6 +52,8 @@ param(
   [switch]$NoHeap,          # omit libheap.a (a program that never calls malloc/free)
   [switch]$NoStrip,         # keep the .symtab (unstripped) -- passes /NOSTRIP
   [switch]$C68klib,         # stage archives in \LIB + SET C68KLIB=\LIB (search demo, not CWD)
+  [switch]$Map,             # also write a /map link map (<RUN>.MAP) + TYPE it to verify
+  [switch]$Sym,             # also write a /sym sid68k symbol file (<RUN>.SYM) + TYPE it to verify
   [string]$Cpu = '',        # sim68k --cpu (e.g. 68000 for the full 24-bit/16MB model)
   [string]$Mem = '',        # sim68k --mem (e.g. MAX)
   [int]$BootWait = 5,
@@ -291,7 +296,12 @@ if (-not $Bare) { $linkObjs += 'LIBC.A'; if (-not $NoFloat) { $linkObjs += 'LIBM
 # Strip is the native LINK default (R5); -NoStrip passes /NOSTRIP to keep the
 # full .symtab (LINK sizes it to the actual symbol count).
 $sflag = if ($NoStrip) { '/NOSTRIP ' } else { '' }
-$linkCmd = "LINK ${sflag}-o $Run.PRG " + ($linkObjs -join ' ')
+# R6/R7 opt-in companion files: a /map link map and a /sym sid68k symbol file
+# (both written beside the .PRG, byte-neutral to the executable).
+$outflags = ''
+if ($Map) { $outflags += "/map:$Run.MAP " }
+if ($Sym) { $outflags += "/sym:$Run.SYM " }
+$linkCmd = "LINK ${sflag}${outflags}-o $Run.PRG " + ($linkObjs -join ' ')
 try {
   Start-Sleep -Seconds $BootWait
   _send $p ("B:`r"); Start-Sleep -Seconds 1   # switch to the B: data floppy (the work drive)
@@ -308,6 +318,8 @@ try {
   }
   _send $p ("{0}`r" -f $linkCmd)
   Start-Sleep -Seconds $LinkWait
+  if ($Map) { _send $p ("TYPE $Run.MAP`r"); Start-Sleep -Seconds 2 }
+  if ($Sym) { _send $p ("TYPE $Run.SYM`r"); Start-Sleep -Seconds 2 }
   _send $p ("{0}`r" -f $Run)
   Start-Sleep -Seconds $RunWait
 } finally {
@@ -327,6 +339,15 @@ foreach($e in $Expect){
   if ($logText -like "*$pat*"){ Write-Host "NATIVE: found '$e'" -ForegroundColor Green }
   else { Write-Host "NATIVE: MISSING '$e'" -ForegroundColor Red; $rc=1 }
 }
+# Verify the R6/R7 companion files were produced (TYPEd to the console above).
+if ($Map) {
+  if ($logText -match 'LINK\.PRG map for' -or $logText -match 'Section\s+Address\s+Size') { Write-Host 'NATIVE: /map OK' -ForegroundColor Green }
+  else { Write-Host 'NATIVE: /map MISSING' -ForegroundColor Red; $rc=1 }
+}
+if ($Sym) {
+  if ($logText -match 'LINK\.PRG symbols for' -or $logText -match '(?im)^[0-9A-Fa-f]{8}\s+[TDBAtdba]\s') { Write-Host 'NATIVE: /sym OK' -ForegroundColor Green }
+  else { Write-Host 'NATIVE: /sym MISSING' -ForegroundColor Red; $rc=1 }
+}
 if (-not $KeepArtifacts) { Remove-Item $work -Recurse -Force -ErrorAction SilentlyContinue }
-if ($Expect.Count -gt 0 -and $rc -eq 0){ Write-Host "NATIVE: PASS" -ForegroundColor Green }
+if (($Expect.Count -gt 0 -or $Map -or $Sym) -and $rc -eq 0){ Write-Host "NATIVE: PASS" -ForegroundColor Green }
 exit $rc
