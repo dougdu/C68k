@@ -254,6 +254,11 @@ Notes:
   the debug markers are treated as comments and no DWARF is produced.
 - The unstripped `.PRG` still runs — the loader ignores the non-alloc debug/symbol sections.
 - The CP/M-68K `.68K` (DRI format) carries no DWARF; debug the intermediate linked `.elf` instead.
+- **On-target debugging uses `sid68k`, not gdb.** When you link with the native `LINK.PRG`, add
+  **`/sym:<NAME>.SYM`** to write a sid68k symbol file (and optionally **`/map:<NAME>.MAP`** for a link
+  map). Keep the `.PRG` **stripped** (the default) and pair it with the `.SYM` sidecar — `sid68k`
+  auto-loads a same-named `.SYM` beside the program, or `Y <file>` loads any name. The symbol file is
+  independent of `-g`/DWARF and of whether the image is stripped.
 
 ## 7. Building for Osiris (`.PRG`)
 
@@ -331,7 +336,8 @@ pwsh tools/cpm/run-cpm.ps1 -Src myprog.c -Run MYPROG -Expect 'expected output'
 
 The native Osiris **`LINK.PRG`** strips by default (`/NOSTRIP` keeps symbols), accepts full/partial
 paths, searches a `;`-separated **`C68KLIB`** path for bare-name objects/libraries not in the current
-directory, and reads `@response` files (command spec: `osiris/commands/docs/link.md`).
+directory, reads `@response` files, and can emit a `/map` link map + a `/sym` sid68k symbol file
+(command spec: `osiris/commands/docs/link.md`).
 
 Convenience scripts in `tools/`:
 

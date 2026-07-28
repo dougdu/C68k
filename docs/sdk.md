@@ -225,4 +225,6 @@ The whole standalone `samples/` gallery can be built for both OSes (a build-cove
   member-selects these archives too (non-heap programs; see
   [libc-and-toolchain.md](libc-and-toolchain.md) §7.2). It **strips by default** (`/NOSTRIP` keeps
   symbols) and finds runtime objects/libraries on a `;`-separated **`C68KLIB`** search path
-  (`SET C68KLIB=C:\C68K\LIB`), so they need not sit in the link directory.
+  (`SET C68KLIB=C:\C68K\LIB`), so they need not sit in the link directory; it can also write a `/map`
+  link map and a `/sym` sid68k symbol file (a stripped `.PRG` + `.SYM` sidecar is the on-target debug
+  pairing).

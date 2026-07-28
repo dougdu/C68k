@@ -210,6 +210,14 @@ bit-comparable objects.
   have to sit in the link directory (a name that already carries a path is never searched); and
   **`LINK @respfile`** reads files, libraries, and switches from a response file. These are
   input-acquisition conveniences only — the linked output stays byte-identical to `m68k-elf-ld`.
+- **Native `LINK` companion files** (output-side, byte-neutral). A finished link can also emit two
+  optional files that never touch the `.PRG` bytes: **`/map:<file>`** — a human-readable link map
+  (entry point, per-section address/size, and the public symbols by address) — and **`/sym:<file>`** —
+  a **sid68k**-format symbol file (`<hex8> <T|D|B|A> <name>` lines) that `sid68k` loads (`Y <file>`, or
+  auto-loads a same-named `.SYM` beside the program on `E`). The symbol file is **strip-independent**
+  (LINK walks its own symbol table, not the executable's `.symtab`), so a **stripped `.PRG` plus a
+  `/sym` sidecar** is the native on-target debug pairing — a small runtime image with full symbols on
+  the side.
 - **CP/M-68K native ports:** port `LINK` and `LIB` from their Osiris sources to run **on CP/M-68K**
   (their own file I/O moves from DOS handles to BDOS FCBs — the same seam concern as libc). The
   ported `LINK.68K` produces a linked ELF laid out per `cpm68k.ld`; **`mkdri`** (itself buildable
