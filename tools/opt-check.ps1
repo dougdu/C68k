@@ -32,7 +32,7 @@ $rules = @(
   @{ N='lt10->cmpi';      O=1; C='int f(int x){return x<10;}';                   P='cmp\.l #10,d0';       Neg=$false; E='pass';    Ph='-O1' }
   @{ N='udiv4->lsr';      O=1; C='unsigned f(unsigned x){return x/4;}';          P='lsr\.l #2,d0';        Neg=$false; E='pass';    Ph='-O1' }
   # --- OP1 (Tier A) ---
-  @{ N='no-bra-to-next';  O=1; C='int f(int x){return x;}';                      P='bra L_return';        Neg=$true;  E='pending'; Ph='OP1 #1' }
+  @{ N='no-bra-to-next';  O=1; C='int f(int x){return x;}';                      P='bra L_return';        Neg=$true;  E='pass';    Ph='OP1 #1' }
   # --- OP2 (Tier B) ---
   @{ N='mem-operand';     O=2; C='int f(int a,int b){return a+b;}';              P='add\.l \d+\(a6\),d0'; Neg=$false; E='pending'; Ph='OP2 #4' }
   @{ N='direct-store';    O=2; C='int g; void f(int v){g=v;}';                   P='move\.l d0,_g';       Neg=$false; E='pending'; Ph='OP2 #5' }

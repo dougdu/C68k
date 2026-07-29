@@ -811,9 +811,30 @@ static void gen_expr(Node *node) {
     return;
   case ND_MEMZERO: {
     // Zero-clear a local of node->var->ty->size bytes at A6+offset.
+    int sz = node->var->ty->size;
+    int off = node->var->offset;
+    // -O1+: for a small object, emit straight-line clr.l/clr.w/clr.b instead of
+    // a dbra byte loop -- a scalar (size 4) collapses to a single "clr.l d(a6)".
+    // Locals are always aligned to >=2 (assign_lvar_offsets rounds every slot to
+    // max(2,align)), so off is even and the wide clears never fault; the (off&1)
+    // guard keeps this correct even if that ever changes.
+    if (opt_level >= 1 && sz <= 16 && (off & 1) == 0) {
+      int p = 0;
+      while (sz - p >= 4) {
+        println("  clr.l %d(a6)", off + p);
+        p += 4;
+      }
+      if (sz - p >= 2) {
+        println("  clr.w %d(a6)", off + p);
+        p += 2;
+      }
+      if (sz - p >= 1)
+        println("  clr.b %d(a6)", off + p);
+      return;
+    }
     int c = count();
-    println("  lea %d(a6),a0", node->var->offset);
-    println("  move.w #%d,d1", node->var->ty->size - 1);
+    println("  lea %d(a6),a0", off);
+    println("  move.w #%d,d1", sz - 1);
     println("L_memzero_%d:", c);
     println("  clr.b (a0)+");
     println("  dbra d1,L_memzero_%d", c);
@@ -1452,6 +1473,48 @@ static void peephole(void) {
           a[len - 3] = 0; // cut ",a0"; this line is about to be removed
           outbuf.data[j] = format("  move.l %s,d0", a + 6);
           outbuf.data[i] = NULL;
+          changed = true;
+          continue;
+        }
+      }
+
+      // R4: branch-to-next. "bra L" (or "bra.s L") whose target label is the
+      // very next line is a no-op fall-through -- drop the branch. This removes
+      // every redundant "bra L_return_<fn>" that sits right before the epilogue
+      // label, plus the trailing "bra L_end_N" of a fully-linearised if/&&/||.
+      if (!strncmp(a, "  bra", 5)) {
+        char *t = a + 5;
+        if (t[0] == '.' && t[1] == 's')
+          t += 2;
+        while (*t == ' ')
+          t++;
+        size_t tl = strlen(t);
+        if (n[0] != ' ' && !strncmp(n, t, tl) && n[tl] == ':' && n[tl + 1] == '\0') {
+          outbuf.data[i] = NULL;
+          changed = true;
+          continue;
+        }
+      }
+
+      // R5: dead code after an unconditional transfer. Nothing can fall through
+      // a "bra"/"jmp"/"rts", so the instructions between it and the next label
+      // are unreachable. Delete following instruction lines (2-space indent +
+      // lowercase mnemonic) until the first non-instruction line -- a label
+      // (column 0), a directive (".", or an upper-case PUBLIC/DC/DS/ALIGN/END),
+      // or a blank -- which is a reachable boundary and is left in place.
+      if (!strncmp(a, "  bra", 5) || !strncmp(a, "  jmp", 5) ||
+          line_eq(a, "  rts")) {
+        bool did = false;
+        for (int k = i + 1; k < outbuf.len; k++) {
+          char *m = outbuf.data[k];
+          if (!m)
+            continue;
+          if (!(m[0] == ' ' && m[1] == ' ' && m[2] >= 'a' && m[2] <= 'z'))
+            break;
+          outbuf.data[k] = NULL;
+          did = true;
+        }
+        if (did) {
           changed = true;
           continue;
         }

@@ -52,14 +52,14 @@ Measured: `CORETEST.PRG` 95,824 (`-O0`) → 78,736 (`-O1`) → **75,440 with the
 | Phase | Tier | Title | `-O` | Status | Tasks | Milestone |
 | --- | :---: | --- | :---: | :---: | :---: | --- |
 | **OP0** | — | [Baseline, harness & `-O`-level plumbing](#op0--baseline-harness--o-level-plumbing) | — | ☑ | 4 / 4 | benchmark corpus + `-O2`/`-O3` levels + gates |
-| **OP1** | A | [Peephole & local rewrites](#op1--tier-a-peephole--local-rewrites) | O1 | ☐ | 0 / 4 | obvious embarrassments gone |
+| **OP1** | A | [Peephole & local rewrites](#op1--tier-a-peephole--local-rewrites) | O1 | ☑ | 4 / 4 | obvious embarrassments gone |
 | **OP2** | B | [Local instruction selection](#op2--tier-b-local-instruction-selection) | O2 | ☐ | 0 / 5 | most push/pop pairs gone |
 | **OP3** | C | [Condition-context codegen](#op3--tier-c-condition-context-codegen) | O2 | ☐ | 0 / 3 | comparisons branch on flags |
 | **OP4** | D | [IR + CFG (the pivot)](#op4--tier-d-ir--cfg-the-pivot) | O2/O3 | ☐ | 0 / 5 | AST → IR → select → emit |
 | **OP5** | E | [Local register allocation](#op5--tier-e-local-register-allocation) | O2 | ☐ | 0 / 4 | temporaries live in `D2–D7`/`A2–A5` |
 | **OP6** | F | [Global optimizations](#op6--tier-f-global-optimizations) | O3 | ☐ | 0 / 4 | CSE / LICM / DCE / IV reduction |
 | **OP7** | G | [Global register allocation](#op7--tier-g-global-register-allocation) | O3 | ☐ | 0 / 3 | whole-function allocator |
-| | | **Total** | | **1 / 8** | **4 / 32** | |
+| | | **Total** | | **2 / 8** | **8 / 32** | |
 
 ---
 
@@ -170,24 +170,38 @@ baseline is recorded.
 
 ---
 
-## OP1 — Tier A: Peephole & local rewrites
+## OP1 — Tier A: Peephole & local rewrites  ☑
 
 **Objective:** cheap, low-risk local rewrites on the existing buffered stream that remove the obvious
 embarrassments — **extends `-O1`**. *(Catalog #1–#3.)*
 
-- [ ] **#1 Branch-to-next / dead-after-transfer / label coalesce.** Drop `bra L` when `L:` is the next
-      line (kills every redundant `bra L_return_<fn>`); delete instructions between a `bra`/`rts` and
-      the next label; merge adjacent/empty labels (the `&&`/`||` `L_else_/L_end_` pairs of
-      [§10.2](codegen.md#102-booleans-are-materialized-then-re-tested-in-condition-context)).
-- [ ] **#2 Dead scalar zero-init + small `MEMZERO`.** Suppress `ND_MEMZERO` for a scalar local fully
-      covered by its initializer; lower small `MEMZERO` (≤ a few longwords) to unrolled
-      `clr.l`/`clr.w` instead of a `dbra` byte loop ([§10.6](codegen.md#106-redundant-epilogue-branch-and-dead-zero-init)).
-- [ ] **#3 `__func__` data bloat.** Don't emit unreferenced compiler-synthesized `__func__`/
-      `__FUNCTION__` name strings, or emit each into its own GC-able section
-      ([§10.8](codegen.md#108-front-end-data-bloat)). *(Front-end `parse.c`/emitter change.)*
-- [ ] Measure + gate (G1–G5); update the dashboard size delta.
+- [x] **#1 Branch-to-next / dead-after-transfer.** Peephole **R4** drops `bra L`/`bra.s L` when `L:` is
+      the next line (kills every redundant `bra L_return_<fn>` before the epilogue and the trailing
+      `bra L_end_N` of a linearised `if`/`&&`/`||`); **R5** deletes the unreachable instructions
+      between a `bra`/`jmp`/`rts` and the next label. Both are exact local equivalences gated at
+      `opt_level>=1` (`codegen68k.c` `peephole()`). *(Adjacent empty-label coalescing is cosmetic —
+      labels emit 0 bytes — and is left as-is.)*
+- [x] **#2 Small `MEMZERO` → unrolled `clr`.** `ND_MEMZERO` of a small object (≤ 16 B, even offset —
+      every local is ≥ 2-aligned) lowers to straight-line `clr.l`/`clr.w`/`clr.b` instead of the
+      `lea`+`move.w`+`clr.b`+`dbra` byte loop; a scalar `int t = …;` collapses to a single
+      `clr.l d(a6)`. Gated at `opt_level>=1`; the `dbra` loop is retained at `-O0` and for large
+      objects ([§10.6](codegen.md#106-redundant-epilogue-branch-and-dead-zero-init)). *(The dead-store
+      half — dropping the zero-init entirely when the initializer fully covers the scalar — is left to
+      DCE in OP6.)*
+- [x] **#3 `__func__` duplication.** At `-O1+`, `__func__` and `__FUNCTION__` share **one** name-string
+      literal instead of two identical copies per function (`parse.c` `funcdef`, gated on `opt_level`);
+      halves the synthesized name-string `.data`
+      ([§10.8](codegen.md#108-front-end-data-bloat)). *(Full suppression of the still-unreferenced
+      literal needs data liveness — deferred.)*
+- [x] Measure + gate (G1–G5); dashboard size delta updated.
 
-**Exit (MO1):** the §10.6/§10.8 embarrassments are gone; measurable corpus size cut; `-O0` byte-identical.
+**Result (bench corpus).** `-O1` **336 insns / 658 B `.text`** (was 441 / 740 at OP0): **−105 insns,
+−82 B** on top of OP0, **42.3 % fewer insns than `-O0`** (582 / 1042). Synthesized name-string literals
+per TU halved (4 → 2 on the two-function probe). `-O0` unchanged at **582 / 1042** — every rule is gated
+at `opt_level>=1`. Micro-check `no-bra-to-next` **PASS**; full lockstep **26/26 on both OSes at `-O1`**.
+
+**Exit (MO1):** the §10.6/§10.8 embarrassments are addressed; measurable corpus size cut; `-O0`
+byte-identical. ✅
 **Risk:** low — each rule a provable local equivalence; no data-flow needed.
 **Depends on:** OP0.
 
@@ -389,3 +403,4 @@ register allocator (OP5/OP7) and the global optimizations (OP6).
 | --- | --- | --- |
 | 2026-07 | Draft 0.1 | Initial optimizer plan (OP0–OP7) realizing the [codegen.md](codegen.md) Tier A–G roadmap + 14-item Opportunity catalog: `-O` level model, design invariants, measurement/verification gates, per-phase objectives/tasks/exit criteria, catalog→phase map, dependency graph. All phases ☐ (the current `-O1` tier is the baseline OP1+ build on). |
 | 2026-07 | Draft 0.1 | **OP0 done (4/4).** `-O2`/`-O3` level plumbing ([main.c](../src/main.c); output-neutral — `-O1`==`-O2`==`-O3`); [`tests/opt/bench.c`](../tests/opt/bench.c) + [`tools/opt-measure.ps1`](../tools/opt-measure.ps1) (baseline `bench.c` `-O0` 582 insns/1042 `.text` → `-O1` 441/740) + [`tools/opt-check.ps1`](../tools/opt-check.ps1) (4 self-test PASS, 7 PENDING); [`build-cc.ps1`](../tools/osiris/build-cc.ps1) honors `C68K_OPT=<n>` for self-host-at-level. |
+| 2026-07 | Draft 0.1 | **OP1 done (4/4).** Tier A local rewrites, all gated `opt_level>=1`: peephole **R4** (branch-to-next) + **R5** (dead-after-transfer) in [codegen68k.c](../src/codegen68k.c); small `ND_MEMZERO` → unrolled `clr.l`/`clr.w`/`clr.b`; `__func__`/`__FUNCTION__` share one literal ([parse.c](../src/parse.c) `funcdef`). `bench.c` `-O1` **441/740 → 336/658** (−105 insns / −82 B; 42.3 % below `-O0`); `-O0` unchanged (582/1042). `no-bra-to-next` flipped PENDING→PASS; full lockstep 26/26 both OSes at `-O1`. |

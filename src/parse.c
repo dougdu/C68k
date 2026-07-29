@@ -3275,13 +3275,21 @@ static Token *function(Token *tok, Type *basety, VarAttr *attr) {
 
   // [https://www.sigbus.info/n1570#6.4.2.2p1] "__func__" is
   // automatically defined as a local variable containing the
-  // current function name.
-  push_scope("__func__")->var =
-    new_string_literal(fn->name, array_of(ty_char, strlen(fn->name) + 1));
-
-  // [GNU] __FUNCTION__ is yet another name of __func__.
-  push_scope("__FUNCTION__")->var =
-    new_string_literal(fn->name, array_of(ty_char, strlen(fn->name) + 1));
+  // current function name. [GNU] __FUNCTION__ is yet another name
+  // of __func__. At -O0 each gets its own copy of the name string
+  // (byte-identical baseline); at -O1+ they share a single literal
+  // so the function name is not duplicated in .data.
+  if (opt_level >= 1) {
+    Obj *fname =
+      new_string_literal(fn->name, array_of(ty_char, strlen(fn->name) + 1));
+    push_scope("__func__")->var = fname;
+    push_scope("__FUNCTION__")->var = fname;
+  } else {
+    push_scope("__func__")->var =
+      new_string_literal(fn->name, array_of(ty_char, strlen(fn->name) + 1));
+    push_scope("__FUNCTION__")->var =
+      new_string_literal(fn->name, array_of(ty_char, strlen(fn->name) + 1));
+  }
 
   fn->body = compound_stmt(&tok, tok);
   fn->locals = locals;
