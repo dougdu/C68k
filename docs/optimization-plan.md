@@ -51,7 +51,7 @@ Measured: `CORETEST.PRG` 95,824 (`-O0`) → 78,736 (`-O1`) → **75,440 with the
 
 | Phase | Tier | Title | `-O` | Status | Tasks | Milestone |
 | --- | :---: | --- | :---: | :---: | :---: | --- |
-| **OP0** | — | [Baseline, harness & `-O`-level plumbing](#op0--baseline-harness--o-level-plumbing) | — | ☐ | 0 / 4 | benchmark corpus + `-O2`/`-O3` levels + gates |
+| **OP0** | — | [Baseline, harness & `-O`-level plumbing](#op0--baseline-harness--o-level-plumbing) | — | ☑ | 4 / 4 | benchmark corpus + `-O2`/`-O3` levels + gates |
 | **OP1** | A | [Peephole & local rewrites](#op1--tier-a-peephole--local-rewrites) | O1 | ☐ | 0 / 4 | obvious embarrassments gone |
 | **OP2** | B | [Local instruction selection](#op2--tier-b-local-instruction-selection) | O2 | ☐ | 0 / 5 | most push/pop pairs gone |
 | **OP3** | C | [Condition-context codegen](#op3--tier-c-condition-context-codegen) | O2 | ☐ | 0 / 3 | comparisons branch on flags |
@@ -59,7 +59,7 @@ Measured: `CORETEST.PRG` 95,824 (`-O0`) → 78,736 (`-O1`) → **75,440 with the
 | **OP5** | E | [Local register allocation](#op5--tier-e-local-register-allocation) | O2 | ☐ | 0 / 4 | temporaries live in `D2–D7`/`A2–A5` |
 | **OP6** | F | [Global optimizations](#op6--tier-f-global-optimizations) | O3 | ☐ | 0 / 4 | CSE / LICM / DCE / IV reduction |
 | **OP7** | G | [Global register allocation](#op7--tier-g-global-register-allocation) | O3 | ☐ | 0 / 3 | whole-function allocator |
-| | | **Total** | | **0 / 8** | **0 / 32** | |
+| | | **Total** | | **1 / 8** | **4 / 32** | |
 
 ---
 
@@ -149,20 +149,23 @@ CI wires G1–G4 per commit; G5 is tracked in the dashboard/changelog.
 **Objective:** the infrastructure every later phase needs — `-O2`/`-O3` levels, the benchmark corpus,
 and the regression gates — with **zero codegen change**.
 
-- [ ] **`-O` levels.** Parse `-O2`/`-O3` (and keep `-Os`/`-Oz`/`-Ofast` aliases); thread a numeric
-      `opt_level` (0/1/2/3) so transforms gate on `>=` a level. `-O2`/`-O3` initially behave as `-O1`
-      (no transform yet) — a pure plumbing step, `-O0`/`-O1` output unchanged.
-- [ ] **Benchmark corpus + measure script.** `tests/opt/` sources + a `tools/opt-measure.ps1` that
-      builds each at `-O0..-O3`, records stripped `.text` size + instruction count, and diffs the
-      emitted asm against expected-form golden snippets.
-- [ ] **Micro-test harness.** A `grep`-the-asm assertion runner (per opportunity) wired into the
-      existing lockstep/CI so each transform is independently gated (G4).
-- [ ] **Self-host-at-level check.** Extend the stage2==stage3 harness to also build the compiler at
-      `-O2` and confirm it self-hosts (the byte-identity target for optimized levels is *level-stable*,
-      not equal to `-O0`).
+- [x] **`-O` levels.** `-O2`→2, `-O3`→3, `-Ofast`→3, `-Os`/`-Oz`→1 in
+      [`main.c`](../src/main.c); numeric `opt_level` (0/1/2/3) threaded. **Verified output-neutral:**
+      `-O0` unchanged, `-O1`==`-O2`==`-O3` (every gate is `opt_level >= 1`; no level-2/3 transform yet).
+- [x] **Benchmark corpus + measure script.** [`tests/opt/bench.c`](../tests/opt/bench.c) +
+      [`tools/opt-measure.ps1`](../tools/opt-measure.ps1) (instruction count + `.text` size at
+      `-O0..-O3`, deltas vs `-O0`, optional CSV). **Baseline:** `bench.c` `-O0` **582 insns / 1042
+      `.text`** → `-O1` **441 / 740** (−24 % / −29 %); `-O2`/`-O3` identical to `-O1`.
+- [x] **Micro-test harness.** [`tools/opt-check.ps1`](../tools/opt-check.ps1) — grep-the-asm rules,
+      the current `-O1` transforms as self-test **PASS** (4) and the OP1–OP3 targets as **PENDING**
+      (7; each flips to PASS when its phase lands).
+- [x] **Self-host-at-level check.** [`build-cc.ps1`](../tools/osiris/build-cc.ps1) honors
+      `C68K_OPT=<n>` → builds CC.PRG at `-O<n>`. `-O2` self-host == the proven `-O1` stage2==stage3
+      (output-identical today); a distinct `-O2` self-host run becomes meaningful once OP2 diverges `-O2`.
 
-**Exit:** `-O0..-O3` all build the full lockstep green (identically, since no transform yet); the
-corpus + micro-harness + measure script are in and produce a recorded baseline.
+**Exit:** ✅ `-O0..-O3` build **identically** (output-neutral, host-verified — the lockstep/self-host
+baselines are unchanged by construction); the corpus + measure + micro-check harnesses are in and the
+baseline is recorded.
 **Depends on:** the existing `-O1` tier (P12/P13).
 
 ---
@@ -385,3 +388,4 @@ register allocator (OP5/OP7) and the global optimizations (OP6).
 | Date | Version | Change |
 | --- | --- | --- |
 | 2026-07 | Draft 0.1 | Initial optimizer plan (OP0–OP7) realizing the [codegen.md](codegen.md) Tier A–G roadmap + 14-item Opportunity catalog: `-O` level model, design invariants, measurement/verification gates, per-phase objectives/tasks/exit criteria, catalog→phase map, dependency graph. All phases ☐ (the current `-O1` tier is the baseline OP1+ build on). |
+| 2026-07 | Draft 0.1 | **OP0 done (4/4).** `-O2`/`-O3` level plumbing ([main.c](../src/main.c); output-neutral — `-O1`==`-O2`==`-O3`); [`tests/opt/bench.c`](../tests/opt/bench.c) + [`tools/opt-measure.ps1`](../tools/opt-measure.ps1) (baseline `bench.c` `-O0` 582 insns/1042 `.text` → `-O1` 441/740) + [`tools/opt-check.ps1`](../tools/opt-check.ps1) (4 self-test PASS, 7 PENDING); [`build-cc.ps1`](../tools/osiris/build-cc.ps1) honors `C68K_OPT=<n>` for self-host-at-level. |

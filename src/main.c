@@ -75,7 +75,8 @@ static void usage(int status) {
       "  -U <m>          undefine macro <m>\n"
       "  -include <f>    process <f> as if '#include \"<f>\"' came first\n"
       "  -target <os>    predefine target macros: 'osiris' or 'cpm'\n"
-      "  -O0..-O3, -Os   optimization level (-O0 default; >=1 enables the tier)\n"
+      "  -O0..-O3, -Os, -Ofast   optimization level (-O0 default; -O1 back-end\n"
+      "                  tier; -O2/-O3 per docs/optimization-plan.md, today == -O1)\n"
       "  -g              emit DWARF debug info (integrated assembler)\n"
       "  -Werror         treat warnings as errors\n"
       "  -ffreestanding  freestanding environment (__STDC_HOSTED__=0)\n"
@@ -420,18 +421,27 @@ static void parse_args(int argc, char **argv) {
       continue;
     }
 
-    // Optimization level. -O0 = naive stack-machine codegen (the default);
-    // -O and -O1..-O3/-Os/-Ofast enable the P12 back-end optimizations
-    // (immediate-operand selection, strength reduction, peephole). Anything
-    // above 1 is currently treated as 1.
+    // Optimization level. -O0 = naive stack-machine codegen (the default).
+    // -O/-O1 enable the current back-end tier (immediate-operand selection,
+    // strength reduction, peephole). -O2/-O3 are plumbed as distinct levels for
+    // the optimizer roadmap (docs/optimization-plan.md); until a phase lands its
+    // transforms they behave as -O1, because every codegen gate is
+    // `opt_level >= 1` and only level-1 transforms exist today -- so -O1/-O2/-O3
+    // output is currently identical. -Os/-Oz select the size subset (== -O1);
+    // -Ofast == -O3.
     if (!strncmp(argv[i], "-O", 2)) {
       char *p = argv[i] + 2;
-      if (*p == '\0' || !strcmp(p, "fast"))
-        opt_level = 1;
-      else if (p[0] >= '0' && p[0] <= '9')
-        opt_level = (p[0] == '0') ? 0 : 1;
+      if (*p == '\0')
+        opt_level = 1;                      // -O
+      else if (!strcmp(p, "fast"))
+        opt_level = 3;                      // -Ofast == -O3
       else if (!strcmp(p, "s") || !strcmp(p, "z"))
-        opt_level = 1;
+        opt_level = 1;                      // -Os/-Oz: size subset (== -O1)
+      else if (p[0] >= '0' && p[0] <= '9') {
+        opt_level = p[0] - '0';             // -O0..-O9
+        if (opt_level > 3)
+          opt_level = 3;                    // clamp to the top tier
+      }
       continue;
     }
 

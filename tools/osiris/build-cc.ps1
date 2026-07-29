@@ -38,11 +38,14 @@ New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 
 # compat.c is host-only (spawn/open_memstream shims); the native build omits it.
 $tus = @('main','strings','hashmap','unicode','type','tokenize','preprocess','parse','codegen68k','emit_elf')
+# Optimization level (docs/optimization-plan.md): C68K_OPT=<n> builds CC.PRG
+# (compiler TUs + libc) at -O<n> -- the self-host-at-level check.
+$optArgs = if ($env:C68K_OPT) { @("-O$($env:C68K_OPT)") } else { @() }
 $objs = @()
 foreach ($n in $tus) {
   $o = Join-Path $OutDir "$n.o"
   Write-Host "cc   -DC68K_SELFHOST $n.c" -ForegroundColor Cyan
-  & $Cc -fintegrated-as -DC68K_SELFHOST -c "-I$binc" "-I$inc" "-I$src" -o $o (Join-Path $src "$n.c")
+  & $Cc -fintegrated-as @optArgs -DC68K_SELFHOST -c "-I$binc" "-I$inc" "-I$src" -o $o (Join-Path $src "$n.c")
   if ($LASTEXITCODE -ne 0) { throw "cc $n failed (rc=$LASTEXITCODE)" }
   $objs += $o
 }
@@ -53,7 +56,7 @@ $rtO   = Join-Path $OutDir 'rt68k.o'
 # so CC.PRG dead-strips the libc it doesn't use.
 Write-Host 'build libc.a (split TUs)' -ForegroundColor Cyan
 $buildLibc = Join-Path (Split-Path $PSScriptRoot -Parent) 'build-libc.ps1'
-& $buildLibc -Cc $Cc -OutDir $OutDir -CcArgs @('-fintegrated-as') | Out-Null
+& $buildLibc -Cc $Cc -OutDir $OutDir -CcArgs (@('-fintegrated-as') + $optArgs) | Out-Null
 Write-Host 'asm  osiris_sys.a68 ; rt68k.a68' -ForegroundColor Cyan
 & $Asm /Cx /elf /c /nologo "/Fo$sysO" $sysA | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'asm crt0 failed' }
