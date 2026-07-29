@@ -705,42 +705,67 @@ static bool const_int32(Node *node, int32_t *out) {
   return true;
 }
 
-// Integer binary op whose right operand is the compile-time constant `c`.
-// Emits the left operand into D0 and folds the constant directly into an
-// immediate / shift, avoiding the stack round-trip (and the mul/div runtime
-// call when the constant is a power of two). Returns false -- having emitted
-// NOTHING -- when the op/constant is not specialized, so the caller falls back
-// to the generic push/pop path.
-static bool gen_const_binop(Node *node, int32_t c) {
-  bool u = node->lhs->ty->is_unsigned;
+// Resolve `node` -- unwrapping the size-preserving integer casts that
+// usual_arith_conv wraps around binary operands -- to a simple scalar lvalue at
+// a fixed effective address: a local/parameter frame slot (`disp(a6)`) or a
+// global (`_name`, abs.L). On success writes the EA text to *ea and returns the
+// underlying ND_VAR node (so the caller can check its real size/type); returns
+// NULL for VLAs, aggregates, or anything needing address arithmetic. Both
+// encoders already accept mode-5 / abs.L source and destination EAs, so the -O2
+// memory-operand (#4) and direct-store (#5) forms need no new mnemonics.
+static Node *simple_lval_ea(Node *node, char **ea) {
+  while (node->kind == ND_CAST && is_integer(node->ty) && node->ty->size == 4)
+    node = node->lhs;
+  if (node->kind != ND_VAR || node->ty->kind == TY_VLA)
+    return NULL;
+  *ea = node->var->is_local ? format("%d(a6)", node->var->offset)
+                            : symref(node->var->name);
+  return node;
+}
+
+// The commutative integer operators: `c OP x` may be evaluated as `x OP c`.
+static bool is_commutative(NodeKind k) {
+  return k == ND_ADD || k == ND_MUL || k == ND_BITAND || k == ND_BITOR ||
+         k == ND_BITXOR || k == ND_EQ || k == ND_NE;
+}
+
+// Integer binary op with a compile-time-constant operand `c`; `lhs` is the
+// OTHER (evaluated) operand. Emits `lhs` into D0 and folds the constant into an
+// immediate / shift / strength-reduced net, avoiding the stack round-trip (and
+// the mul/div runtime call for suitable constants). Returns false -- having
+// emitted NOTHING -- when not specialized, so the caller falls back to the
+// generic push/pop path. `lhs` is node->lhs for a constant RIGHT operand and
+// node->rhs (commutative ops only) for a constant LEFT operand.
+static bool gen_const_binop(Node *node, Node *lhs, int32_t c) {
+  bool u = lhs->ty->is_unsigned;
   uint32_t uc = (uint32_t)c;
 
   switch (node->kind) {
   case ND_ADD:
-    gen_expr(node->lhs);
+    gen_expr(lhs);
     add_imm(c);
     return true;
   case ND_SUB:
-    gen_expr(node->lhs);
+    gen_expr(lhs);
     add_imm(-c); // x - c == x + (-c)
     return true;
   case ND_BITAND:
-    gen_expr(node->lhs);
+    gen_expr(lhs);
     println("  andi.l #%ld,d0", (long)c);
     return true;
   case ND_BITOR:
-    gen_expr(node->lhs);
+    gen_expr(lhs);
     println("  ori.l #%ld,d0", (long)c);
     return true;
   case ND_BITXOR:
-    gen_expr(node->lhs);
+    gen_expr(lhs);
     println("  eori.l #%ld,d0", (long)c);
     return true;
   case ND_EQ:
   case ND_NE:
   case ND_LT:
   case ND_LE: {
-    gen_expr(node->lhs);
+    gen_expr(lhs);
     println("  cmp.l #%ld,d0", (long)c); // flags for (lhs - c)
     char *cc = node->kind == ND_EQ ? "seq" :
                node->kind == ND_NE ? "sne" :
@@ -753,20 +778,20 @@ static bool gen_const_binop(Node *node, int32_t c) {
   case ND_SHL:
     if (c < 1 || c > 31)
       return false;
-    gen_expr(node->lhs);
+    gen_expr(lhs);
     shift_by("asl.l", c, "d0", "d1");
     return true;
   case ND_SHR:
     if (c < 1 || c > 31)
       return false;
-    gen_expr(node->lhs);
+    gen_expr(lhs);
     shift_by(u ? "lsr.l" : "asr.l", c, "d0", "d1");
     return true;
   case ND_MUL:
     // Strength-reduce x*const: 0/1/-1 trivially, powers of two to a shift.
     // (The left operand is still evaluated for its side effects.)
     if (c == 0 || c == 1 || c == -1 || is_pow2_32(uc)) {
-      gen_expr(node->lhs);
+      gen_expr(lhs);
       if (c == 0)
         println("  moveq #0,d0");
       else if (c == -1)
@@ -775,26 +800,162 @@ static bool gen_const_binop(Node *node, int32_t c) {
         shift_by("asl.l", ctz32(uc), "d0", "d1");
       return true;
     }
+    // -O2 (#8): small x*(2^a +/- 1) as a shift+add/sub net, dropping __mulsi3.
+    if (opt_level >= 2 && c >= 3) {
+      if (is_pow2_32(uc - 1) && ctz32(uc - 1) <= 8) {
+        gen_expr(lhs);
+        println("  move.l d0,d1");
+        println("  asl.l #%d,d0", ctz32(uc - 1));
+        println("  add.l d1,d0"); // (x<<a) + x == x*(2^a+1)
+        return true;
+      }
+      if (is_pow2_32(uc + 1) && ctz32(uc + 1) <= 8) {
+        gen_expr(lhs);
+        println("  move.l d0,d1");
+        println("  asl.l #%d,d0", ctz32(uc + 1));
+        println("  sub.l d1,d0"); // (x<<a) - x == x*(2^a-1)
+        return true;
+      }
+    }
     return false; // non-power-of-two -> generic __mulsi3
   case ND_DIV:
-    // Only unsigned power-of-two is a plain shift; signed rounds toward zero,
-    // so leave it (and every non-pow2) to the runtime helper.
+    // Unsigned power-of-two is a plain shift.
     if (u && is_pow2_32(uc)) {
-      gen_expr(node->lhs);
+      gen_expr(lhs);
       shift_by("lsr.l", ctz32(uc), "d0", "d1");
+      return true;
+    }
+    // -O2 (#8): signed x / 2^k, rounding toward zero (bias negatives, then ASR).
+    if (opt_level >= 2 && !u && c >= 2 && is_pow2_32(uc)) {
+      int lc = count();
+      gen_expr(lhs);
+      println("  tst.l d0");
+      println("  bpl L_sdiv_%d", lc); // x >= 0: no bias needed
+      add_imm((int32_t)uc - 1);        // x < 0: add 2^k-1 first
+      println("L_sdiv_%d:", lc);
+      shift_by("asr.l", ctz32(uc), "d0", "d1");
       return true;
     }
     return false;
   case ND_MOD:
     if (u && is_pow2_32(uc)) {
-      gen_expr(node->lhs);
+      gen_expr(lhs);
       println("  andi.l #%ld,d0", (long)(uc - 1));
+      return true;
+    }
+    // -O2 (#8): signed x % 2^k keeps the sign of x: sign(x)*(|x| & (2^k-1)).
+    if (opt_level >= 2 && !u && c >= 2 && is_pow2_32(uc)) {
+      int lc = count();
+      gen_expr(lhs);
+      println("  tst.l d0");
+      println("  bpl L_smod_%d", lc); // x >= 0: plain mask
+      println("  neg.l d0");
+      println("  andi.l #%ld,d0", (long)(uc - 1));
+      println("  neg.l d0");
+      println("  bra L_smodx_%d", lc);
+      println("L_smod_%d:", lc);
+      println("  andi.l #%ld,d0", (long)(uc - 1));
+      println("L_smodx_%d:", lc);
       return true;
     }
     return false;
   default:
     return false;
   }
+}
+
+// A constant LEFT operand `c` (node->rhs is the evaluated operand). Commutative
+// ops fold via gen_const_binop; the ordered relationals `c < x` / `c <= x` are
+// emitted as `x > c` / `x >= c` with the reversed condition so the immediate
+// compare fast path is reached. (SUB/DIV/MOD/shifts don't simplify with the
+// constant on the left, so return false for the generic path.)
+static bool gen_const_binop_left(Node *node, int32_t c) {
+  if (is_commutative(node->kind))
+    return gen_const_binop(node, node->rhs, c);
+  if (node->kind == ND_LT || node->kind == ND_LE) {
+    bool u = node->rhs->ty->is_unsigned;
+    gen_expr(node->rhs);
+    println("  cmp.l #%ld,d0", (long)c);
+    char *cc = node->kind == ND_LT ? (u ? "shi" : "sgt")  // c <  x  ==  x >  c
+                                   : (u ? "shs" : "sge");  // c <= x  ==  x >= c
+    println("  %s d0", cc);
+    println("  andi.l #1,d0");
+    return true;
+  }
+  return false;
+}
+
+// -O2 (#4) memory-source operand: when the RHS is a simple size-4 lvalue, fold
+// it straight into the ALU op (`add.l ea,d0` etc.) instead of push/pop + D1.
+// EOR has no `<ea>,Dn` form and is left to the generic path.
+static bool gen_mem_binop(Node *node) {
+  char *ea;
+  Node *v = simple_lval_ea(node->rhs, &ea);
+  if (!v || v->ty->size != 4 || !(is_integer(v->ty) || v->ty->kind == TY_PTR))
+    return false;
+
+  switch (node->kind) {
+  case ND_ADD:
+    gen_expr(node->lhs);
+    println("  add.l %s,d0", ea);
+    return true;
+  case ND_SUB:
+    gen_expr(node->lhs);
+    println("  sub.l %s,d0", ea);
+    return true;
+  case ND_BITAND:
+    gen_expr(node->lhs);
+    println("  and.l %s,d0", ea);
+    return true;
+  case ND_BITOR:
+    gen_expr(node->lhs);
+    println("  or.l %s,d0", ea);
+    return true;
+  case ND_EQ:
+  case ND_NE:
+  case ND_LT:
+  case ND_LE: {
+    bool u = node->lhs->ty->is_unsigned;
+    gen_expr(node->lhs);
+    println("  cmp.l %s,d0", ea); // flags for (lhs - rhs)
+    char *cc = node->kind == ND_EQ ? "seq" :
+               node->kind == ND_NE ? "sne" :
+               node->kind == ND_LT ? (u ? "scs" : "slt") :
+                                     (u ? "sls" : "sle");
+    println("  %s d0", cc);
+    println("  andi.l #1,d0");
+    return true;
+  }
+  default:
+    return false;
+  }
+}
+
+// -O2 (#7): indexed load. `*(base + index*2^k)` -- i.e. arr[i] / p[i] -- with a
+// simple array/pointer var base and a longword-scalar element, loads through
+// the 68000's `(An,Xn.L)` addressing mode instead of materializing the address
+// with a push/pop + add. `node` is the ND_DEREF. The scaled index is stashed in
+// D1 (a simple-var base evaluation only touches D0/A0, so D1 survives); indexed
+// STORES are left to the generic path (value/index register pressure).
+static bool gen_indexed_load(Node *node) {
+  Node *add = node->lhs;
+  if (add->kind != ND_ADD || !add->ty->base)
+    return false; // must be pointer arithmetic (base + offset)
+  Node *b = add->lhs;
+  while (b->kind == ND_CAST)
+    b = b->lhs;
+  if (b->kind != ND_VAR || b->ty->kind == TY_VLA)
+    return false; // base must be a simple var (won't clobber D1)
+  Type *lty = node->ty;
+  if (lty->size != 4 || !(is_integer(lty) || lty->kind == TY_PTR))
+    return false; // longword element only (no sub-int extension here)
+
+  gen_expr(add->rhs);           // scaled index -> D0
+  println("  move.l d0,d1");    // stash (survives the simple-var base eval)
+  gen_expr(add->lhs);           // base address -> D0 (D0/A0 only)
+  println("  movea.l d0,a0");
+  println("  move.l (a0,d1.l),d0");
+  return true;
 }
 
 static void gen_expr(Node *node) {
@@ -867,6 +1028,8 @@ static void gen_expr(Node *node) {
     }
     return;
   case ND_DEREF:
+    if (opt_level >= 2 && gen_indexed_load(node))
+      return;
     gen_expr(node->lhs);
     load(node->ty);
     return;
@@ -881,6 +1044,21 @@ static void gen_expr(Node *node) {
       gen_expr(node->rhs);
       println("  move.l d0,%d(a6)", node->lhs->var->offset);
       return;
+    }
+    // -O2 (#5): direct store to a simple scalar lvalue -- evaluate the RHS and
+    // move it straight to the destination EA, skipping the address push/pop.
+    // Excludes bitfields (read-modify-write) and aggregates / 8-byte scalars.
+    {
+      char *dea;
+      if (opt_level >= 2 && node->ty->size <= 4 &&
+          (is_integer(node->ty) || node->ty->kind == TY_PTR ||
+           node->ty->kind == TY_FLOAT) &&
+          simple_lval_ea(node->lhs, &dea)) {
+        gen_expr(node->rhs);
+        char *msz = node->ty->size == 1 ? "b" : node->ty->size == 2 ? "w" : "l";
+        println("  move.%s d0,%s", msz, dea);
+        return;
+      }
     }
     gen_addr(node->lhs);
     push();
@@ -1062,10 +1240,17 @@ static void gen_expr(Node *node) {
   // Integer binary operators: evaluate rhs, push; evaluate lhs; pop rhs->D1.
   // At -O1+, a constant right operand is folded into an immediate/shift with no
   // stack traffic (gen_const_binop emits nothing and returns false when it does
-  // not specialize the op, so the generic path below still runs).
+  // not specialize the op, so the generic path below still runs). At -O2+, a
+  // constant LEFT operand is canonicalized/reversed to reach the same fast path
+  // (#6), and a simple memory-source RHS is folded into the ALU op (#4).
   int32_t cst;
   if (opt_level >= 1 && is_integer(node->rhs->ty) && node->rhs->ty->size <= 4 &&
-      const_int32(node->rhs, &cst) && gen_const_binop(node, cst))
+      const_int32(node->rhs, &cst) && gen_const_binop(node, node->lhs, cst))
+    return;
+  if (opt_level >= 2 && is_integer(node->lhs->ty) && node->lhs->ty->size <= 4 &&
+      const_int32(node->lhs, &cst) && gen_const_binop_left(node, cst))
+    return;
+  if (opt_level >= 2 && gen_mem_binop(node))
     return;
 
   gen_expr(node->rhs);
@@ -1423,7 +1608,8 @@ static int peep_next(int i) {
 // preceding "move.l a0,d0" (which only copied an address into D0) is dead.
 // Byte/word loads are deliberately excluded: they leave D0's high bits intact.
 static bool kills_d0(char *l) {
-  return line_eq(l, "  move.l (a0),d0") || line_eq(l, "  moveq #0,d0");
+  return line_eq(l, "  move.l (a0),d0") || line_eq(l, "  moveq #0,d0") ||
+         line_eq(l, "  move.l (a0,d1.l),d0");
 }
 
 // Iterate the peephole rules to a fixpoint. Every rule only ever deletes or

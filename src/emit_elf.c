@@ -348,12 +348,31 @@ static EA parse_ea(char *s, int size) {
     return e;
   }
 
-  // indirect / postincrement: (An) or (An)+
+  // indirect / postincrement / indexed: (An) | (An)+ | (An,Xn.SIZE)
   if (s[0] == '(') {
     char *p = s + 1;
-    char *q = p;
-    while (*q && *q != ')')
+    char *comma = NULL, *q = p;
+    while (*q && *q != ')') {
+      if (*q == ',' && !comma)
+        comma = q;
       q++;
+    }
+    if (comma) {
+      // (An,Xn.SIZE): brief-extension-word indexed mode. The 68000 has no index
+      // scaling, so codegen pre-scales the index; only .W/.L index size varies.
+      // ext word: [15]=index D/A, [14:12]=index reg, [11]=W(0)/L(1), [10:9]=00
+      // scale, [8]=0 brief, [7:0]=disp8 (always 0 here).
+      e.mode = 6;
+      e.reg = reg_num(xstrndup(p, comma - p));
+      char *ip = trim(xstrndup(comma + 1, q - (comma + 1)));
+      int itype = ip[0] == 'a' ? 1 : 0;
+      int ireg = ip[1] - '0';
+      char *dot = strchr(ip, '.');
+      int isz = (dot && dot[1] == 'w') ? 0 : 1; // default .L
+      e.next = 1;
+      e.ext[0] = (itype << 15) | (ireg << 12) | (isz << 11);
+      return e;
+    }
     e.reg = reg_num(xstrndup(p, q - p));
     e.mode = (q[1] == '+') ? 3 : 2;
     return e;
@@ -885,7 +904,20 @@ static void assemble_line(char *line) {
   // instruction? (mnemonics are lowercase and begin with a letter)
   if (islower((unsigned char)first[0]) && !strchr(first, ':')) {
     char *o1 = rest, *o2 = NULL;
-    char *comma = strchr(rest, ',');
+    // Split on the operand-separating comma at paren depth 0, so the inner
+    // comma of an indexed EA -- "(a0,d1.l),d0" -- is not mistaken for it.
+    char *comma = NULL;
+    int depth_paren = 0;
+    for (char *c = rest; *c; c++) {
+      if (*c == '(')
+        depth_paren++;
+      else if (*c == ')')
+        depth_paren--;
+      else if (*c == ',' && depth_paren == 0) {
+        comma = c;
+        break;
+      }
+    }
     if (comma) {
       *comma = 0;
       o1 = trim(rest);

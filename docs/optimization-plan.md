@@ -53,13 +53,13 @@ Measured: `CORETEST.PRG` 95,824 (`-O0`) → 78,736 (`-O1`) → **75,440 with the
 | --- | :---: | --- | :---: | :---: | :---: | --- |
 | **OP0** | — | [Baseline, harness & `-O`-level plumbing](#op0--baseline-harness--o-level-plumbing) | — | ☑ | 4 / 4 | benchmark corpus + `-O2`/`-O3` levels + gates |
 | **OP1** | A | [Peephole & local rewrites](#op1--tier-a-peephole--local-rewrites) | O1 | ☑ | 4 / 4 | obvious embarrassments gone |
-| **OP2** | B | [Local instruction selection](#op2--tier-b-local-instruction-selection) | O2 | ☐ | 0 / 5 | most push/pop pairs gone |
+| **OP2** | B | [Local instruction selection](#op2--tier-b-local-instruction-selection) | O2 | ☑ | 5 / 5 | most push/pop pairs gone |
 | **OP3** | C | [Condition-context codegen](#op3--tier-c-condition-context-codegen) | O2 | ☐ | 0 / 3 | comparisons branch on flags |
 | **OP4** | D | [IR + CFG (the pivot)](#op4--tier-d-ir--cfg-the-pivot) | O2/O3 | ☐ | 0 / 5 | AST → IR → select → emit |
 | **OP5** | E | [Local register allocation](#op5--tier-e-local-register-allocation) | O2 | ☐ | 0 / 4 | temporaries live in `D2–D7`/`A2–A5` |
 | **OP6** | F | [Global optimizations](#op6--tier-f-global-optimizations) | O3 | ☐ | 0 / 4 | CSE / LICM / DCE / IV reduction |
 | **OP7** | G | [Global register allocation](#op7--tier-g-global-register-allocation) | O3 | ☐ | 0 / 3 | whole-function allocator |
-| | | **Total** | | **2 / 8** | **8 / 32** | |
+| | | **Total** | | **3 / 8** | **13 / 32** | |
 
 ---
 
@@ -207,34 +207,46 @@ byte-identical. ✅
 
 ---
 
-## OP2 — Tier B: Local instruction selection
+## OP2 — Tier B: Local instruction selection  ☑
 
 **Objective:** exploit the two-operand CISC — the **biggest win without an IR** — by selecting memory
 operands, direct stores, either-side constants, indexed addressing, and richer strength reduction.
-**Lands `-O2`.** *(Catalog #4–#8.)*
+**Lands `-O2`** (the first level that diverges from `-O1`). *(Catalog #4–#8.)*
 
-- [ ] **#4 Memory-source operands.** For a binary op whose operand is a simple lvalue (frame/global)
-      or a compare's RHS, emit `add.l ea,d0` / `sub.l ea,d0` / `cmp.l ea,d0` / `and.l/or.l/eor.l ea,d0`
-      instead of push/pop + `D1` ([§10.3](codegen.md#103-the-68000-is-a-two-operand-cisc-but-memory-operands-go-unused)).
-- [ ] **#5 Direct store to lvalue EA.** `lval = v` → `move.l d0,disp(a6)` / `move.l d0,_g` /
-      `move.l d0,(a0,dn.l)` without pushing the destination address
+- [x] **#4 Memory-source operands.** A binary op whose RHS is a simple size-4 lvalue (`disp(a6)` frame
+      slot or `_g` global) folds into `add.l ea,d0` / `sub.l ea,d0` / `cmp.l ea,d0` / `and.l/or.l ea,d0`
+      instead of push/pop + `D1`. EOR has no `<ea>,Dn` form and stays generic
+      ([§10.3](codegen.md#103-the-68000-is-a-two-operand-cisc-but-memory-operands-go-unused)). `gen_mem_binop`.
+- [x] **#5 Direct store to lvalue EA.** `lval = v` for a simple scalar lvalue → `move.<sz> d0,disp(a6)`
+      / `move.<sz> d0,_g` with no address push/pop (bitfields/aggregates/8-byte stay generic)
       ([§10.5](codegen.md#105-address-arithmetic-ignores-indexed-addressing-and-constant-folding)).
-- [ ] **#6 Constant on either side.** Fold a constant **LHS** for commutative ops (`+ * & | ^`, swap)
-      and relationals (reverse the condition) so `x > 10` (canonicalized to `10 < x`) hits the fast
-      path ([§10.4](codegen.md#104-constant-on-the-left-misses-the-fast-path)).
-- [ ] **#7 Indexed & constant-offset addressing.** `arr[i]`/`p[i]` → `(An,Xn)`; a constant index →
-      `disp(An)` or a folded absolute; `&arr[k]` → `_arr+k*sz`
-      ([§10.5](codegen.md#105-address-arithmetic-ignores-indexed-addressing-and-constant-folding)).
-- [ ] **#8 Strength-reduction extensions.** Signed `x/2ⁿ` and `x%2ⁿ` via sign-corrected shift; small
-      non-pow2 `x*k` (×3/×5/×6/×7/×9/×10) via shift/add nets — dropping the runtime call
-      ([§10.7](codegen.md#107-missed-local-strength-reductions)).
-- [ ] Measure + gate (G1–G5).
+- [x] **#6 Constant on either side.** A constant LHS is canonicalized: commutative ops (`+ * & | ^ == !=`)
+      fold via the existing fast path; `c < x` / `c <= x` emit `x > c` / `x >= c` with the reversed
+      condition (`sgt`/`sge`/`shi`/`shs`) so `x > 10` hits `cmp.l #10,d0`
+      ([§10.4](codegen.md#104-constant-on-the-left-misses-the-fast-path)). `gen_const_binop_left`.
+- [x] **#7 Indexed addressing.** `arr[i]`/`p[i]` with a simple var base and a longword element loads
+      through the 68000 `(An,Xn.L)` brief-extension-word mode (`gen_indexed_load`) instead of push/pop
+      + add. Required the **encoder's first mode-6** (`parse_ea` in `emit_elf.c`) plus a **paren-aware
+      operand split** (the old `strchr(',')` broke `(a0,d1.l),d0` at the inner comma → a bogus
+      undefined symbol that only surfaced at *link* time). Byte-validated vs GNU objdump *and* asm68K
+      (`2030 1800`), then link-validated by the lockstep. Indexed stores stay generic (value/index
+      register pressure) ([§10.5](codegen.md#105-address-arithmetic-ignores-indexed-addressing-and-constant-folding)).
+- [x] **#8 Strength-reduction extensions.** Signed `x/2ⁿ` (bias-then-`asr`) and `x%2ⁿ` (sign-corrected
+      mask) inline instead of `__divsi3`/`__modsi3`; small `x*(2ᵃ±1)` (×3/×5/×7/×9/…) as a shift+add/sub
+      net instead of `__mulsi3` ([§10.7](codegen.md#107-missed-local-strength-reductions)).
+- [x] Measure + gate (G1–G5).
+
+**Result (bench corpus).** `-O2` **281 insns / 558 B `.text`** — down from the `-O1` baseline **336 / 658**
+(**−55 insns / −100 B**; **51.7 % fewer insns than `-O0`**). `-O1` **unchanged at 336 / 658** and `-O0`
+at 582 / 1042 (every rule gated `opt_level>=2`). All five µ-checks (`mem-operand`, `direct-store`,
+`const-left-cmp`, `indexed-addr`, `sdiv4-no-call`) **PASS**. **G3:** both encoders emit byte-identical
+code for every new form (mode-6 confirmed `2030 1800`). Full lockstep **26/26 on both OSes at `-O2`**.
 
 **Exit:** most push/pop pairs for simple expressions gone; the µ-suite shows each new form; `-O0`/`-O1`
-unchanged; lockstep green at `-O2`.
-**Risk:** medium — **G3 dual-encoder parity** is the gate: the integrated emitter must accept every
-new addressing mode/mnemonic (`(An,Xn)` brief-extension-word, memory-source ALU ops).
-**Depends on:** OP0 (and independent of OP1; both extend the single-pass generator).
+unchanged; lockstep green at `-O2`. ✅
+**Risk:** medium — **G3 dual-encoder parity** was the gate; the integrated emitter gained mode-6 and was
+byte-validated before the on-target run.
+**Depends on:** OP0 (independent of OP1; both extend the single-pass generator).
 
 ---
 
@@ -404,3 +416,4 @@ register allocator (OP5/OP7) and the global optimizations (OP6).
 | 2026-07 | Draft 0.1 | Initial optimizer plan (OP0–OP7) realizing the [codegen.md](codegen.md) Tier A–G roadmap + 14-item Opportunity catalog: `-O` level model, design invariants, measurement/verification gates, per-phase objectives/tasks/exit criteria, catalog→phase map, dependency graph. All phases ☐ (the current `-O1` tier is the baseline OP1+ build on). |
 | 2026-07 | Draft 0.1 | **OP0 done (4/4).** `-O2`/`-O3` level plumbing ([main.c](../src/main.c); output-neutral — `-O1`==`-O2`==`-O3`); [`tests/opt/bench.c`](../tests/opt/bench.c) + [`tools/opt-measure.ps1`](../tools/opt-measure.ps1) (baseline `bench.c` `-O0` 582 insns/1042 `.text` → `-O1` 441/740) + [`tools/opt-check.ps1`](../tools/opt-check.ps1) (4 self-test PASS, 7 PENDING); [`build-cc.ps1`](../tools/osiris/build-cc.ps1) honors `C68K_OPT=<n>` for self-host-at-level. |
 | 2026-07 | Draft 0.1 | **OP1 done (4/4).** Tier A local rewrites, all gated `opt_level>=1`: peephole **R4** (branch-to-next) + **R5** (dead-after-transfer) in [codegen68k.c](../src/codegen68k.c); small `ND_MEMZERO` → unrolled `clr.l`/`clr.w`/`clr.b`; `__func__`/`__FUNCTION__` share one literal ([parse.c](../src/parse.c) `funcdef`). `bench.c` `-O1` **441/740 → 336/658** (−105 insns / −82 B; 42.3 % below `-O0`); `-O0` unchanged (582/1042). `no-bra-to-next` flipped PENDING→PASS; full lockstep 26/26 both OSes at `-O1`. |
+| 2026-07 | Draft 0.1 | **OP2 done (5/5).** Tier B instruction selection, all gated `opt_level>=2` (first level to diverge from `-O1`): memory-source operands (#4), direct store to lvalue EA (#5), constant-LHS canonicalize/reverse (#6), indexed `(An,Xn.L)` load (#7 — **encoder's first mode-6** in [emit_elf.c](../src/emit_elf.c) + a **paren-aware operand split**; byte-validated vs objdump + asm68K, then link-validated), signed `x/2ⁿ`·`x%2ⁿ` + `x*(2ᵃ±1)` nets (#8). `bench.c` `-O2` **336/658 → 281/558** (−55 insns / −100 B; 51.7 % below `-O0`); `-O1` unchanged (336/658). All 5 OP2 µ-checks PENDING→PASS; full lockstep 26/26 both OSes at `-O2`. |
