@@ -28,7 +28,7 @@ Legend: ☐ not started · ◐ in progress · ☑ done.
 | **P7** | [C99 standard library](#p7--c99-standard-library) | ☑ | 7 / 7 | library + `libm` suite green |
 | **P8** | [Integrated object emitter](#p8--integrated-object-emitter) | ☑ | 5 / 5 | compiler emits ELF `.o` with no assembler |
 | **P9** | [Native LINK / LIB / mkdri](#p9--native-link--lib--mkdri) | ☑ | 6 / 6 | native link chain on both OSes |
-| **P10** | [Self-hosting bootstrap](#p10--self-hosting-bootstrap) | ☐ | 4 / 5 | **stage2 == stage3: Osiris all 11; CP/M within 1 MB** |
+| **P10** | [Self-hosting bootstrap](#p10--self-hosting-bootstrap) | ☐ | 4 / 5 | **stage2 == stage3: Osiris 11 TUs; CP/M 13 TUs (16 MB model)** |
 | **P11** | [Cross-compiler hardening](#p11--cross-compiler-hardening) | ☑ | 6 / 6 | cross is a CI'd, maintained product |
 | **P12** | [Optimization](#p12--optimization) | ☑ | 4 / 4 | -O1: immediate select, strength reduction, peephole |
 | **P13** | [Tooling & debug polish](#p13--tooling--debug-polish) | ☐ | 7 / 8 | register allocator, DWARF, diagnostics, samples |
@@ -41,9 +41,10 @@ Legend: ☐ not started · ◐ in progress · ☑ done.
    `.68K` on CP/M-68K, verified in lockstep. **✅ reached** — hello / filerw / printftest 3/3 lockstep (`tools/run-lockstep.ps1`).
 3. **M3 — Conforming C99** (end P7): the language + hosted library suites pass on both OSes. **✅ reached** — language + `libm` + library + `<time.h>` suites 8/8 lockstep on both OSes (`coretest` 41, `c99test` 18, `mathtest` 14, `libtest` 26, `timetest` 15); freestanding mode 40/40 bare-metal (`tools/m68k/run-tests.ps1`).
 4. **M4 — Self-hosting** (end P10): the native `CC` recompiles itself to a byte-identical binary.
-   **✅ reached on Osiris** — stage2 == stage3, all 11 TUs byte-identical. **CP/M-68K:** content-
-   identical for every TU that fits the 1 MB TPA (`strings`); the full front-end exceeds base CP/M's
-   ~583 KB heap — a hard memory wall, not a correctness gap (see P10 note).
+   **✅ reached on both OSes** — stage2 == stage3: Osiris all 11 TUs byte-identical, and **CP/M-68K
+   all 13 TUs content-identical on the 16 MB CBIOS model** (`PASS(pad)` — the object *content* is
+   identical; CP/M just `^Z`-pads files to whole 128-byte records). Base 1 MB CP/M fits only
+   `strings` (the ~583 KB TPA — a machine capacity limit, not a correctness gap; see P10 note).
 5. **M5 — Product** (end P11): the cross-compiler is hardened, CI-gated, and building real tools.
    **✅ reached** — driver parity (`-target`/`--version`) + `file:line:col` caret diagnostics; SDK
    docs ([sdk.md](sdk.md)) + packaging ([tools/package.ps1](../tools/package.ps1)); the full sim
@@ -298,6 +299,20 @@ dependency ([architecture.md §8](architecture.md#8-object-emission-text-asm-now
 
 > **Finding (Osiris `LINK.PRG` bug — root-caused and FIXED).** c68k's objects — including the full single-TU `libc.o` — link cleanly, but `LINK.PRG` originally address-exceptioned on the 28-member `libieee754d.a`. Traced under **sid68k** (`!ex catch addr` on `sim68k --gdb`, unstripped LINK re-link for symbols): `move.l (a5),d1` in `lk_sym_add_object` with `A5` **odd** (`0x0EFABB`) — an archive member's ELF `.symtab` pointer. Member `dpmath.o` has its `.symtab` at an **odd file offset (`0x18d3`)**, so the in-place pointer (even member base + odd `sh_offset`) is odd and the 68000 can't `move.l` from it. **Fixed** in the Osiris repo (`commands/objlib/ol_elf.a68` `oe_sym`: copy an odd-offset symtab to an even block so all readers stay aligned). Validated: the native `LINK.PRG` now links the full **`hello`** (c68k libc + the 28-member float archive) into a running `.PRG` on the 16 MB Osiris model (`--cpu 68000`). *(On the 1 MB model it's memory-tight — LINK's file + arena allocations for the 125 KB archive exceed 1 MB, a capacity note, not the bug.)* Repro/analysis tool: [`tools/osiris/debug-link-fault.ps1`](../tools/osiris/debug-link-fault.ps1).
 
+> **Native `LINK` usability enhancements (Osiris) + c68k integration.** The Osiris `LINK.PRG` gained
+> seven command-line / output additions (design: osiris `docs/link-enhancements-design.md`; spec:
+> `commands/docs/link.md`): response files (`@file`), full/partial **paths**, a `;`-separated
+> **`C68KLIB`** library search, **strip-by-default** (`/NOSTRIP` keeps symbols), a **`/map`** link map,
+> and a **`/sym`** sid68k symbol file — all opt-in and byte-neutral (the linker's 25 reference targets
+> stay identical). c68k reflects them: the docs ([libc-and-toolchain.md](libc-and-toolchain.md) §7.2)
+> describe the ergonomics and the **stripped `.PRG` + `/sym` sidecar** native-debug pairing for
+> `sid68k`, and [`tools/osiris/run-native-link.ps1`](../tools/osiris/run-native-link.ps1) exercises
+> them on-target — `-C68klib` (stage archives in `\LIB` + `SET C68KLIB`), `-Map`/`-Sym` (emit + verify
+> the companion files), and, because the grown `libc.a`+`libm.a`+`libheap.a` (~1 MB) no longer fit
+> beside the OS on the 1.44 MB boot floppy, the toolchain + inputs now stage on a **fresh B: data
+> floppy** with the link driven there. Validated: `printftest` (all three archives) links + runs
+> natively with `/map` and `/sym` produced.
+
 **Exit:** native linking/archiving builds real (multi-TU) programs on both OSes.
 **Depends on:** P8
 
@@ -307,11 +322,12 @@ dependency ([architecture.md §8](architecture.md#8-object-emission-text-asm-now
 
 - [x] Cross-compile the compiler for m68k → `CC.PRG` / `CC.68K` (stage2).
 - [x] Run `CC` under `sim68k` to compile its own source → stage3. *(Osiris — all 11 TUs.)*
-- [x] **stage2 == stage3** (byte-identical). *(Osiris: all 11 TUs. CP/M: content-identical for
-      every TU that fits the 1 MB TPA — see the CP/M note; the full front-end exceeds it.)*
+- [x] **stage2 == stage3** (byte-identical). *(Osiris: all 11 TUs byte-identical. CP/M: all 13 TUs
+      content-identical on the **16 MB CBIOS model** (`PASS(pad)`); base 1 MB CP/M fits only `strings`.)*
 - [x] Fit/perf pass: the native compiler runs within a realistic Osiris/CP/M memory budget.
-      *(Osiris 16 MB: all TUs. CP/M 1 MB: `strings` fits at ~99.8 % of the heap; larger TUs OOM in
-      the front-end — a hard base-CP/M memory wall, documented below.)*
+      *(Osiris 16 MB: all TUs. CP/M **16 MB CBIOS model**: all 13 TUs. Base CP/M **1 MB**: only
+      `strings` fits (~99.8 % of the heap); larger TUs OOM in the front-end — a machine memory wall,
+      documented below.)*
 - [ ] Make the three-stage check a permanent CI gate.
 
 > **Progress (self-host groundwork).** The self-host build **configuration** and the **libc gaps**
@@ -392,10 +408,20 @@ dependency ([architecture.md §8](architecture.md#8-object-emission-text-asm-now
 > arena release can help. This is a hard property of base CP/M-68K on a 1 MB machine, not a bug; the
 > worm68k heap library was evaluated and **rejected** for the front-end (its 32-byte block header +
 > 32-byte alignment would balloon the compiler's ~7 400 tiny allocations by ~325 KB, making the fit
-> *worse*). Full CP/M self-host of the whole compiler would require a materially more memory-frugal
-> front-end (freeing tokens post-parse, cutting the chibicc `Type` churn) — tracked as follow-up, not
-> an M4 blocker: **Osiris already proves the full stage2 == stage3**, and CP/M proves the toolchain
-> and object bytes are correct for what the machine can hold. **Next:** the three-stage CI gate.
+> *worse*). Full CP/M self-host of the whole compiler on a **1 MB** machine would require a materially
+> more memory-frugal front-end (freeing tokens post-parse, cutting the chibicc `Type` churn) — a
+> follow-up, not an M4 blocker, since the **16 MB CBIOS model below fits the whole compiler as-is**.
+>
+> **CP/M full self-host — the 16 MB CBIOS model lifts the wall (all 13 TUs).** The 1 MB ceiling above
+> is a base-CP/M-TPA property, not a compiler limit. The CBIOS was rebuilt into split boot images
+> (`cpmboot-16mb-144.img` = `--cpu 68000`, 16 MB address model; `cpmboot-1mb-144.img` = `--cpu 68008`,
+> 1 MB), and re-running [`tools/cpm/stage3-cc-68k.ps1`](../tools/cpm/stage3-cc-68k.ps1) with
+> `-Model 16mb` **lifts the OOM entirely**: **all 13 CP/M translation units are content-identical
+> stage2 == stage3 (`PASS(pad)`)** — `strings`, `hashmap`, `unicode`, `type`, `main`, `tokenize`,
+> `preprocess`, `codegen68k`, `emit_elf`, `parse` (182,784 B, ~375 s), `errno`, `signal`, `time`. So
+> **CP/M self-host is complete given adequate address space** — M4 is fully reached on *both* OSes;
+> the 1 MB run stands only as the base-machine capacity note. **Remaining P10 item:** make the
+> three-stage check a permanent CI gate.
 
 **Exit (M4):** `CC` self-hosts to a byte-identical binary on both OSes.
 **Depends on:** P9
@@ -520,6 +546,15 @@ samples complete.
 > (values still live in `D0`/`D1`; no callee-saved `MOVEM`) — a large, higher-risk change that
 > warrants its own focused effort to protect the self-host guarantee. The milestone exit is met.
 
+> **Code-generation design & optimization roadmap.** [`docs/codegen.md`](codegen.md) documents the
+> back end end-to-end — the stack-machine model, register discipline, expression/statement/frame
+> generation, object emission, and the current `-O1` optimizations — then analyzes the code it emits
+> today and lays out a phased **roadmap to a full optimizing compiler** (peephole → local instruction
+> selection → condition-context branching → an IR/CFG → local + global register allocation →
+> CSE/LICM/DCE). It is the design backing for the deferred register-allocator task above; the phased,
+> progress-tracked program that implements it is [`docs/optimization-plan.md`](optimization-plan.md)
+> (OP0–OP7).
+
 ---
 
 ## Dependency graph
@@ -557,3 +592,6 @@ flowchart LR
 | 2026-07 | Draft 0.1 | **P12 complete (4/4).** `-O1` back-end tier: immediate-operand selection, power-of-two strength reduction, and a peephole pass; full lockstep 9/9 both OSes, `-O0` self-host byte-identical; register allocator + richer addressing modes moved to P13. |
 | 2026-07 | Draft 0.1 | **P13 (7/8).** `-g` DWARF debug info (`gdb`/`objdump -dl`/`addr2line` source-level on the linked `.PRG`); addressing-mode fold (`CORETEST.PRG` −21 % vs `-O0`); `-Werror`; linker `.map`; both-OSes samples gallery. Full register allocator deferred. |
 | 2026-07 | Draft 0.1 | **Toolchain vendored + self-declaring imports.** `asm68K` (1.0.849.0) and `m68k-elf-ld` (2.44) vendored into [`tools/bin/`](../tools/bin) (committed; `C68K_AS` selects the assembler; binplace copies them into `out/cross/bin`). The code generator now marks each import with asm68K's inline-external `##` at the reference site (exports stay `PUBLIC`) instead of a module-wide `EXTERN` list — imports are self-declaring, so no unreferenced symbol can force linkage (objects ~20× smaller). Both emit paths (asm68K + integrated) verified identical on tier2/tier2f, Osiris + CP/M-68K. |
+| 2026-07 | Draft 0.1 | **Codegen design doc.** [`docs/codegen.md`](codegen.md) — back-end architecture (stack machine, register discipline, expression/statement/frame generation, object emission), the current `-O1` optimizations, an analysis of the emitted code, and an A–G optimization roadmap (peephole → instruction selection → IR/CFG → register allocation → CSE/LICM/DCE) toward a full optimizing compiler. |
+| 2026-07 | Draft 0.1 | **Native `LINK` R1–R7 + c68k integration.** Osiris `LINK.PRG` gained response files, path support, `C68KLIB` search, strip-by-default (`/NOSTRIP`), a `/map` link map, and a `/sym` sid68k symbol file (opt-in, byte-neutral). c68k docs + [`run-native-link.ps1`](../tools/osiris/run-native-link.ps1) reflect them (C68KLIB + `\LIB` staging, `-Map`/`-Sym` verify, two-floppy A:/B: staging for the grown archives); `printftest` links + runs natively with `/map`+`/sym`. |
+| 2026-07 | Draft 0.1 | **M4 self-host complete on BOTH OSes.** The split CBIOS **16 MB** CP/M image (`cpmboot-16mb-144.img`, `--cpu 68000`) lifts the 1 MB TPA wall: `stage3-cc-68k.ps1 -Model 16mb` yields **all 13 CP/M TUs content-identical stage2 == stage3** (`PASS(pad)`). Osiris (11 TUs) + CP/M (13 TUs) both prove self-host; only the three-stage **CI gate** remains open in P10. |
