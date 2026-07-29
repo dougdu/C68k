@@ -289,6 +289,9 @@ unreferenced `__func__` objects or by giving each its own `SHT` section. See [Ti
 
 ## 11. Optimization roadmap
 
+> The phased, progress-tracked program that **implements** this roadmap and the
+> [§12 catalog](#12-opportunity-catalog) is [optimization-plan.md](optimization-plan.md) (OP0–OP7).
+
 The path to a full optimizer is a sequence of tiers. **Tiers A–C** are achievable on the current
 single-pass, no-IR structure (peepholes + smarter local selection + a condition-context path).
 **Tier D is the pivot**: introducing an IR + CFG, without which the *global* optimizations (E–G)

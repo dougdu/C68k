@@ -17,6 +17,7 @@ library. **Understanding or contributing to the compiler?** Read the design docs
 | 5 | [reference-manual.md](reference-manual.md) | **Programmer's Reference Manual** — the language & ILP32 type model, the calling convention/ABI, the ELF object format, the driver, the optimizations, **every supported standard-library function**, the syscall seam, the runtime helpers, the toolchain, and the Osiris/CP/M-68K platform table. |
 | 6 | [sdk.md](sdk.md) | **SDK quickstart** for third-party programs: how to compile with `c68k`, the driver options and predefined macros (`__c68k__`/`__osiris__`/`__CPM68K__`), the per-OS link recipes (`.PRG` / `.68K`), and a worked one-source, two-target `hello` example. |
 | 7 | [codegen.md](codegen.md) | **Code generation** — the MC68000 back end in depth: the machine/stack-machine model, expression & statement generation, function frames, object emission, the current `-O1` optimizations, an analysis of the code it emits today, and a phased **optimization roadmap** (peephole → local instruction selection → condition-context branching → IR/CFG → register allocation → global optimizations) toward a full optimizing compiler. |
+| 8 | [optimization-plan.md](optimization-plan.md) | **Optimizing-compiler implementation plan** — the phased, progress-tracked program (OP0–OP7) that realizes codegen.md's Tier A–G roadmap and 14-item Opportunity catalog: the `-O` level model, design invariants, measurement/verification gates, per-phase objectives/tasks/exit criteria, and the catalog→phase map. Tracks optimizer progress. |
 
 ## External references (consumed as-is)
 
@@ -34,5 +35,6 @@ These live in the sibling repos and are the normative contracts c68k targets:
 
 - Status lines carry a **Draft N.N** version and a date; the changelog at the foot of each document
   records revisions.
-- Progress is tracked **only** in [implementation-plan.md](implementation-plan.md) — other
-  documents describe the design, not the state.
+- Progress is tracked in [implementation-plan.md](implementation-plan.md) (the whole project, P0–P13)
+  and, for the optimizer sub-plan carried in P12/P13, [optimization-plan.md](optimization-plan.md)
+  (OP0–OP7) — every *other* document describes the design, not the state.
