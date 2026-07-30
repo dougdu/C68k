@@ -40,7 +40,7 @@ $rules = @(
   @{ N='indexed-addr';    O=2; C='int a[9]; int f(int i){return a[i];}';         P='\(a0,d\d\.l\)';       Neg=$false; E='pass';    Ph='OP2 #7' }
   @{ N='sdiv4-no-call';   O=2; C='int f(int x){return x/4;}';                    P='__divsi3';            Neg=$true;  E='pass';    Ph='OP2 #8' }
   # --- OP3 (Tier C) ---
-  @{ N='cond-no-scc';     O=2; C='int f(int a,int b){if(a<b)return 1;return 0;}';P='slt d0';              Neg=$true;  E='pending'; Ph='OP3 #9' }
+  @{ N='cond-no-scc';     O=2; C='int f(int a,int b){if(a<b)return 1;return 0;}';P='slt d0';              Neg=$true;  E='pass';    Ph='OP3 #9' }
 )
 
 $fail = 0; $landed = 0

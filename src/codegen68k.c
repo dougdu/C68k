@@ -32,6 +32,8 @@ static StringArray outbuf;
 
 static void gen_expr(Node *node);
 static void gen_stmt(Node *node);
+static void gen_cond(Node *node, char *label, bool jump_when);
+static bool cond_ctx(void);
 
 // A `returns_twice` callee (setjmp) is re-entered by longjmp, which restores SP
 // to the value saved at the setjmp call.  Any operand the surrounding
@@ -1112,9 +1114,13 @@ static void gen_expr(Node *node) {
     return;
   case ND_COND: {
     int c = count();
-    gen_expr(node->cond);
-    cmp_zero(node->cond->ty);
-    println("  beq L_else_%d", c);
+    if (cond_ctx()) {
+      gen_cond(node->cond, format("L_else_%d", c), false);
+    } else {
+      gen_expr(node->cond);
+      cmp_zero(node->cond->ty);
+      println("  beq L_else_%d", c);
+    }
     gen_expr(node->then);
     println("  bra L_end_%d", c);
     println("L_else_%d:", c);
@@ -1318,14 +1324,153 @@ static void gen_expr(Node *node) {
   error_tok(node->tok, "invalid expression");
 }
 
+// OP3 (#9) condition-context codegen. `Rel` is a comparison relation between the
+// value left in D0 (after a `cmp`) and the other operand; the CCR after `cmp.l
+// B,d0` reflects (d0 - B).
+typedef enum { R_LT, R_LE, R_EQ, R_NE, R_GT, R_GE } Rel;
+
+// True when condition-context lowering (gen_cond) applies -- OP3 lands at -O2.
+// A single gate so the whole condition path can be toggled for bring-up/bisect.
+static bool cond_ctx(void) { return opt_level >= 2; }
+
+static Rel rel_of(NodeKind k) {
+  return k == ND_LT ? R_LT : k == ND_LE ? R_LE : k == ND_EQ ? R_EQ : R_NE;
+}
+static Rel rel_negate(Rel r) {
+  switch (r) {
+  case R_LT: return R_GE;
+  case R_GE: return R_LT;
+  case R_LE: return R_GT;
+  case R_GT: return R_LE;
+  case R_EQ: return R_NE;
+  default:   return R_EQ;
+  }
+}
+static Rel rel_swap(Rel r) { // relation with operands swapped: a<b <-> b>a
+  switch (r) {
+  case R_LT: return R_GT;
+  case R_GT: return R_LT;
+  case R_LE: return R_GE;
+  case R_GE: return R_LE;
+  default:   return r; // EQ / NE are symmetric
+  }
+}
+// The Bcc mnemonic that branches when `r` holds (signed unless `u`).
+static char *bcc_mnem(Rel r, bool u) {
+  switch (r) {
+  case R_EQ: return "beq";
+  case R_NE: return "bne";
+  case R_LT: return u ? "bcs" : "blt";
+  case R_LE: return u ? "bls" : "ble";
+  case R_GT: return u ? "bhi" : "bgt";
+  default:   return u ? "bcc" : "bge"; // R_GE
+  }
+}
+
+// A relational whose operands are 32-bit-or-smaller integers/pointers can be
+// lowered to a single cmp+Bcc; wider (long long), float, and everything else
+// fall back to materialize-then-test-zero.
+static bool is_branch_relational(Node *n) {
+  if (n->kind != ND_LT && n->kind != ND_LE && n->kind != ND_EQ &&
+      n->kind != ND_NE)
+    return false;
+  Type *l = n->lhs->ty, *r = n->rhs->ty;
+  return (is_integer(l) || l->kind == TY_PTR) && l->size <= 4 &&
+         (is_integer(r) || r->kind == TY_PTR) && r->size <= 4;
+}
+
+// Emit a conditional branch to `label`, taken exactly when the truth value of
+// `node` equals `jump_when`. Relational / ! / && / || lower directly to
+// cmp+Bcc with short-circuit control flow -- no 0/1 materialization + re-test.
+// The signedness and compare form mirror the boolean-producing path exactly, so
+// the branch is taken iff the materialized boolean would have been non-zero.
+// OP3, gated at the call sites (opt_level>=2); at -O0/-O1 the callers keep the
+// materialize-then-`cmp_zero` path.
+static void gen_cond(Node *node, char *label, bool jump_when) {
+  switch (node->kind) {
+  case ND_NOT:
+    gen_cond(node->lhs, label, !jump_when);
+    return;
+  case ND_LOGAND:
+    if (jump_when) { // branch when (a && b): skip on !a, then branch on b
+      char *skip = format("L_condskip_%d", count());
+      gen_cond(node->lhs, skip, false);
+      gen_cond(node->rhs, label, true);
+      println("%s:", skip);
+    } else { // branch when !(a && b): branch on !a or !b
+      gen_cond(node->lhs, label, false);
+      gen_cond(node->rhs, label, false);
+    }
+    return;
+  case ND_LOGOR:
+    if (jump_when) { // branch when (a || b): branch on a or b
+      gen_cond(node->lhs, label, true);
+      gen_cond(node->rhs, label, true);
+    } else { // branch when !(a || b): skip on a, then branch on !b
+      char *skip = format("L_condskip_%d", count());
+      gen_cond(node->lhs, skip, true);
+      gen_cond(node->rhs, label, false);
+      println("%s:", skip);
+    }
+    return;
+  }
+
+  if (is_branch_relational(node)) {
+    Rel base;
+    bool u;
+    int32_t c;
+    char *ea;
+    Node *v;
+    if (const_int32(node->rhs, &c)) {
+      gen_expr(node->lhs);
+      println("  cmp.l #%ld,d0", (long)c);
+      base = rel_of(node->kind);
+      u = node->lhs->ty->is_unsigned;
+    } else if (const_int32(node->lhs, &c)) {
+      gen_expr(node->rhs);
+      println("  cmp.l #%ld,d0", (long)c);
+      base = rel_swap(rel_of(node->kind)); // constant on the LEFT -> swap
+      u = node->rhs->ty->is_unsigned;
+    } else if ((v = simple_lval_ea(node->rhs, &ea)) && v->ty->size == 4 &&
+               (is_integer(v->ty) || v->ty->kind == TY_PTR)) {
+      gen_expr(node->lhs);
+      println("  cmp.l %s,d0", ea); // memory-source RHS
+      base = rel_of(node->kind);
+      u = node->lhs->ty->is_unsigned;
+    } else {
+      gen_expr(node->rhs);
+      push();
+      gen_expr(node->lhs);
+      pop("d1");
+      println("  cmp.l d1,d0");
+      base = rel_of(node->kind);
+      u = node->lhs->ty->is_unsigned;
+    }
+    Rel eff = jump_when ? base : rel_negate(base);
+    println("  %s %s", bcc_mnem(eff, u), label);
+    return;
+  }
+
+  // Fallback: materialize the value and test it against zero. Keeps the float
+  // compare's NaN-unordered BVS guard (via gen_flonum_binop) and handles 64-bit
+  // relationals and plain `if (x)` truthiness.
+  gen_expr(node);
+  cmp_zero(node->ty);
+  println("  %s %s", jump_when ? "bne" : "beq", label);
+}
+
 static void gen_stmt(Node *node) {
   gen_loc(node);
   switch (node->kind) {
   case ND_IF: {
     int c = count();
-    gen_expr(node->cond);
-    cmp_zero(node->cond->ty);
-    println("  beq L_else_%d", c);
+    if (cond_ctx()) {
+      gen_cond(node->cond, format("L_else_%d", c), false);
+    } else {
+      gen_expr(node->cond);
+      cmp_zero(node->cond->ty);
+      println("  beq L_else_%d", c);
+    }
     gen_stmt(node->then);
     println("  bra L_end_%d", c);
     println("L_else_%d:", c);
@@ -1345,9 +1490,13 @@ static void gen_stmt(Node *node) {
       println("  move.l sp,%d(a6)", m->offset); // seed (valid even if 0 iters)
     println("L_begin_%d:", c);
     if (node->cond) {
-      gen_expr(node->cond);
-      cmp_zero(node->cond->ty);
-      println("  beq %s", node->brk_label);
+      if (cond_ctx()) {
+        gen_cond(node->cond, node->brk_label, false); // exit the loop when false
+      } else {
+        gen_expr(node->cond);
+        cmp_zero(node->cond->ty);
+        println("  beq %s", node->brk_label);
+      }
     }
     gen_stmt(node->then);
     println("%s:", node->cont_label);
@@ -1371,9 +1520,13 @@ static void gen_stmt(Node *node) {
     println("%s:", node->cont_label);
     if (m)
       println("  move.l %d(a6),sp", m->offset); // reclaim VLAs on `continue`
-    gen_expr(node->cond);
-    cmp_zero(node->cond->ty);
-    println("  bne L_begin_%d", c);
+    if (cond_ctx()) {
+      gen_cond(node->cond, format("L_begin_%d", c), true); // loop again when true
+    } else {
+      gen_expr(node->cond);
+      cmp_zero(node->cond->ty);
+      println("  bne L_begin_%d", c);
+    }
     println("%s:", node->brk_label);
     if (m)
       println("  move.l %d(a6),sp", m->offset); // reclaim VLAs on `break`

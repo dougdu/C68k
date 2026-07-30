@@ -45,7 +45,14 @@ $objs = @()
 foreach ($n in $tus) {
   $o = Join-Path $OutDir "$n.o"
   Write-Host "cc   -DC68K_SELFHOST $n.c" -ForegroundColor Cyan
-  & $Cc -fintegrated-as @optArgs -DC68K_SELFHOST -c "-I$binc" "-I$inc" "-I$src" -o $o (Join-Path $src "$n.c")
+  # Build the full argument list and splat it once: pwsh 7.x (ArgPassing=Windows)
+  # mangles a bare literal immediately followed by a non-empty array splat
+  # (`-fintegrated-as @optArgs ...`), which silently drops -O<n> and mis-parses
+  # the input path. A single @-splat of the complete array is robust.
+  $ccArgs = @('-fintegrated-as') + $optArgs +
+            @('-DC68K_SELFHOST', '-c', "-I$binc", "-I$inc", "-I$src",
+              '-o', $o, (Join-Path $src "$n.c"))
+  & $Cc @ccArgs
   if ($LASTEXITCODE -ne 0) { throw "cc $n failed (rc=$LASTEXITCODE)" }
   $objs += $o
 }

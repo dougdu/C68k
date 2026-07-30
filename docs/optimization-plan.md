@@ -54,23 +54,25 @@ Measured: `CORETEST.PRG` 95,824 (`-O0`) → 78,736 (`-O1`) → **75,440 with the
 | **OP0** | — | [Baseline, harness & `-O`-level plumbing](#op0--baseline-harness--o-level-plumbing) | — | ☑ | 4 / 4 | benchmark corpus + `-O2`/`-O3` levels + gates |
 | **OP1** | A | [Peephole & local rewrites](#op1--tier-a-peephole--local-rewrites) | O1 | ☑ | 4 / 4 | obvious embarrassments gone |
 | **OP2** | B | [Local instruction selection](#op2--tier-b-local-instruction-selection) | O2 | ☑ | 5 / 5 | most push/pop pairs gone |
-| **OP3** | C | [Condition-context codegen](#op3--tier-c-condition-context-codegen) | O2 | ☐ | 0 / 3 | comparisons branch on flags |
+| **OP3** | C | [Condition-context codegen](#op3--tier-c-condition-context-codegen) | O2 | ☑ | 3 / 3 | comparisons branch on flags |
 | **OP4** | D | [IR + CFG (the pivot)](#op4--tier-d-ir--cfg-the-pivot) | O2/O3 | ☐ | 0 / 5 | AST → IR → select → emit |
 | **OP5** | E | [Local register allocation](#op5--tier-e-local-register-allocation) | O2 | ☐ | 0 / 4 | temporaries live in `D2–D7`/`A2–A5` |
 | **OP6** | F | [Global optimizations](#op6--tier-f-global-optimizations) | O3 | ☐ | 0 / 4 | CSE / LICM / DCE / IV reduction |
 | **OP7** | G | [Global register allocation](#op7--tier-g-global-register-allocation) | O3 | ☐ | 0 / 3 | whole-function allocator |
-| | | **Total** | | **3 / 8** | **13 / 32** | |
+| | | **Total** | | **4 / 8** | **16 / 32** | |
 
 ---
 
 ## Milestones
 
-1. **MO1 — `-O1` polished** (end OP1): the peephole/local-rewrite embarrassments from
+1. **MO1 — `-O1` polished** (end OP1) ✅: the peephole/local-rewrite embarrassments from
    [codegen.md §10.6/§10.8](codegen.md#106-redundant-epilogue-branch-and-dead-zero-init) are gone;
    measurable size cut on the corpus, `-O0` still byte-identical.
-2. **MO2 — `-O2` local** (end OP3): memory-source operands, either-side constants, richer strength
-   reduction, and condition-context branching — the **biggest win achievable without an IR**; the
-   compiler self-hosts at `-O2` and the full lockstep passes at `-O2` on both OSes.
+2. **MO2 — `-O2` local** (end OP3) — *codegen complete; `-O2` self-host blocked*: memory-source
+   operands, either-side constants, richer strength reduction, and condition-context branching — the
+   **biggest win achievable without an IR**. The full lockstep passes at `-O2` on both OSes; the
+   byte-identical **`-O2` self-host is blocked by a separate, pre-existing libheap SOA
+   `.data`-corruption bug** (`stage3 -Tu unicode` fails@3504), tracked independently of the optimizer.
 3. **MO3 — IR pivot** (end OP4): codegen is **AST → IR → (optimize) → select → emit** with a CFG and
    tiling instruction selection, `-O0`/`-O1` paths untouched, `-O2` re-expressed over the IR at parity.
 4. **MO4 — `-O2` registers** (end OP5): local register allocation eliminates the
@@ -250,23 +252,37 @@ byte-validated before the on-target run.
 
 ---
 
-## OP3 — Tier C: Condition-context codegen
+## OP3 — Tier C: Condition-context codegen  ☑
 
 **Objective:** stop materializing 0/1 booleans that only feed a branch. **Lands `-O2`.** *(Catalog #9.)*
 
-- [ ] **#9 `gen_cond(node, tlabel, flabel)`.** A dedicated path that lowers relational/`!`/`&&`/`||`
-      **directly to `cmp` + `Bcc`** when the value feeds `if`/`for`/`while`/`do`/`?:` (and nested
-      logicals), never emitting the `Scc`+`andi`+`tst`
-      ([§10.2](codegen.md#102-booleans-are-materialized-then-re-tested-in-condition-context)). The
-      boolean-producing path stays for when the value is used as data.
-- [ ] **Correct `Bcc` selection.** Signed vs unsigned (`blt/bge` vs `bcs/bcc`, `ble/bgt` vs `bls/bhi`);
-      **NaN-unordered float compares keep their `BVS` guard** (invariant #4).
-- [ ] Measure + gate (G1–G5).
+- [x] **#9 `gen_cond(node, label, jump_when)`.** A dedicated path that lowers relational/`!`/`&&`/`||`
+      **directly to `cmp` + `Bcc`** when the value feeds `if`/`for`/`while`/`do`/`?:` (short-circuit,
+      recursive), never emitting `Scc`+`andi`+`tst`
+      ([§10.2](codegen.md#102-booleans-are-materialized-then-re-tested-in-condition-context)). It reuses
+      OP2's const-RHS / const-LHS / memory-operand compare selection, so `if (a<b)` becomes
+      `cmp.l 12(a6),d0` / `bge`. The boolean-producing path stays for when the value is used as data.
+- [x] **Correct `Bcc` selection.** `Rel` + `rel_negate`/`rel_swap`/`bcc_mnem` pick signed vs unsigned
+      (`blt/bge` vs `bcs/bcc`, `ble/bgt` vs `bls/bhi`), matching the boolean path's signedness exactly.
+      Float and 64-bit relationals fall back to materialize-then-test-zero, so **NaN-unordered float
+      compares keep their `BVS` guard** (invariant #4).
+- [x] Measure + gate (G1–G5).
 
-**Exit (MO2):** comparisons in control context branch on flags (−3–4 instr each); the compiler
-**self-hosts at `-O2`** and full lockstep passes at `-O2` on both OSes.
+**Result (bench corpus).** `-O2` **281/558 → 264/498** (**−17 insns / −60 B**; **54.6 % fewer insns than
+`-O0`**, `.text` 52.2 % smaller). `-O1` **unchanged at 336/658**, `-O0` at 582/1042 (every rule gated
+`opt_level>=2`). Micro-check `cond-no-scc` **PASS**. Full lockstep **26/26 on both OSes at `-O2`**.
+OP3 codegen is verified correct — the `-O2`-built compiler's intermediate asm is byte-identical to the
+host `-S` reference — but the byte-identical **`-O2` self-host is blocked by a separate, pre-existing
+libheap SOA `.data`-corruption bug** (the allocator scribbles a class-24 free-list over the assembler's
+`.data` buffer when compiling `unicode.c`/`preprocess.c`; `stage3 -Tu unicode` fails@3504), tracked
+independently of the optimizer. *(Tooling: build-cc.ps1's `C68K_OPT` splat — a bare literal before a
+non-empty array splat — was mangled by pwsh 7.6; fixed to a single full-array splat.)*
+
+**Exit (MO2):** comparisons in control context branch on flags (−3–4 instr each) and full lockstep
+passes at `-O2` on both OSes ✅; the byte-identical **`-O2` self-host remains blocked** by the separate
+libheap SOA `.data`-corruption bug (`stage3 -Tu unicode` fails@3504), not by OP3 codegen.
 **Risk:** medium — condition inversion/`Bcc` selection is error-prone; the µ-suite pins each form and
-lockstep covers the float-unordered path.
+lockstep + `-O2` self-host cover the float-unordered and compiler-own-code paths.
 **Depends on:** OP0.
 
 ---
@@ -417,3 +433,4 @@ register allocator (OP5/OP7) and the global optimizations (OP6).
 | 2026-07 | Draft 0.1 | **OP0 done (4/4).** `-O2`/`-O3` level plumbing ([main.c](../src/main.c); output-neutral — `-O1`==`-O2`==`-O3`); [`tests/opt/bench.c`](../tests/opt/bench.c) + [`tools/opt-measure.ps1`](../tools/opt-measure.ps1) (baseline `bench.c` `-O0` 582 insns/1042 `.text` → `-O1` 441/740) + [`tools/opt-check.ps1`](../tools/opt-check.ps1) (4 self-test PASS, 7 PENDING); [`build-cc.ps1`](../tools/osiris/build-cc.ps1) honors `C68K_OPT=<n>` for self-host-at-level. |
 | 2026-07 | Draft 0.1 | **OP1 done (4/4).** Tier A local rewrites, all gated `opt_level>=1`: peephole **R4** (branch-to-next) + **R5** (dead-after-transfer) in [codegen68k.c](../src/codegen68k.c); small `ND_MEMZERO` → unrolled `clr.l`/`clr.w`/`clr.b`; `__func__`/`__FUNCTION__` share one literal ([parse.c](../src/parse.c) `funcdef`). `bench.c` `-O1` **441/740 → 336/658** (−105 insns / −82 B; 42.3 % below `-O0`); `-O0` unchanged (582/1042). `no-bra-to-next` flipped PENDING→PASS; full lockstep 26/26 both OSes at `-O1`. |
 | 2026-07 | Draft 0.1 | **OP2 done (5/5).** Tier B instruction selection, all gated `opt_level>=2` (first level to diverge from `-O1`): memory-source operands (#4), direct store to lvalue EA (#5), constant-LHS canonicalize/reverse (#6), indexed `(An,Xn.L)` load (#7 — **encoder's first mode-6** in [emit_elf.c](../src/emit_elf.c) + a **paren-aware operand split**; byte-validated vs objdump + asm68K, then link-validated), signed `x/2ⁿ`·`x%2ⁿ` + `x*(2ᵃ±1)` nets (#8). `bench.c` `-O2` **336/658 → 281/558** (−55 insns / −100 B; 51.7 % below `-O0`); `-O1` unchanged (336/658). All 5 OP2 µ-checks PENDING→PASS; full lockstep 26/26 both OSes at `-O2`. |
+| 2026-07 | Draft 0.1 | **OP3 done (3/3).** Tier C condition-context codegen, gated `opt_level>=2`: `gen_cond` lowers relational/`!`/`&&`/`||` in `if`/`for`/`while`/`do`/`?:` straight to `cmp`+`Bcc` (short-circuit, correct signed/unsigned `Bcc`; float/64-bit fall back to materialize-then-test so the NaN `BVS` guard is preserved). `bench.c` `-O2` **281/558 → 264/498** (−17 insns / −60 B; 54.6 % below `-O0`); `-O1` unchanged (336/658). `cond-no-scc` PENDING→PASS; full lockstep 26/26 both OSes at `-O2`. **MO2's byte-identical `-O2` self-host is blocked by a separate known libheap SOA `.data`-corruption bug** (`stage3 -Tu unicode` fails@3504; OP3 codegen verified correct via byte-identical intermediate asm). Also fixed build-cc.ps1's `C68K_OPT` splat (pwsh 7.6 mid-command array-splat bug). |

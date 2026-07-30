@@ -45,11 +45,13 @@ New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 
 # compat.c is host-only (spawn/open_memstream shims); the native build omits it.
 $tus = @('main','strings','hashmap','unicode','type','tokenize','preprocess','parse','codegen68k','emit_elf')
+$optArgs = @(); if ($env:C68K_OPT) { $optArgs = @("-O$($env:C68K_OPT)") }
 $objs = @()
 foreach ($n in $tus) {
   $o = Join-Path $OutDir "$n.o"
   Write-Host "cc   -DC68K_SELFHOST $n.c" -ForegroundColor Cyan
-  & $Cc -fintegrated-as -DC68K_SELFHOST -c "-I$binc" "-I$inc" "-I$src" -o $o (Join-Path $src "$n.c")
+  $ccArgs = @('-fintegrated-as','-DC68K_SELFHOST') + $optArgs + @('-c',"-I$binc","-I$inc","-I$src",'-o',$o,(Join-Path $src "$n.c"))
+  & $Cc @ccArgs
   if ($LASTEXITCODE -ne 0) { throw "cc $n failed (rc=$LASTEXITCODE)" }
   $objs += $o
 }
