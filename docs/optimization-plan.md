@@ -16,17 +16,26 @@ Legend: ☐ not started · ◐ in progress · ☑ done.
 
 ## Table of contents
 
-1. [Existing baseline (`-O1` today)](#existing-baseline--o1-today)
-2. [Progress dashboard](#progress-dashboard)
-3. [Milestones](#milestones)
-4. [`-O` level model](#-o-level-model)
-5. [Design invariants](#design-invariants)
-6. [Measurement & verification](#measurement--verification)
-7. [Phases OP0–OP7](#op0--baseline-harness--o-level-plumbing)
-8. [Catalog → phase map](#catalog--phase-map)
-9. [Dependency graph](#dependency-graph)
-10. [How to update this document](#how-to-update-this-document)
-11. [Changelog](#changelog)
+- [c68k — Optimizing Compiler: Implementation Plan \& Progress](#c68k--optimizing-compiler-implementation-plan--progress)
+  - [Table of contents](#table-of-contents)
+  - [Existing baseline (`-O1` today)](#existing-baseline--o1-today)
+  - [Progress dashboard](#progress-dashboard)
+  - [Milestones](#milestones)
+  - [`-O` level model](#-o-level-model)
+  - [Design invariants](#design-invariants)
+  - [Measurement \& verification](#measurement--verification)
+  - [OP0 — Baseline, harness \& `-O`-level plumbing](#op0--baseline-harness---o-level-plumbing)
+  - [OP1 — Tier A: Peephole \& local rewrites  ☑](#op1--tier-a-peephole--local-rewrites--)
+  - [OP2 — Tier B: Local instruction selection  ☑](#op2--tier-b-local-instruction-selection--)
+  - [OP3 — Tier C: Condition-context codegen  ☑](#op3--tier-c-condition-context-codegen--)
+  - [OP4 — Tier D: IR + CFG (the pivot)](#op4--tier-d-ir--cfg-the-pivot)
+  - [OP5 — Tier E: Local register allocation](#op5--tier-e-local-register-allocation)
+  - [OP6 — Tier F: Global optimizations](#op6--tier-f-global-optimizations)
+  - [OP7 — Tier G: Global register allocation](#op7--tier-g-global-register-allocation)
+  - [Catalog → phase map](#catalog--phase-map)
+  - [Dependency graph](#dependency-graph)
+  - [How to update this document](#how-to-update-this-document)
+  - [Changelog](#changelog)
 
 ---
 
@@ -68,11 +77,12 @@ Measured: `CORETEST.PRG` 95,824 (`-O0`) → 78,736 (`-O1`) → **75,440 with the
 1. **MO1 — `-O1` polished** (end OP1) ✅: the peephole/local-rewrite embarrassments from
    [codegen.md §10.6/§10.8](codegen.md#106-redundant-epilogue-branch-and-dead-zero-init) are gone;
    measurable size cut on the corpus, `-O0` still byte-identical.
-2. **MO2 — `-O2` local** (end OP3) — *codegen complete; `-O2` self-host blocked*: memory-source
-   operands, either-side constants, richer strength reduction, and condition-context branching — the
-   **biggest win achievable without an IR**. The full lockstep passes at `-O2` on both OSes; the
-   byte-identical **`-O2` self-host is blocked by a separate, pre-existing libheap SOA
-   `.data`-corruption bug** (`stage3 -Tu unicode` fails@3504), tracked independently of the optimizer.
+2. **MO2 — `-O2` local** (end OP3) ✅: memory-source operands, either-side constants, richer strength
+   reduction, and condition-context branching — the **biggest win achievable without an IR**. The full
+   lockstep passes at `-O2` on both OSes, and the byte-identical **`-O2` self-host is 13/13**
+   (stage2==stage3). *(Formerly blocked by a separate, pre-existing libheap SOA `.data`-corruption bug,
+   root-caused to a stale `SLAB` magic after `HeapDestroy` and fixed 2026-08-02 —
+   [bugs/soa-o2-selfhost-data-corruption.md](bugs/soa-o2-selfhost-data-corruption.md).)*
 3. **MO3 — IR pivot** (end OP4): codegen is **AST → IR → (optimize) → select → emit** with a CFG and
    tiling instruction selection, `-O0`/`-O1` paths untouched, `-O2` re-expressed over the IR at parity.
 4. **MO4 — `-O2` registers** (end OP5): local register allocation eliminates the
@@ -272,15 +282,18 @@ byte-validated before the on-target run.
 `-O0`**, `.text` 52.2 % smaller). `-O1` **unchanged at 336/658**, `-O0` at 582/1042 (every rule gated
 `opt_level>=2`). Micro-check `cond-no-scc` **PASS**. Full lockstep **26/26 on both OSes at `-O2`**.
 OP3 codegen is verified correct — the `-O2`-built compiler's intermediate asm is byte-identical to the
-host `-S` reference — but the byte-identical **`-O2` self-host is blocked by a separate, pre-existing
-libheap SOA `.data`-corruption bug** (the allocator scribbles a class-24 free-list over the assembler's
-`.data` buffer when compiling `unicode.c`/`preprocess.c`; `stage3 -Tu unicode` fails@3504), tracked
-independently of the optimizer. *(Tooling: build-cc.ps1's `C68K_OPT` splat — a bare literal before a
-non-empty array splat — was mangled by pwsh 7.6; fixed to a single full-array splat.)*
+host `-S` reference — and the byte-identical **`-O2` self-host is now 13/13** (stage2==stage3). It was
+formerly blocked by a separate, pre-existing **libheap SOA `.data`-corruption bug** (the allocator
+scribbled a class-24 free-list over the assembler's `.data` buffer when compiling
+`unicode.c`/`preprocess.c`; `stage3 -Tu unicode` failed@3504); root-caused to a stale `SLAB` magic left
+in a destroyed sub-heap's freed memory and **fixed 2026-08-02**
+([bugs/soa-o2-selfhost-data-corruption.md](bugs/soa-o2-selfhost-data-corruption.md)). *(Tooling:
+build-cc.ps1's `C68K_OPT` splat — a bare literal before a non-empty array splat — was mangled by pwsh
+7.6; fixed to a single full-array splat.)*
 
-**Exit (MO2):** comparisons in control context branch on flags (−3–4 instr each) and full lockstep
-passes at `-O2` on both OSes ✅; the byte-identical **`-O2` self-host remains blocked** by the separate
-libheap SOA `.data`-corruption bug (`stage3 -Tu unicode` fails@3504), not by OP3 codegen.
+**Exit (MO2):** comparisons in control context branch on flags (−3–4 instr each), full lockstep passes
+at `-O2` on both OSes, and the byte-identical **`-O2` self-host is 13/13** (stage2==stage3) ✅ — the
+libheap SOA `.data`-corruption bug that formerly blocked it is fixed (2026-08-02).
 **Risk:** medium — condition inversion/`Bcc` selection is error-prone; the µ-suite pins each form and
 lockstep + `-O2` self-host cover the float-unordered and compiler-own-code paths.
 **Depends on:** OP0.
@@ -434,3 +447,4 @@ register allocator (OP5/OP7) and the global optimizations (OP6).
 | 2026-07 | Draft 0.1 | **OP1 done (4/4).** Tier A local rewrites, all gated `opt_level>=1`: peephole **R4** (branch-to-next) + **R5** (dead-after-transfer) in [codegen68k.c](../src/codegen68k.c); small `ND_MEMZERO` → unrolled `clr.l`/`clr.w`/`clr.b`; `__func__`/`__FUNCTION__` share one literal ([parse.c](../src/parse.c) `funcdef`). `bench.c` `-O1` **441/740 → 336/658** (−105 insns / −82 B; 42.3 % below `-O0`); `-O0` unchanged (582/1042). `no-bra-to-next` flipped PENDING→PASS; full lockstep 26/26 both OSes at `-O1`. |
 | 2026-07 | Draft 0.1 | **OP2 done (5/5).** Tier B instruction selection, all gated `opt_level>=2` (first level to diverge from `-O1`): memory-source operands (#4), direct store to lvalue EA (#5), constant-LHS canonicalize/reverse (#6), indexed `(An,Xn.L)` load (#7 — **encoder's first mode-6** in [emit_elf.c](../src/emit_elf.c) + a **paren-aware operand split**; byte-validated vs objdump + asm68K, then link-validated), signed `x/2ⁿ`·`x%2ⁿ` + `x*(2ᵃ±1)` nets (#8). `bench.c` `-O2` **336/658 → 281/558** (−55 insns / −100 B; 51.7 % below `-O0`); `-O1` unchanged (336/658). All 5 OP2 µ-checks PENDING→PASS; full lockstep 26/26 both OSes at `-O2`. |
 | 2026-07 | Draft 0.1 | **OP3 done (3/3).** Tier C condition-context codegen, gated `opt_level>=2`: `gen_cond` lowers relational/`!`/`&&`/`||` in `if`/`for`/`while`/`do`/`?:` straight to `cmp`+`Bcc` (short-circuit, correct signed/unsigned `Bcc`; float/64-bit fall back to materialize-then-test so the NaN `BVS` guard is preserved). `bench.c` `-O2` **281/558 → 264/498** (−17 insns / −60 B; 54.6 % below `-O0`); `-O1` unchanged (336/658). `cond-no-scc` PENDING→PASS; full lockstep 26/26 both OSes at `-O2`. **MO2's byte-identical `-O2` self-host is blocked by a separate known libheap SOA `.data`-corruption bug** (`stage3 -Tu unicode` fails@3504; OP3 codegen verified correct via byte-identical intermediate asm). Also fixed build-cc.ps1's `C68K_OPT` splat (pwsh 7.6 mid-command array-splat bug). |
+| 2026-08 | Draft 0.1 | **`-O2` self-host UNBLOCKED.** The libheap SOA `.data`-corruption bug that blocked byte-identical `-O2` self-host is **fixed**. Root-caused via a live `sim68k`/`sid68k` capture (an `ILLEGAL`-at-`_start` resumable breakpoint + watchpoints) to `HeapDestroy` freeing a destroyed sub-heap's block **without invalidating its SOA slab `SLAB` magics**, so reused memory was mis-recognized as a stale cross-heap cell (`__HeapSlabFromPtr` false-positive) — the class-24 tile aliased `assemble_to_elf`'s `data.data` block. Fix in [`lib/heap/HeapDestroy.a68`](../lib/heap/HeapDestroy.a68) (clear each slab/arena magic before the block is freed; upstream worm68k `8e75cf50`, re-vendored via [`tools/vendor-sync.ps1`](../tools/vendor-sync.ps1)). **Full `-O2` self-host now 13/13 byte-identical** (stage2==stage3); upstream heap tests 9/9. See [bugs/soa-o2-selfhost-data-corruption.md](bugs/soa-o2-selfhost-data-corruption.md). |
