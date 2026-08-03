@@ -87,7 +87,7 @@ static IrExpr *ie_new(IeKind k) {
 // first consumer); OP5/OP6 will consume the same block/edge structure.
 // ---------------------------------------------------------------------------
 
-typedef enum { II_LABEL, II_JMP, II_CBR, II_EVAL, II_RET } IiKind;
+typedef enum { II_LABEL, II_JMP, II_CBR, II_EVAL, II_RET, II_NOP } IiKind;
 
 typedef struct {
   IiKind kind;
@@ -1353,6 +1353,8 @@ static void ir_emit_item(IrItem *it) {
   case II_LABEL:
     EMIT("%s:", it->label);
     return;
+  case II_NOP:
+    return; // OP6 removed this item (folded branch / dead code)
   case II_JMP:
     EMIT("  bra %s", it->label);
     return;
@@ -1632,6 +1634,326 @@ int ir_plan_regs(Obj *fn) {
 }
 
 // ---------------------------------------------------------------------------
+// OP6 (Tier F): global optimizations over the IR + CFG.  Lands -O3: everything
+// here is gated on opt_level >= 3 (see ir_emit_body), so -O0/-O1/-O2 never run
+// any of it and stay byte-identical to the single-pass baseline.
+//
+// v1 is the catalog-#12 cluster that needs no new value storage and is strictly
+// <= the -O2 instruction count: constant folding + propagation, algebraic
+// identities (including the x+x -> x<<1 same-operand reduction), constant-
+// condition branch folding, and dead-code elimination (unreachable blocks +
+// trivially-pure eval statements).  CSE-with-materialization, cross-block copy
+// propagation, LICM and induction-variable strength reduction (#12 CSE and all
+// of #13) need somewhere to keep a reused value live across blocks -- i.e. the
+// OP7 whole-function allocator ("allocate after global opts") -- so they co-land
+// there; doing them here would spill to the stack and pessimize without it.
+// ---------------------------------------------------------------------------
+
+// A bare integer constant (kids already folded) -> its 32-bit value.
+static bool ie_num(IrExpr *e, int32_t *out) {
+  if (e && e->kind == IE_NUM) {
+    *out = (int32_t)e->val;
+    return true;
+  }
+  return false;
+}
+
+static IrExpr *ie_num_new(int32_t v, int size, bool uns) {
+  IrExpr *e = ie_new(IE_NUM);
+  e->val = v;
+  e->size = size ? size : 4;
+  e->uns = uns;
+  return e;
+}
+
+// No observable side effect: no call, store or memzero anywhere.  A duplicate
+// evaluation may then be dropped (x + x -> x << 1) since the value is unchanged.
+static bool ie_pure(IrExpr *e) {
+  if (!e)
+    return true;
+  if (e->kind == IE_CALL || e->kind == IE_STORE || e->kind == IE_MEMZERO)
+    return false;
+  if (!ie_pure(e->a) || !ie_pure(e->b) || !ie_pure(e->c))
+    return false;
+  for (int i = 0; i < e->nargs; i++)
+    if (!ie_pure(e->args[i]))
+      return false;
+  return true;
+}
+
+// Pure AND touches no memory at all (also no load): the whole expression may be
+// dropped (x * 0 -> 0, dead pure eval) without deleting an observable read.
+static bool ie_trivial(IrExpr *e) {
+  if (!e)
+    return true;
+  switch (e->kind) {
+  case IE_LOAD:
+  case IE_STORE:
+  case IE_CALL:
+  case IE_MEMZERO:
+    return false;
+  }
+  if (!ie_trivial(e->a) || !ie_trivial(e->b) || !ie_trivial(e->c))
+    return false;
+  for (int i = 0; i < e->nargs; i++)
+    if (!ie_trivial(e->args[i]))
+      return false;
+  return true;
+}
+
+// Structural equality (bounded to the shapes the x + x reduction cares about;
+// anything else is conservatively unequal).
+static bool ie_equal(IrExpr *x, IrExpr *y) {
+  if (x == y)
+    return true;
+  if (!x || !y || x->kind != y->kind)
+    return false;
+  switch (x->kind) {
+  case IE_NUM:
+    return x->val == y->val;
+  case IE_LEA:
+    return x->var == y->var && x->is_local == y->is_local && x->off == y->off &&
+           (x->name == y->name ||
+            (x->name && y->name && !strcmp(x->name, y->name)));
+  case IE_LOAD:
+    return x->size == y->size && x->uns == y->uns && ie_equal(x->a, y->a);
+  case IE_CAST:
+    return x->op == y->op && x->size == y->size && x->uns == y->uns &&
+           x->fsize == y->fsize && x->funs == y->funs && ie_equal(x->a, y->a);
+  case IE_UNARY:
+    return x->op == y->op && ie_equal(x->a, y->a);
+  case IE_BINOP:
+    return x->op == y->op && x->size == y->size && x->uns == y->uns &&
+           ie_equal(x->a, y->a) && ie_equal(x->b, y->b);
+  }
+  return false;
+}
+
+// Fold a constant binop to its 32-bit result, matching the m68k width and
+// signedness the tiler would emit.  Forms the tiler would not fold (division or
+// shift UB) are left alone so behaviour is identical.
+static bool fold_binop(int op, bool uns, int32_t a, int32_t b, int32_t *out) {
+  uint32_t ua = (uint32_t)a, ub = (uint32_t)b;
+  switch (op) {
+  case ND_ADD: *out = (int32_t)(ua + ub); return true;
+  case ND_SUB: *out = (int32_t)(ua - ub); return true;
+  case ND_MUL: *out = (int32_t)(ua * ub); return true;
+  case ND_BITAND: *out = (int32_t)(ua & ub); return true;
+  case ND_BITOR: *out = (int32_t)(ua | ub); return true;
+  case ND_BITXOR: *out = (int32_t)(ua ^ ub); return true;
+  case ND_DIV:
+    if (b == 0)
+      return false; // runtime UB: leave the divide for codegen
+    if (uns) { *out = (int32_t)(ua / ub); return true; }
+    if (a == (-2147483647 - 1) && b == -1)
+      return false; // signed overflow: leave it
+    *out = a / b;
+    return true;
+  case ND_MOD:
+    if (b == 0)
+      return false;
+    if (uns) { *out = (int32_t)(ua % ub); return true; }
+    if (a == (-2147483647 - 1) && b == -1)
+      return false;
+    *out = a % b;
+    return true;
+  case ND_SHL:
+    if (b < 0 || b > 31)
+      return false;
+    *out = (int32_t)(ua << b);
+    return true;
+  case ND_SHR:
+    if (b < 0 || b > 31)
+      return false;
+    *out = uns ? (int32_t)(ua >> b) : (a >> b);
+    return true;
+  case ND_EQ: *out = a == b; return true;
+  case ND_NE: *out = a != b; return true;
+  case ND_LT: *out = uns ? (ua < ub) : (a < b); return true;
+  case ND_LE: *out = uns ? (ua <= ub) : (a <= b); return true;
+  }
+  return false;
+}
+
+// x + x -> x << 1 (x already known pure, so evaluating it once is enough).
+static IrExpr *ie_shl1(IrExpr *e, IrExpr *x) {
+  IrExpr *s = ie_new(IE_BINOP);
+  s->op = ND_SHL;
+  s->a = x;
+  s->b = ie_num_new(1, 4, false);
+  s->size = e->size;
+  s->uns = e->uns;
+  return s;
+}
+
+// Algebraic identities for a binop with at most one constant operand.
+static IrExpr *ie_binop_identity(IrExpr *e) {
+  int32_t ca, cb;
+  bool a_const = ie_num(e->a, &ca), b_const = ie_num(e->b, &cb);
+
+  switch (e->op) {
+  case ND_ADD:
+    if (b_const && cb == 0) return e->a;
+    if (a_const && ca == 0) return e->b;
+    if (ie_pure(e->a) && ie_equal(e->a, e->b)) return ie_shl1(e, e->a);
+    break;
+  case ND_SUB:
+    if (b_const && cb == 0) return e->a;
+    break;
+  case ND_MUL:
+    if (b_const && cb == 1) return e->a;
+    if (a_const && ca == 1) return e->b;
+    if (b_const && cb == 0 && ie_trivial(e->a)) return ie_num_new(0, e->size, e->uns);
+    if (a_const && ca == 0 && ie_trivial(e->b)) return ie_num_new(0, e->size, e->uns);
+    break;
+  case ND_BITAND:
+    if (b_const && cb == -1) return e->a;
+    if (a_const && ca == -1) return e->b;
+    if (b_const && cb == 0 && ie_trivial(e->a)) return ie_num_new(0, e->size, e->uns);
+    if (a_const && ca == 0 && ie_trivial(e->b)) return ie_num_new(0, e->size, e->uns);
+    break;
+  case ND_BITOR:
+    if (b_const && cb == 0) return e->a;
+    if (a_const && ca == 0) return e->b;
+    break;
+  case ND_BITXOR:
+    if (b_const && cb == 0) return e->a;
+    if (a_const && ca == 0) return e->b;
+    break;
+  case ND_SHL:
+  case ND_SHR:
+    if (b_const && cb == 0) return e->a;
+    break;
+  }
+  return e;
+}
+
+// Bottom-up constant folding + identity/propagation over an IR expression tree.
+static IrExpr *ie_fold(IrExpr *e) {
+  if (!e)
+    return e;
+  e->a = ie_fold(e->a);
+  e->b = ie_fold(e->b);
+  e->c = ie_fold(e->c);
+  for (int i = 0; i < e->nargs; i++)
+    e->args[i] = ie_fold(e->args[i]);
+
+  int32_t ca, cb, r;
+  switch (e->kind) {
+  case IE_CAST:
+    if (ie_num(e->a, &ca)) {
+      if (e->op == TY_BOOL)
+        return ie_num_new(ca != 0, e->size, e->uns);
+      if (tk_is_integer(e->op)) {
+        int32_t v = ca;
+        if (e->size == 1) v = e->uns ? (uint8_t)ca : (int8_t)ca;
+        else if (e->size == 2) v = e->uns ? (uint16_t)ca : (int16_t)ca;
+        return ie_num_new(v, e->size, e->uns);
+      }
+    }
+    return e;
+  case IE_UNARY:
+    if (ie_num(e->a, &ca)) {
+      if (e->op == ND_NEG) return ie_num_new((int32_t)(0u - (uint32_t)ca), e->size, e->uns);
+      if (e->op == ND_BITNOT) return ie_num_new(~ca, e->size, e->uns);
+      if (e->op == ND_NOT) return ie_num_new(ca == 0, 4, false);
+    }
+    return e;
+  case IE_BINOP:
+    if (ie_num(e->a, &ca) && ie_num(e->b, &cb)) {
+      if (fold_binop(e->op, e->uns, ca, cb, &r))
+        return ie_num_new(r, e->size, e->uns);
+      return e; // e.g. division by zero: leave the op for codegen
+    }
+    return ie_binop_identity(e);
+  case IE_COND:
+    if (ie_num(e->a, &ca))
+      return ca != 0 ? e->b : e->c; // constant condition: pick a branch
+    return e;
+  case IE_LOGAND:
+    if (ie_num(e->a, &ca)) {
+      if (ca == 0) return ie_num_new(0, 4, false);        // 0 && x -> 0
+      if (ie_num(e->b, &cb)) return ie_num_new(cb != 0, 4, false);
+    }
+    return e;
+  case IE_LOGOR:
+    if (ie_num(e->a, &ca)) {
+      if (ca != 0) return ie_num_new(1, 4, false);        // 1 || x -> 1
+      if (ie_num(e->b, &cb)) return ie_num_new(cb != 0, 4, false);
+    }
+    return e;
+  }
+  return e;
+}
+
+// Fold every expression tree in place.
+static void op6_fold_exprs(void) {
+  for (int i = 0; i < nitems; i++)
+    if (items[i].e)
+      items[i].e = ie_fold(items[i].e);
+}
+
+// A conditional branch on a now-constant condition becomes unconditional (when
+// taken) or vanishes (when not).  The folded condition is a bare constant with
+// no side effect, so dropping it is safe.
+static void op6_fold_branches(void) {
+  for (int i = 0; i < nitems; i++) {
+    if (items[i].kind != II_CBR)
+      continue;
+    int32_t c;
+    if (!ie_num(items[i].e, &c))
+      continue;
+    bool taken = (c != 0) == items[i].when;
+    items[i].kind = taken ? II_JMP : II_NOP;
+    items[i].e = NULL;
+  }
+}
+
+// Mark every item in a block unreachable from the entry as removed.
+static void op6_dce_unreachable(void) {
+  if (nblocks == 0)
+    return;
+  bool *seen = calloc(nblocks, 1);
+  int *stack = calloc(nblocks, sizeof(int));
+  int sp = 0;
+  seen[0] = true;
+  stack[sp++] = 0;
+  while (sp) {
+    int b = stack[--sp];
+    for (int s = 0; s < blocks[b].nsucc; s++)
+      if (!seen[blocks[b].succ[s]]) {
+        seen[blocks[b].succ[s]] = true;
+        stack[sp++] = blocks[b].succ[s];
+      }
+  }
+  for (int b = 0; b < nblocks; b++)
+    if (!seen[b])
+      for (int i = blocks[b].start; i < blocks[b].end; i++) {
+        items[i].kind = II_NOP;
+        items[i].e = NULL;
+      }
+  free(seen);
+  free(stack);
+}
+
+// Drop expression statements that compute nothing observable.
+static void op6_dce_dead_eval(void) {
+  for (int i = 0; i < nitems; i++)
+    if (items[i].kind == II_EVAL && ie_trivial(items[i].e)) {
+      items[i].kind = II_NOP;
+      items[i].e = NULL;
+    }
+}
+
+static void ir_optimize(void) {
+  op6_fold_exprs();
+  op6_fold_branches();
+  ir_build_cfg(); // branch folding changed the CFG edges
+  op6_dce_unreachable();
+  op6_dce_dead_eval();
+}
+
+// ---------------------------------------------------------------------------
 // Entry point.
 // ---------------------------------------------------------------------------
 
@@ -1648,6 +1970,11 @@ bool ir_emit_body(Obj *fn) {
   ir_fn = fn;
   lower_stmt(fn->body);
   ir_build_cfg();
+
+  // OP6 (-O3): global optimizations over the IR + CFG. Gated here so -O0/-O1/-O2
+  // keep the exact single-pass-parity output; only -O3 diverges.
+  if (opt_level >= 3)
+    ir_optimize();
 
   // Emit block by block in layout order (the CFG's first consumer).
   for (int b = 0; b < nblocks; b++)

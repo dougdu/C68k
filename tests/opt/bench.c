@@ -50,3 +50,10 @@ int mul8(int x)   { return x * 8; }      // -> asl.l #3,d0
 int addk(int x)   { return x + 5; }      // -> addq.l #5,d0
 int ltk(int x)    { return x < 10; }     // -> cmp.l #10,d0
 unsigned udiv4(unsigned x) { return x / 4; } // -> lsr.l #2,d0
+
+// OP6 (Tier F, -O3 only): constant folding, x+x -> x<<1 same-operand strength
+// reduction, and dead-branch elimination. Byte-identical to -O2 below -O3.
+int constfold(void)   { return 2 * 3 + 4; }          // -> moveq #10,d0
+int dbl(int x)        { return x + x; }              // -> asl.l #1,d0
+int deadbranch(int x) { if (0) return 99; return x; } // then-arm eliminated
+

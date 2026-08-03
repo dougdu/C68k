@@ -46,6 +46,15 @@ $rules = @(
   #     saved); -fno-regalloc turns it off (no movem). ---
   @{ N='regalloc-on-def';  O=2; C='int a[9];int f(int n){int s=0;for(int i=0;i<n;i++)s+=a[i];return s;}'; P='movem\.l d2'; Neg=$false; E='pass'; Ph='OP5' }
   @{ N='regalloc-off-flag';O=2; F=@('-fno-regalloc'); C='int a[9];int f(int n){int s=0;for(int i=0;i<n;i++)s+=a[i];return s;}'; P='movem'; Neg=$true;  E='pass'; Ph='OP5' }
+  # --- OP6 (Tier F): global opts, ON at -O3 only. Constant folding, x+x -> x<<1
+  #     same-operand strength reduction, and dead-branch elimination. The paired
+  #     -O2 rules assert the transform does NOT fire below -O3 (so -O0/-O1/-O2
+  #     stay byte-identical). ---
+  @{ N='constfold-o3';    O=3; C='int f(void){return 2*3+4;}';                   P='moveq #10,d0';        Neg=$false; E='pass';    Ph='OP6' }
+  @{ N='constfold-o2-no'; O=2; C='int f(void){return 2*3+4;}';                   P='moveq #10,d0';        Neg=$true;  E='pass';    Ph='OP6' }
+  @{ N='xx->shift-o3';    O=3; C='int f(int x){return x+x;}';                    P='asl\.l #1,d0';        Neg=$false; E='pass';    Ph='OP6' }
+  @{ N='xx->shift-o2-no'; O=2; C='int f(int x){return x+x;}';                    P='asl\.l #1,d0';        Neg=$true;  E='pass';    Ph='OP6' }
+  @{ N='deadbranch-o3';   O=3; C='int f(int x){if(0)return 99;return x;}';       P='moveq #99,d0';        Neg=$true;  E='pass';    Ph='OP6' }
 )
 
 $fail = 0; $landed = 0

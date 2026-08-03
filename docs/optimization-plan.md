@@ -65,10 +65,10 @@ Measured: `CORETEST.PRG` 95,824 (`-O0`) → 78,736 (`-O1`) → **75,440 with the
 | **OP2** | B | [Local instruction selection](#op2--tier-b-local-instruction-selection) | O2 | ☑ | 5 / 5 | most push/pop pairs gone |
 | **OP3** | C | [Condition-context codegen](#op3--tier-c-condition-context-codegen) | O2 | ☑ | 3 / 3 | comparisons branch on flags |
 | **OP4** | D | [IR + CFG (the pivot)](#op4--tier-d-ir--cfg-the-pivot) | O2/O3 | ☑ | 5 / 5 | AST → IR → select → emit |
-| **OP5** | E | [Local register allocation](#op5--tier-e-local-register-allocation) | O2 | ◐ | 4 / 4 | hot locals in `D2–D7` (opt-in `-fregalloc`; `-O2` flip deferred) |
-| **OP6** | F | [Global optimizations](#op6--tier-f-global-optimizations) | O3 | ☐ | 0 / 4 | CSE / LICM / DCE / IV reduction |
+| **OP5** | E | [Local register allocation](#op5--tier-e-local-register-allocation) | O2 | ☑ | 5 / 5 | hot locals in `D2–D7`/`A2–A5`; ON by default at `-O2`+ (`-fno-regalloc` opts out) |
+| **OP6** | F | [Global optimizations](#op6--tier-f-global-optimizations) | O3 | ◐ | 2 / 4 | const-prop + fold + DCE at `-O3`; CSE / LICM / IV → OP7 |
 | **OP7** | G | [Global register allocation](#op7--tier-g-global-register-allocation) | O3 | ☐ | 0 / 3 | whole-function allocator |
-| | | **Total** | | **5 / 8** | **25 / 32** | |
+| | | **Total** | | **6 / 8** | **28 / 33** | |
 
 ---
 
@@ -435,19 +435,38 @@ setjmp/VLA cases (invariant #4) gate the flip.
 
 **Objective:** CFG/data-flow optimizations over the IR. **Lands `-O3`.** *(Catalog #12–#13.)*
 
-- [ ] **#12 CSE + copy/constant propagation + DCE/DSE.** Common-subexpression elimination (`p[i]`,
-      reloaded `n`/`&arr` from [§10.3/§10.5](codegen.md#10-analysis-of-the-generated-code)),
-      copy/constant propagation, and dead-code/dead-store elimination (generalizes OP1 #2).
-- [ ] **#13 LICM + induction-variable strength reduction.** Hoist loop invariants (`n`, `&arr` out of
-      `sum_loop`); turn array-walk `arr[i]` into pointer bumping (`(An)+`).
-- [ ] **Equivalence testing.** Diff `-O3` behavior against `-O0`/`-O1` on the corpus + lockstep
-      (same results); the µ-suite asserts the hoist/CSE/pointer-bump forms.
-- [ ] Measure + gate (G1–G5).
+**Status: v1 landed at `-O3` (2026-08-03).** The propagation/folding/DCE cluster of #12 — everything
+that shrinks the IR without needing new value storage — runs over the IR + CFG ([ir68k.c](../src/ir68k.c)
+`ir_optimize`), gated on `opt_level >= 3`. `-O0`/`-O1`/`-O2` never enter it and stay **byte-identical**
+to the single-pass baseline (the whole pass sits behind one `if (opt_level >= 3)`). `bench.c` `-O3`
+**301/506 → 291/478** (−10 insns / −28 B vs `-O2`; `-O2` unchanged).
 
-**Exit:** measurable further size/speed gains on loop/array code; every test green on both OSes at
-`-O3`; `-O0`/`-O1`/`-O2` unchanged.
+- [ ] ◐ **#12 CSE + copy/constant propagation + DCE/DSE — partial.** **Done:** bottom-up **constant
+      folding + propagation** over the IR trees (arithmetic/bitwise/shift/compare + integer casts,
+      matched to the m68k 32-bit width/signedness; division and out-of-range shifts are left for
+      codegen), **algebraic identities** (`x+0`, `x*1`, `x*0`, `x&0`, `x&-1`, `x|0`, `x^0`, `x<<0`, and
+      the same-operand `x+x → x<<1` reduction — guarded by a purity check so a duplicated call is never
+      dropped, and operand-dropping identities require a memory-free operand), **constant-condition
+      branch folding**, and **DCE** (unreachable-block elimination via CFG reachability + removal of
+      trivially-pure eval statements). **Deferred → OP7:** CSE with *materialization* (`idx`'s `p[i]`,
+      `sum_loop`'s reloaded base) and cross-block copy propagation — both need a register to hold the
+      reused value across blocks, i.e. the OP7 allocator.
+- [ ] **#13 LICM + induction-variable strength reduction — deferred → OP7.** Hoisting a loop invariant
+      (`n`, `&arr`) or bumping an induction pointer (`arr[i]` → `(An)+`) needs a register held live across
+      the loop — the whole-function allocator's job ("OP7 … allocate after global opts").
+- [x] **Equivalence testing.** `-O3` diffed against `-O2` on the corpus (only the intended forms change;
+      `-O2` byte-identical); the µ-suite ([opt-check.ps1](../tools/opt-check.ps1)) asserts the
+      constant-fold, `x+x → x<<1` and dead-branch forms fire at `-O3` **and** are absent at `-O2`; full
+      lockstep at `-O3`.
+- [x] Measure + gate (G1–G5); dashboard `-O3` delta updated.
+
+**Exit:** measurable further size/speed gains at `-O3` (**done — `bench.c` −10 insns / −28 B vs `-O2`**);
+every test green on both OSes at `-O3` (**full lockstep at `-O3`**); `-O0`/`-O1`/`-O2` unchanged (**by
+construction — the pass is gated `opt_level >= 3`**). CSE-materialization / LICM / IV-SR co-land with the
+OP7 allocator.
 **Risk:** high — data-flow correctness (aliasing, `volatile`, call clobbers). Mitigation: conservative
-aliasing; `volatile` never optimized; gate at `-O3` with full equivalence testing.
+aliasing (operand-dropping identities require a memory-free operand; the IR subset is already
+`volatile`-free); `volatile` never optimized; gate at `-O3` with full equivalence testing.
 **Depends on:** OP4 (and benefits from OP5).
 
 ---
@@ -532,3 +551,4 @@ register allocator (OP5/OP7) and the global optimizations (OP6).
 | 2026-07 | Draft 0.1 | **OP2 done (5/5).** Tier B instruction selection, all gated `opt_level>=2` (first level to diverge from `-O1`): memory-source operands (#4), direct store to lvalue EA (#5), constant-LHS canonicalize/reverse (#6), indexed `(An,Xn.L)` load (#7 — **encoder's first mode-6** in [emit_elf.c](../src/emit_elf.c) + a **paren-aware operand split**; byte-validated vs objdump + asm68K, then link-validated), signed `x/2ⁿ`·`x%2ⁿ` + `x*(2ᵃ±1)` nets (#8). `bench.c` `-O2` **336/658 → 281/558** (−55 insns / −100 B; 51.7 % below `-O0`); `-O1` unchanged (336/658). All 5 OP2 µ-checks PENDING→PASS; full lockstep 26/26 both OSes at `-O2`. |
 | 2026-07 | Draft 0.1 | **OP3 done (3/3).** Tier C condition-context codegen, gated `opt_level>=2`: `gen_cond` lowers relational/`!`/`&&`/`||` in `if`/`for`/`while`/`do`/`?:` straight to `cmp`+`Bcc` (short-circuit, correct signed/unsigned `Bcc`; float/64-bit fall back to materialize-then-test so the NaN `BVS` guard is preserved). `bench.c` `-O2` **281/558 → 264/498** (−17 insns / −60 B; 54.6 % below `-O0`); `-O1` unchanged (336/658). `cond-no-scc` PENDING→PASS; full lockstep 26/26 both OSes at `-O2`. **MO2's byte-identical `-O2` self-host is blocked by a separate known libheap SOA `.data`-corruption bug** (`stage3 -Tu unicode` fails@3504; OP3 codegen verified correct via byte-identical intermediate asm). Also fixed build-cc.ps1's `C68K_OPT` splat (pwsh 7.6 mid-command array-splat bug). |
 | 2026-08 | Draft 0.1 | **`-O2` self-host UNBLOCKED.** The libheap SOA `.data`-corruption bug that blocked byte-identical `-O2` self-host is **fixed**. Root-caused via a live `sim68k`/`sid68k` capture (an `ILLEGAL`-at-`_start` resumable breakpoint + watchpoints) to `HeapDestroy` freeing a destroyed sub-heap's block **without invalidating its SOA slab `SLAB` magics**, so reused memory was mis-recognized as a stale cross-heap cell (`__HeapSlabFromPtr` false-positive) — the class-24 tile aliased `assemble_to_elf`'s `data.data` block. Fix in [`lib/heap/HeapDestroy.a68`](../lib/heap/HeapDestroy.a68) (clear each slab/arena magic before the block is freed; upstream worm68k `8e75cf50`, re-vendored via [`tools/vendor-sync.ps1`](../tools/vendor-sync.ps1)). **Full `-O2` self-host now 13/13 byte-identical** (stage2==stage3); upstream heap tests 9/9. See [bugs/soa-o2-selfhost-data-corruption.md](bugs/soa-o2-selfhost-data-corruption.md). |
+| 2026-08 | Draft 0.1 | **OP6 v1 done (`-O3`).** Tier F global optimizations over the IR+CFG ([`ir68k.c`](../src/ir68k.c) `ir_optimize`), gated `opt_level>=3` so `-O0`/`-O1`/`-O2` stay byte-identical **by construction** (single gate — `-O2` and `-O3` were previously identical, OP6 makes `-O3` diverge): constant folding+propagation, algebraic identities (incl. `x+x`→`x<<1`, purity-guarded), constant-condition branch folding, DCE (unreachable blocks + trivially-pure evals). CSE-with-materialization / cross-block copy-prop / LICM / IV strength-reduction **deferred → OP7** (they need a register to hold a reused value across blocks). `bench.c` `-O3` **301/506 → 291/478** (−10 insns / −28 B; was `-O3`==`-O2`); `-O0`/`-O1`/`-O2` unchanged. 5 OP6 `opt-check` rules PENDING→PASS (18/18). **Lockstep 26/26 both OSes at `-O3`**; **`-O3` self-host stage3 14/14 byte-identical** (CC.PRG built at `C68K_OPT=3`, OP6 active on the compiler's own source — `ir68k` self-hosts 135156==135156). |
