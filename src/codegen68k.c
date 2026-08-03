@@ -1747,6 +1747,22 @@ static bool node_clobbers_d2d3(Node *node) {
   return false;
 }
 
+// Build the MOVEM register-list operand for the promoted/clobbered callee-saved
+// set: data registers D2..dhi (dhi in 2..7, or 0) and address registers A2..ahi
+// (ahi in 10..13 i.e. 8+An, or 0), each contiguous from its base. Address-reg
+// promotion only starts after D2-D7 fill, so a nonzero ahi implies dhi == 7.
+// Returns NULL when the set is empty.
+static char *movem_reg_list(int dhi, int ahi) {
+  char *list = NULL;
+  if (dhi >= 2)
+    list = dhi == 2 ? format("d2") : format("d2-d%d", dhi);
+  if (ahi >= 10) {
+    char *ap = ahi == 10 ? format("a2") : format("a2-a%d", ahi - 8);
+    list = list ? format("%s/%s", list, ap) : ap;
+  }
+  return list;
+}
+
 static void emit_text(Obj *prog) {
   for (Obj *fn = prog; fn; fn = fn->next) {
     if (!fn->is_function || !fn->is_definition)
@@ -1774,24 +1790,34 @@ static void emit_text(Obj *prog) {
     bool use_ir = opt_use_ir && opt_level >= 2 && !opt_g && ir_body_eligible(fn);
     int hireg = use_ir ? ir_plan_regs(fn) : 0;
 
-    // Registers the prologue must movem-save. Promotion assigns D2..hireg; on
-    // top of that, under -fregalloc a function that clobbers D2/D3 via the
-    // single-pass 64-bit ABI or a bitfield store must save them too (its caller
-    // may keep a promoted value there across the call). Gated on opt_regalloc
-    // so the default output stays byte-identical (without it no caller keeps a
-    // live value in D2-D7 across a call).
-    int savereg = hireg;
-    if (opt_regalloc && savereg < 3 && node_clobbers_d2d3(fn->body))
-      savereg = 3;
-    if (savereg) {
-      if (savereg == 2)
-        println("  movem.l d2,-(sp)");
-      else
-        println("  movem.l d2-d%d,-(sp)", savereg);
+    // Registers the prologue must movem-save. Promotion assigns data regs
+    // D2..hireg (and address regs A2-A5 as overflow); on top of that, under
+    // -fregalloc a function that clobbers D2/D3 via the single-pass 64-bit ABI
+    // or a bitfield store must save them too (its caller may keep a promoted
+    // value there across the call). Gated on opt_regalloc so the default output
+    // stays byte-identical (without it no caller keeps a live value across a
+    // call). Address-reg promotion follows D2-D7, so recover the highest A-reg
+    // by scanning the promoted vars.
+    int dhi = hireg;
+    if (opt_regalloc && dhi < 3 && node_clobbers_d2d3(fn->body))
+      dhi = 3;
+    int ahi = 0;
+    if (hireg) {
+      for (Obj *v = fn->params; v; v = v->next)
+        if (v->reg >= 10 && v->reg > ahi)
+          ahi = v->reg;
+      for (Obj *v = fn->locals; v; v = v->next)
+        if (v->reg >= 10 && v->reg > ahi)
+          ahi = v->reg;
     }
+    char *save_list = movem_reg_list(dhi, ahi);
+    if (save_list)
+      println("  movem.l %s,-(sp)", save_list);
     if (hireg) {
       for (Obj *p = fn->params; p; p = p->next)
-        if (p->reg)
+        if (p->reg >= 10)
+          println("  movea.l %d(a6),a%d", p->offset, p->reg - 8);
+        else if (p->reg)
           println("  move.l %d(a6),d%d", p->offset, p->reg);
     }
 
@@ -1825,12 +1851,8 @@ static void emit_text(Obj *prog) {
 
     // Epilogue.
     println("L_return_%s:", fn->name);
-    if (savereg) {
-      if (savereg == 2)
-        println("  movem.l (sp)+,d2");
-      else
-        println("  movem.l (sp)+,d2-d%d", savereg);
-    }
+    if (save_list)
+      println("  movem.l (sp)+,%s", save_list);
     println("  unlk a6");
     println("  rts");
     if (opt_g)

@@ -361,7 +361,7 @@ single-pass `-O2` code.
 
 ## OP5 — Tier E: Local register allocation
 
-**Objective:** keep hot locals in `D2–D7` (address class `A2–A5` later) instead of frame slots — kill
+**Objective:** keep hot locals in `D2–D7` **and** `A2–A5` instead of frame slots — kill
 the memory round-trips. *(Catalog #11 — impact XL.)*
 
 **Status: v1 landed behind an opt-in gate; the `-O2` flip is deferred** (needs on-target lockstep +
@@ -388,6 +388,18 @@ off — verified across the corpus (39/39 files `-O2` == `-fno-regalloc`).
       leaf functions unchanged. Correctness hand-verified across for/while/do-while/nested loops, loops
       with calls, and pointer promotion (all runtime helpers — `__mulsi3`, `_fpadd…`, `memcpy` — preserve
       `D2–D7`, so promoted values survive calls).
+- [x] **`A2–A5` address-register class (2026-08-02).** When a function has more than six hot candidates
+      the planner spills the overflow into the callee-saved address registers `A2–A5` (encoded as
+      `reg = 10..13`), assigned in the same use-count order **after** `D2–D7` fill. Pure overflow, so
+      functions with ≤6 candidates stay byte-identical to the `D`-only version. A-reg values round-trip
+      losslessly through `movea.l` (full 32-bit): read via `move.l aR,d0`, written via `movea.l d0,aR`,
+      zero-inited via `movea.l #0,aR`, and never used as a direct ALU operand (`ie_simple_lval` returns
+      `NULL` for A-regs so callers take the safe `move.l aR,d0` path — `An` is not a valid `and`/`or`/`eor`
+      source). No `node_clobbers` analog is needed: the single-pass path and IR tiler never touch
+      `A2–A5`, and every runtime helper preserves the full callee-saved set (`A2–A6`) by ABI. The
+      `MOVEM` encoder already handled `a`-prefixed lists — `movem.l d2-d7/a2-a5,-(sp)` byte-validated
+      against binutils (`48e7 3f3c` / `4cdf 3cfc`), integrated and external asm68K agreeing. Validated:
+      self-host **stage3 14/14 byte-identical** with a regalloc-built `CC.PRG`.
 
 **Miscompile fixed + on-target validated (2026-08-02).** A latent 64-bit ABI violation surfaced under
 regalloc: functions doing `long long` arithmetic or bitfield stores load operands into `D2:D3` (the
@@ -397,10 +409,10 @@ prologue/epilogue `MOVEM` mask to cover `D2–D3` when the body clobbers them �
 so default output stays byte-identical. Validated: **full lockstep 26/26 on both OSes** and **self-host
 stage3 14/14 byte-identical** (`stage2 == stage3`) with a regalloc-built `CC.PRG`.
 
-**Deferred (follow-ups):** the `-O2` **flip** (on-target lockstep + self-host byte-identity); the `A2–A5`
-address-register class; per-block **liveness + linear-scan** with spilling (this v1 is a use-count
-heuristic, not interval allocation) — folded into OP7's whole-function allocator. Caller-saved spill
-discipline is moot here: promoted values live in callee-saved registers and so survive `jsr` by ABI.
+**Deferred (follow-ups):** the `-O2` **flip** (on-target lockstep + self-host byte-identity); per-block
+**liveness + linear-scan** with spilling (this v1 is a use-count heuristic, not interval allocation) —
+folded into OP7's whole-function allocator. Caller-saved spill discipline is moot here: promoted values
+live in callee-saved registers and so survive `jsr` by ABI.
 
 **Exit (MO4):** the §10.1 `sum_loop` round-trips become register ops; lockstep green at `-O2` **(done,
 26/26)**; self-host at `-O2` **(done under regalloc, 14/14 byte-identical)** — the default `-O2` **flip**

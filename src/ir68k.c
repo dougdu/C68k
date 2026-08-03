@@ -715,11 +715,20 @@ static void ir_expr(IrExpr *e);
 static void ir_cond(IrExpr *e, char *label, bool when);
 
 // OP5 register promotion (opt_regalloc): a promoted local/param lives in a
-// callee-saved data register (D2-D7) instead of its frame slot.
+// callee-saved register instead of its frame slot. Obj.reg encodes the target:
+// 2..7 = D2..D7 (data), 10..13 = A2..A5 (address; 8 + An index).
 static bool var_promoted(Obj *v) { return v && v->reg; }
 
+// True if reg code `r` names an address register (A2..A5).
+static bool reg_is_addr(int r) { return r >= 8; }
+
+// The assembler operand name for reg code `r` ("d2".."d7" / "a2".."a5").
+static char *reg_name(int r) {
+  return reg_is_addr(r) ? format("a%d", r - 8) : format("d%d", r);
+}
+
 // If `e` is the address of a promoted local (IE_LEA of a var held in a
-// register), return that register number (2..7); else 0.
+// register), return that register code (2..7 / 10..13); else 0.
 static int lea_reg(IrExpr *e) {
   return (e->kind == IE_LEA && e->is_local && var_promoted(e->var)) ? e->var->reg
                                                                     : 0;
@@ -744,6 +753,8 @@ static IrExpr *ie_simple_lval(IrExpr *e, char **ea) {
     return NULL;
   IrExpr *lea = e->a;
   int r = lea_reg(lea);
+  if (reg_is_addr(r)) // promoted to an address reg: An is not a valid ALU <ea>
+    return NULL;       // (invalid for and/or); read via move.l aR,d0 instead
   *ea = r          ? format("d%d", r) // promoted: register operand (add.l dN,d0)
         : lea->is_local ? format("%d(a6)", lea->off)
                         : cg_symref(lea->name);
@@ -1098,7 +1109,11 @@ static void ir_call(IrExpr *e) {
 
 static void ir_memzero(IrExpr *e) {
   if (var_promoted(e->var)) {
-    EMIT("  moveq #0,d%d", e->var->reg); // promoted local: clear the register
+    int r = e->var->reg; // promoted local: clear the register in place
+    if (reg_is_addr(r))
+      EMIT("  movea.l #0,%s", reg_name(r)); // moveq targets data regs only
+    else
+      EMIT("  moveq #0,%s", reg_name(r));
     return;
   }
   int sz = e->size, off = e->off;
@@ -1142,7 +1157,7 @@ static void ir_expr(IrExpr *e) {
   case IE_LOAD: {
     int r = lea_reg(e->a);
     if (r) {
-      EMIT("  move.l d%d,d0", r); // promoted local: no memory access
+      EMIT("  move.l %s,d0", reg_name(r)); // promoted local: no memory access
       return;
     }
     if (ir_indexed_load(e))
@@ -1156,7 +1171,10 @@ static void ir_expr(IrExpr *e) {
     int r = lea_reg(e->a);
     if (r) {
       ir_expr(e->b);
-      EMIT("  move.l d0,d%d", r); // promoted local: no memory access
+      if (reg_is_addr(r))
+        EMIT("  movea.l d0,%s", reg_name(r)); // promoted local: no memory access
+      else
+        EMIT("  move.l d0,%s", reg_name(r));
       return;
     }
     // Direct store to a simple lvalue EA (OP2 #5): skip the address push/pop.
@@ -1536,7 +1554,9 @@ static void ra_add_cand(Obj *v, Obj *fn) {
   if (!v->name || !v->name[0])
     return;
   Type *t = v->ty;
-  // Only 4-byte int/pointer scalars fit a data register cleanly (v1).
+  // Only 4-byte int/pointer scalars fit a register cleanly (v1); such a value
+  // round-trips through a data or address register losslessly (movea.l is full
+  // 32-bit), so either class can hold it.
   if (t->size != 4 || !(is_integer(t) || t->kind == TY_PTR))
     return;
   ra_cand[ra_ncand].var = v;
@@ -1547,9 +1567,11 @@ static void ra_add_cand(Obj *v, Obj *fn) {
 
 bool ir_body_eligible(Obj *fn) { return stmt_ok(fn->body); }
 
-// Promote the most-used, address-not-taken scalar locals/params into D2-D7
-// (callee-saved, so they survive calls); returns the highest register used
-// (0 = none) so the prologue/epilogue can movem-save exactly D2..that.
+// Promote the most-used, address-not-taken scalar locals/params into callee-
+// saved registers (they survive calls): the six data registers D2-D7 first,
+// then the four address registers A2-A5 as overflow. Returns the highest DATA
+// register used (0 = none) so the prologue/epilogue can movem-save exactly
+// D2..that (address registers are recovered separately by scanning ->reg).
 int ir_plan_regs(Obj *fn) {
   for (Obj *v = fn->params; v; v = v->next)
     v->reg = 0;
@@ -1582,12 +1604,16 @@ int ir_plan_regs(Obj *fn) {
     ra_add_cand(v, fn);
   ra_walk(fn->body);
 
-  // Assign D2,D3,... to the most-used candidates, up to the six data registers.
-  // Require a loop use: register residency only repays its movem/param-load
-  // overhead when the accesses repeat, so straight-line leaf code is left in
-  // frame slots (promoting it there is code-size-neutral at best).
-  int next = 2, hi = 0;
-  while (next <= 7) {
+  // Assign D2,D3,...,D7 then A2,...,A5 to the most-used candidates. Require a
+  // loop use: register residency only repays its movem/param-load overhead when
+  // the accesses repeat, so straight-line leaf code is left in frame slots
+  // (promoting it there is code-size-neutral at best). Data registers fill
+  // first (they take moveq/direct-operand forms an address reg cannot); the
+  // address registers A2-A5 extend the pool for register-hungry loops. Filling
+  // D2-D7 first keeps functions with <=6 candidates byte-identical to before.
+  static const int seq[] = {2, 3, 4, 5, 6, 7, 10, 11, 12, 13};
+  int hi = 0;
+  for (int k = 0; k < (int)(sizeof(seq) / sizeof(seq[0])); k++) {
     int best = -1;
     for (int i = 0; i < ra_ncand; i++) {
       if (ra_cand[i].var->reg || ra_cand[i].loopuses < 1 ||
@@ -1598,8 +1624,9 @@ int ir_plan_regs(Obj *fn) {
     }
     if (best < 0)
       break;
-    ra_cand[best].var->reg = next;
-    hi = next++;
+    ra_cand[best].var->reg = seq[k];
+    if (seq[k] <= 7)
+      hi = seq[k]; // highest data register (address regs tracked via ->reg)
   }
   return hi;
 }
