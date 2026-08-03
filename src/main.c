@@ -31,7 +31,7 @@ bool opt_ffreestanding;
 bool opt_integrated_as;
 int opt_level;
 bool opt_use_ir = true;
-bool opt_regalloc;
+bool opt_regalloc = true;
 bool opt_Werror;
 bool opt_g;
 
@@ -194,8 +194,10 @@ static void parse_args(int argc, char **argv) {
   if (ir_env)
     opt_use_ir = strcmp(ir_env, "0") != 0;
 
-  // OP5: local register allocation (ir68k.c) is OPT-IN (default off). C68K_REGALLOC
-  // (non-zero) or -fregalloc enables it; it engages only inside the IR path.
+  // OP5: local register allocation (ir68k.c) is ON by default at -O2+ (it
+  // engages only inside the IR path). C68K_REGALLOC=0 (or -fno-regalloc below)
+  // forces it off for bisection / a byte-for-byte comparison; any other value
+  // keeps it on.
   char *ra_env = getenv("C68K_REGALLOC");
   if (ra_env)
     opt_regalloc = strcmp(ra_env, "0") != 0;
@@ -401,7 +403,8 @@ static void parse_args(int argc, char **argv) {
     }
 
     // OP5 (Tier E): local register allocation -- promote hot scalar locals into
-    // callee-saved D2-D7. Opt-in (default off); -fno-regalloc forces it off.
+    // callee-saved D2-D7/A2-A5. On by default at -O2+; -fno-regalloc forces it
+    // off, -fregalloc is the explicit opposite.
     if (!strcmp(argv[i], "-fregalloc")) {
       opt_regalloc = true;
       continue;

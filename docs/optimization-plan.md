@@ -364,12 +364,14 @@ single-pass `-O2` code.
 **Objective:** keep hot locals in `D2–D7` **and** `A2–A5` instead of frame slots — kill
 the memory round-trips. *(Catalog #11 — impact XL.)*
 
-**Status: v1 landed behind an opt-in gate; the `-O2` flip is deferred** (needs on-target lockstep +
-self-host, exactly like the OP4 rollout). Default `-O0…-O3` output is **byte-identical** with the gate
-off — verified across the corpus (39/39 files `-O2` == `-fno-regalloc`).
+**Status: landed, ON by default at `-O2`+ (2026-08-03).** The `-O2` flip mirrors the OP4 IR rollout —
+on-target lockstep + self-host confirmed byte-identical to the previously-validated `-fregalloc` path.
+Default `-O0`/`-O1`/`-g` output stays **byte-identical** with the legacy compiler (the gate only engages
+in the IR path); `-fno-regalloc` reproduces the pre-flip `-O2` codegen exactly.
 
-**Gate:** `-fregalloc` / `C68K_REGALLOC=1` enables it (default **off**); `-fno-regalloc` /
-`C68K_REGALLOC=0` forces off. Engages only inside the IR path (`-O2`+, no `-g`).
+**Gate:** ON by default at `-O2`+ (IR path, no `-g`). `-fno-regalloc` / `C68K_REGALLOC=0` forces it
+off; `-fregalloc` / `C68K_REGALLOC=1` is the explicit opposite (any other `C68K_REGALLOC` value keeps
+it on).
 
 - [x] **Whole-function promotion.** Address-not-taken scalar `int`/pointer locals & params (size 4) are
       promoted to callee-saved `D2–D7`, prioritised by use count and **gated on a loop use** (register
@@ -384,7 +386,7 @@ off — verified across the corpus (39/39 files `-O2` == `-fno-regalloc`).
       makes every such `x` address-taken (unpromotable) and adds a pointer temp. The IR builder folds
       `*tmp` back to `x` and drops the dead `tmp = &x`, so loop accumulators/counters promote. Guarded
       by an escape check (a `tmp` used anywhere but its idiom disqualifies the fold).
-- [x] Measure + gate: `opt-check` rules `regalloc-loopvar` / `regalloc-off-def`; `sum_loop` −13 insns,
+- [x] Measure + gate: `opt-check` rules `regalloc-on-def` / `regalloc-off-flag`; `sum_loop` −13 insns,
       leaf functions unchanged. Correctness hand-verified across for/while/do-while/nested loops, loops
       with calls, and pointer promotion (all runtime helpers — `__mulsi3`, `_fpadd…`, `memcpy` — preserve
       `D2–D7`, so promoted values survive calls).
@@ -409,14 +411,20 @@ prologue/epilogue `MOVEM` mask to cover `D2–D3` when the body clobbers them �
 so default output stays byte-identical. Validated: **full lockstep 26/26 on both OSes** and **self-host
 stage3 14/14 byte-identical** (`stage2 == stage3`) with a regalloc-built `CC.PRG`.
 
-**Deferred (follow-ups):** the `-O2` **flip** (on-target lockstep + self-host byte-identity); per-block
-**liveness + linear-scan** with spilling (this v1 is a use-count heuristic, not interval allocation) —
-folded into OP7's whole-function allocator. Caller-saved spill discipline is moot here: promoted values
-live in callee-saved registers and so survive `jsr` by ABI.
+**`-O2` flip (2026-08-03).** One-line default change (`opt_regalloc = true`, mirroring the OP4
+`opt_use_ir` flip); `C68K_REGALLOC` is now a toggle (`=0` off, anything else on). The shipped `CC.PRG`
+grew **+4 bytes** (the `opt_regalloc` initializer moved `.bss`→`.data`) and is otherwise byte-identical
+to the explicit `-fregalloc` build (whole compiler + libc, same sha). Verified: default `-O2` == old
+`-fregalloc -O2` (corpus diff 0) and default `CC.PRG` == `-fregalloc CC.PRG`; `-O1`/`-O0`/`-g`
+unaffected; **stage3 14/14 byte-identical** and **lockstep 26/26** at the flipped default.
+
+**Deferred (follow-ups):** per-block **liveness + linear-scan** with spilling (this v1 is a use-count
+heuristic, not interval allocation) — folded into OP7's whole-function allocator. Caller-saved spill
+discipline is moot here: promoted values live in callee-saved registers and so survive `jsr` by ABI.
 
 **Exit (MO4):** the §10.1 `sum_loop` round-trips become register ops; lockstep green at `-O2` **(done,
-26/26)**; self-host at `-O2` **(done under regalloc, 14/14 byte-identical)** — the default `-O2` **flip**
-remains deferred (opt-in behind the gate).
+26/26)**; self-host at `-O2` **(done, 14/14 byte-identical)**; the default `-O2` **flip** is **DONE** —
+regalloc ships ON at `-O2`+, `-fno-regalloc` opts out.
 **Risk:** medium — spill correctness + the caller/callee-saved boundary; the µ-suite + lockstep + the
 setjmp/VLA cases (invariant #4) gate the flip.
 **Depends on:** OP4.

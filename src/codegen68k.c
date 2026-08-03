@@ -1709,10 +1709,11 @@ static void emit_data(Obj *prog) {
   }
 }
 
-// Under -fregalloc a caller may keep a live value in a callee-saved data
-// register (D2..D7) across a call, so any function that clobbers such a
-// register must save/restore it. Register PROMOTION (ir_plan_regs) already
-// covers the D2..hireg it assigns; but the single-pass 64-bit `long long` ABI
+// When register allocation is on (default at -O2+, or -fregalloc), a caller may
+// keep a live value in a callee-saved data register (D2..D7) across a call, so
+// any function that clobbers such a register must save/restore it. Register
+// PROMOTION (ir_plan_regs) already covers the D2..hireg it assigns; but the
+// single-pass 64-bit `long long` ABI
 // (gen_int64_binop puts operand `b` in D2:D3, and the shift count in D2) and
 // bitfield stores (read-modify-write scratch in D2/D3) also clobber D2/D3
 // without going through promotion. Such functions are always IR-INELIGIBLE
@@ -1785,19 +1786,20 @@ static void emit_text(Obj *prog) {
     // OP5 (opt_regalloc): promote hot scalar locals/params into callee-saved
     // D2..D<hireg>; save them with movem and load promoted params from their
     // frame slots. Only for IR-handled functions (single-pass never promotes,
-    // and ir_plan_regs returns 0 unless opt_regalloc), so the default is
-    // byte-identical. Callee-saved regs survive calls, so no spill is needed.
+    // and ir_plan_regs returns 0 unless opt_regalloc), so -O0/-O1/-g and
+    // -fno-regalloc stay byte-identical. Callee-saved regs survive calls, so
+    // no spill is needed.
     bool use_ir = opt_use_ir && opt_level >= 2 && !opt_g && ir_body_eligible(fn);
     int hireg = use_ir ? ir_plan_regs(fn) : 0;
 
     // Registers the prologue must movem-save. Promotion assigns data regs
-    // D2..hireg (and address regs A2-A5 as overflow); on top of that, under
-    // -fregalloc a function that clobbers D2/D3 via the single-pass 64-bit ABI
+    // D2..hireg (and address regs A2-A5 as overflow); on top of that, with
+    // regalloc on a function that clobbers D2/D3 via the single-pass 64-bit ABI
     // or a bitfield store must save them too (its caller may keep a promoted
-    // value there across the call). Gated on opt_regalloc so the default output
-    // stays byte-identical (without it no caller keeps a live value across a
-    // call). Address-reg promotion follows D2-D7, so recover the highest A-reg
-    // by scanning the promoted vars.
+    // value there across the call). Gated on opt_regalloc so -fno-regalloc
+    // output stays byte-identical (without it no caller keeps a live value
+    // across a call). Address-reg promotion follows D2-D7, so recover the
+    // highest A-reg by scanning the promoted vars.
     int dhi = hireg;
     if (opt_regalloc && dhi < 3 && node_clobbers_d2d3(fn->body))
       dhi = 3;
@@ -1837,7 +1839,7 @@ static void emit_text(Obj *prog) {
     // Function body. At -O2+ the IR back-end (ir68k.c) is the default: route
     // eligible functions through it (AST -> IR -> CFG -> tiling -> emit); the
     // single-pass generator handles everything else. -O0/-O1 (and -g, -fno-ir)
-    // always take the single-pass path; without -fregalloc the IR output is
+    // always take the single-pass path; with -fno-regalloc the IR output is
     // byte-identical to single-pass -O2.
     if (use_ir)
       ir_emit_body(fn);
