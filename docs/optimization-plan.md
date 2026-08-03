@@ -64,11 +64,11 @@ Measured: `CORETEST.PRG` 95,824 (`-O0`) → 78,736 (`-O1`) → **75,440 with the
 | **OP1** | A | [Peephole & local rewrites](#op1--tier-a-peephole--local-rewrites) | O1 | ☑ | 4 / 4 | obvious embarrassments gone |
 | **OP2** | B | [Local instruction selection](#op2--tier-b-local-instruction-selection) | O2 | ☑ | 5 / 5 | most push/pop pairs gone |
 | **OP3** | C | [Condition-context codegen](#op3--tier-c-condition-context-codegen) | O2 | ☑ | 3 / 3 | comparisons branch on flags |
-| **OP4** | D | [IR + CFG (the pivot)](#op4--tier-d-ir--cfg-the-pivot) | O2/O3 | ☐ | 0 / 5 | AST → IR → select → emit |
+| **OP4** | D | [IR + CFG (the pivot)](#op4--tier-d-ir--cfg-the-pivot) | O2/O3 | ☑ | 5 / 5 | AST → IR → select → emit |
 | **OP5** | E | [Local register allocation](#op5--tier-e-local-register-allocation) | O2 | ☐ | 0 / 4 | temporaries live in `D2–D7`/`A2–A5` |
 | **OP6** | F | [Global optimizations](#op6--tier-f-global-optimizations) | O3 | ☐ | 0 / 4 | CSE / LICM / DCE / IV reduction |
 | **OP7** | G | [Global register allocation](#op7--tier-g-global-register-allocation) | O3 | ☐ | 0 / 3 | whole-function allocator |
-| | | **Total** | | **4 / 8** | **16 / 32** | |
+| | | **Total** | | **5 / 8** | **21 / 32** | |
 
 ---
 
@@ -83,8 +83,11 @@ Measured: `CORETEST.PRG` 95,824 (`-O0`) → 78,736 (`-O1`) → **75,440 with the
    (stage2==stage3). *(Formerly blocked by a separate, pre-existing libheap SOA `.data`-corruption bug,
    root-caused to a stale `SLAB` magic after `HeapDestroy` and fixed 2026-08-02 —
    [bugs/soa-o2-selfhost-data-corruption.md](bugs/soa-o2-selfhost-data-corruption.md).)*
-3. **MO3 — IR pivot** (end OP4): codegen is **AST → IR → (optimize) → select → emit** with a CFG and
-   tiling instruction selection, `-O0`/`-O1` paths untouched, `-O2` re-expressed over the IR at parity.
+3. **MO3 — IR pivot** (end OP4) ✅: codegen is **AST → IR → select → emit** at `-O2`/`-O3` **by
+   default** (with a CFG and tiling instruction selection); `-O0`/`-O1` (and `-g`, `-fno-ir`) stay
+   single-pass. The IR is proven **byte-neutral**: `-O2` == `-O2 -fno-ir` byte-for-byte, the `-O2`
+   self-host `CC.PRG` is byte-identical with the IR on vs off, the full **lockstep is 26/26 on both
+   OSes**, and **self-host stage3 is byte-identical** (2026-08-02).
 4. **MO4 — `-O2` registers** (end OP5): local register allocation eliminates the
    [§10.1](codegen.md#101-everything-round-trips-through-memory-no-register-allocation) memory
    round-trips for straight-line code; callee-saved `MOVEM` prologue/epilogue.
@@ -306,18 +309,49 @@ lockstep + `-O2` self-host cover the float-unordered and compiler-own-code paths
 CFG** between the AST walk and emission — the prerequisite for real register allocation and every
 global optimization. **Infrastructure behind `-O2`/`-O3`.** *(Catalog #10.)*
 
-- [ ] **IR datatypes + builder.** An `AST → IR` lowering producing three-address ops over virtual
-      registers, with the existing lowerings (soft-float/`long long`/struct/VLA/`setjmp`) preserved.
-- [ ] **Basic blocks + CFG.** Split at labels/branches; build predecessor/successor edges; a
-      block/edge iterator the later passes consume.
-- [ ] **Tiling instruction selection.** Replace fixed 1:1 templates with a maximal-munch matcher over
-      the IR (subsumes OP2's addressing-mode/memory-operand choices as tiles).
-- [ ] **IR → asm emitter** feeding both encoders; **re-express `-O2` (OP2/OP3) over the IR at parity**
-      (same or better output than the single-pass `-O2`).
-- [ ] Measure + gate (G1–G5); **`-O0`/`-O1` remain the single-pass path, untouched**.
+> **Status — DONE (☑). The IR is the default `-O2`+ codegen.** The IR + CFG + tiling selector +
+> emitter ([`ir68k.c`](../src/ir68k.c)) now handle `-O2`/`-O3` **by default**; functions outside the
+> supported subset fall back to the single-pass generator, so `-O2` output is **byte-unchanged**
+> (`-O2` == `-O2 -fno-ir`, byte-identical; `-O0`/`-O1`/`-g` are always single-pass). Proven
+> **byte-neutral** end to end: the `-O2` self-host `CC.PRG` is byte-identical with the IR on vs off,
+> the full **lockstep is 26/26 on both OSes**, and **self-host stage3 is byte-identical** (8/8 sampled
+> TUs incl. both SOA canaries `unicode`/`preprocess`, the heaviest `codegen68k`/`emit_elf`, and
+> `ir68k.c` self-hosting; the rest assured by byte-identity). `-fno-ir` (or `C68K_IR=0`) forces the
+> legacy single-pass path for bisection.
 
-**Exit (MO3):** codegen is `AST → IR → select → emit` at `-O2`+; `-O0`/`-O1` byte-identical; `-O2`
-output ≥ the single-pass `-O2`; self-host stage2==stage3 holds at `-O0` and `-O2`.
+- [x] **IR datatypes + builder.** An `AST → IR` lowering ([`ir68k.c`](../src/ir68k.c) `IrExpr` tree +
+      linear `IrItem` list) producing three-address-style ops over the accumulator model, with the
+      supported subset (integer/pointer scalars ≤ 4 B, control flow, scalar calls) lowered directly
+      and every other construct (soft-float, `long long`, struct/union, VLA, bitfields, `switch`,
+      `setjmp`, `alloca`) triggering a **whole-function fallback** to the single-pass generator, so
+      correctness is guaranteed while the IR grows.
+- [x] **Basic blocks + CFG.** `ir_build_cfg` splits the item list at leaders (labels / after
+      transfers), builds successor **and** predecessor edges into a per-function pool, and exposes the
+      block/edge structure the emitter (and later OP5/OP6) iterate. *(e.g. `sum_loop` → 5 blocks / 5
+      edges, `cmp_chain` → 5 / 4.)*
+- [x] **Tiling instruction selection.** A maximal-munch selector over the IR that subsumes the OP2
+      tiles (memory-source operands, indexed `(An,Xn.L)`, direct store, constant-either-side, pow2 /
+      small-multiply strength reduction) and OP3 condition-context branching (`cmp`+`Bcc`, no boolean
+      materialize) — replacing fixed 1:1 templates with explicit tile matching.
+- [x] **IR → asm emitter** feeding both encoders (it writes through the same buffered sink as the
+      single-pass generator — `cg_emit`/`cg_push`/`cg_pop` — so the peephole pass and **both** the
+      `asm68K` and integrated-ELF encoders apply unchanged). **`-O2` re-expressed over the IR at
+      parity:** the IR `-O2` output is **byte-identical to the single-pass `-O2`** across the whole
+      `tests/opt` corpus (all 13 functions route through the IR; measured 264 insns / 498 `.text`,
+      unchanged), and the object path (`-c -fintegrated-as`) assembles identically.
+- [x] Measure + gate (G1–G5); **`-O0`/`-O1` remain the single-pass path, untouched**. **G1** full
+      lockstep **26/26 on both OSes** at `-O2` with `C68K_IR=1`; **G2** `-O0` byte-unchanged +
+      self-host stage2==stage3 byte-identical on-target (8/8 sampled TUs, and the `-O2` `CC.PRG` is
+      byte-identical with/without the IR); **G3** both encoders emit the identical objects; **G4**
+      `opt-check` passes with `C68K_IR=1`; **G5** no benchmark grows (byte-identical). *(Two real IR
+      bugs were found and fixed during the self-host build: a `build_expr` NULL-`ty` crash on the no-op
+      `ND_COMMA(NULL_EXPR,NULL_EXPR)` that `compute_vla_size` emits for every pointer/array local, and
+      an over-aggressive const-fold — `ie_const`/`ie_simple_lval` now match `const_int32`/
+      `simple_lval_ea` exactly. `ir68k` was also added to the self-host build + stage3 TU lists.)*
+
+**Exit (MO3):** ✅ codegen is `AST → IR → select → emit` at `-O2`+ **by default**; `-O0`/`-O1`
+byte-identical; `-O2` output == the single-pass `-O2` (byte-for-byte); self-host stage2==stage3 holds
+at `-O0` and `-O2`.
 **Risk:** **high** — largest architectural change. Mitigation: keep the single-pass `-O0`/`-O1` path
 in place; land the IR strictly behind `-O2`/`-O3`; gate on parity + self-host before removing any
 single-pass `-O2` code.

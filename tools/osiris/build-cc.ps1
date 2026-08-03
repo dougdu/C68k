@@ -37,7 +37,7 @@ foreach ($f in @($LdScript,$FloatLib,$sysA,$rtA)) { if (-not (Test-Path $f)) { t
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 
 # compat.c is host-only (spawn/open_memstream shims); the native build omits it.
-$tus = @('main','strings','hashmap','unicode','type','tokenize','preprocess','parse','codegen68k','emit_elf')
+$tus = @('main','strings','hashmap','unicode','type','tokenize','preprocess','parse','codegen68k','emit_elf','ir68k')
 # Optimization level (docs/optimization-plan.md): C68K_OPT=<n> builds CC.PRG
 # (compiler TUs + libc) at -O<n> -- the self-host-at-level check.
 $optArgs = if ($env:C68K_OPT) { @("-O$($env:C68K_OPT)") } else { @() }

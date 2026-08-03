@@ -148,6 +148,23 @@ static void pop(char *reg) {
   depth--;
 }
 
+// --- Shared emit sink for the OP4 IR back-end (ir68k.c) ---------------------
+//
+// Thin wrappers that let the IR emitter write through the SAME buffered stream
+// as the single-pass generator, so the peephole pass and both encoders apply to
+// its output unchanged. Only ever called when opt_use_ir && opt_level >= 2, so
+// buffering (println's opt_level>=1 branch) is always active; cg_emit therefore
+// pushes straight into outbuf. cg_push/cg_pop keep the shared eval-stack `depth`
+// in sync so codegen()'s `assert(depth == 0)` still holds after an IR body.
+
+void cg_emit(char *line) { strarray_push(&outbuf, line); }
+void cg_push(void) { push(); }
+void cg_pop(char *reg) { pop(reg); }
+void cg_adjust_depth(int delta) { depth += delta; }
+char *cg_sym(char *name) { return sym(name); }
+char *cg_symref(char *name) { return symref(name); }
+int cg_uid(void) { return count(); }
+
 // push a 64-bit value D0:D1 (D0=high) so the high longword lands at the lower
 // address (big-endian, matching the m68k C ABI for an 8-byte stack argument).
 static void push64(void) {
@@ -1724,7 +1741,14 @@ static void emit_text(Obj *prog) {
       println("  move.l a0,%d(a6)", fn->va_area->offset);
     }
 
-    gen_stmt(fn->body);
+    // Function body. At -O2+ the IR back-end (ir68k.c) is the default: route
+    // eligible functions through it (AST -> IR -> CFG -> tiling -> emit).
+    // ir_emit_body returns false, having emitted nothing, for any function that
+    // uses a construct outside the IR's supported subset, so the proven single-
+    // pass generator still handles it. -O0/-O1 (and -g, and -fno-ir) always take
+    // the single-pass path; the IR output is byte-identical to single-pass -O2.
+    if (!(opt_use_ir && opt_level >= 2 && !opt_g && ir_emit_body(fn)))
+      gen_stmt(fn->body);
     assert(depth == 0);
 
     // main() falling off the end returns 0.

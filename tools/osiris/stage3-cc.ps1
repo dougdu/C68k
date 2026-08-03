@@ -24,7 +24,7 @@
 #>
 [CmdletBinding()]
 param(
-  [string[]]$Tu = @('strings','hashmap','unicode','type','main','tokenize','preprocess','codegen68k','emit_elf','parse','errno','signal','time'),
+  [string[]]$Tu = @('strings','hashmap','unicode','type','main','tokenize','preprocess','codegen68k','emit_elf','ir68k','parse','errno','signal','time'),
   [string]$CcPrg = (Join-Path ([System.IO.Path]::GetTempPath()) 'c68k-cc\CC.PRG'),
   [string]$Cc = (Join-Path ([System.IO.Path]::GetTempPath()) 'c68k-p2\c68k.exe'),
   [string]$Cpu = '68000',
@@ -52,6 +52,7 @@ $TUMAP = [ordered]@{
   'parse'      = @{ f8 = 'PARSE.C';    src = 'src\parse.c';      self = $true  }
   'codegen68k' = @{ f8 = 'CODEGEN.C';  src = 'src\codegen68k.c'; self = $true  }
   'emit_elf'   = @{ f8 = 'EMIT_ELF.C'; src = 'src\emit_elf.c';   self = $true  }
+  'ir68k'      = @{ f8 = 'IR68K.C';    src = 'src\ir68k.c';      self = $true  }
   'errno'      = @{ f8 = 'ERRNO.C';    src = 'libc\core\errno.c';  self = $false }
   'signal'     = @{ f8 = 'SIGNAL.C';   src = 'libc\core\signal.c'; self = $false }
   'time'       = @{ f8 = 'TIME.C';     src = 'libc\core\time.c';   self = $false }

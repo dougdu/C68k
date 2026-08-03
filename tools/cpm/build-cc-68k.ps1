@@ -44,7 +44,7 @@ foreach ($f in @($LdScript,$FloatLib,$sysA,$seamC,$rtA)) { if (-not (Test-Path $
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 
 # compat.c is host-only (spawn/open_memstream shims); the native build omits it.
-$tus = @('main','strings','hashmap','unicode','type','tokenize','preprocess','parse','codegen68k','emit_elf')
+$tus = @('main','strings','hashmap','unicode','type','tokenize','preprocess','parse','codegen68k','emit_elf','ir68k')
 $optArgs = @(); if ($env:C68K_OPT) { $optArgs = @("-O$($env:C68K_OPT)") }
 $objs = @()
 foreach ($n in $tus) {

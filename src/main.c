@@ -30,6 +30,7 @@ bool opt_fpic;
 bool opt_ffreestanding;
 bool opt_integrated_as;
 int opt_level;
+bool opt_use_ir = true;
 bool opt_Werror;
 bool opt_g;
 
@@ -184,6 +185,13 @@ static void parse_args(int argc, char **argv) {
     if (take_arg(argv[i]))
       if (!argv[++i])
         usage(1);
+
+  // OP4: the IR + CFG back-end (ir68k.c) is the DEFAULT -O2+ codegen. Setting
+  // C68K_IR=0 (or -fno-ir below) forces the legacy single-pass path, for
+  // bisection or a byte-for-byte comparison; any other C68K_IR value keeps it on.
+  char *ir_env = getenv("C68K_IR");
+  if (ir_env)
+    opt_use_ir = strcmp(ir_env, "0") != 0;
 
   StringArray idirafter = {};
 
@@ -367,6 +375,21 @@ static void parse_args(int argc, char **argv) {
 
     if (!strcmp(argv[i], "-fno-integrated-as")) {
       opt_integrated_as = false;
+      continue;
+    }
+
+    // OP4 (Tier D): -O2+ codegen routes through the IR + CFG back-end
+    // (ir68k.c) by default; functions it does not yet handle fall back to the
+    // single-pass generator, so -O2 output is unchanged. -fno-ir forces the
+    // single-pass path for the whole module (bisection / comparison); -fir is
+    // the explicit opposite. -O0/-O1 are always single-pass.
+    if (!strcmp(argv[i], "-fir")) {
+      opt_use_ir = true;
+      continue;
+    }
+
+    if (!strcmp(argv[i], "-fno-ir")) {
+      opt_use_ir = false;
       continue;
     }
 

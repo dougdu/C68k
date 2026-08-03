@@ -418,6 +418,30 @@ void add_type(Node *node);
 void codegen(Obj *prog, FILE *out);
 int align_to(int n, int align);
 
+// Shared emit sink + helpers used by the OP4 IR back-end (ir68k.c). Everything
+// routes through the same buffered output as the single-pass generator, so the
+// peephole pass and both encoders (asm68K + the integrated ELF emitter) apply
+// unchanged. These are only ever called when opt_use_ir && opt_level >= 2, where
+// buffering is always on.
+void cg_emit(char *line);   // push one preformatted instruction/label line
+void cg_push(void);         // move.l d0,-(sp) ; eval-stack depth++
+void cg_pop(char *reg);     // move.l (sp)+,reg ; eval-stack depth--
+void cg_adjust_depth(int delta); // adjust eval-stack depth (multi-slot frees)
+char *cg_sym(char *name);   // "_name" (definition spelling)
+char *cg_symref(char *name);// "_name" or "_name##" (self-declaring reference)
+int cg_uid(void);           // module-unique counter (shared with codegen)
+
+//
+// ir68k.c  (OP4 --- Tier D: IR + CFG, behind opt_use_ir at -O2+)
+//
+
+// Lower one function body to the linear IR, build basic blocks + a CFG, tile-
+// select instructions, and emit them through the shared sink. Returns true when
+// the whole body was emitted; false --- having emitted nothing --- when the
+// function uses a construct outside the supported subset, so the caller falls
+// back to the single-pass generator for that function.
+bool ir_emit_body(Obj *fn);
+
 //
 // unicode.c
 //
@@ -464,6 +488,7 @@ extern bool opt_fcommon;
 extern bool opt_ffreestanding;
 extern bool opt_integrated_as;
 extern int opt_level;
+extern bool opt_use_ir;
 extern bool opt_Werror;
 extern bool opt_g;
 extern char *base_file;
