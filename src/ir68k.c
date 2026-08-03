@@ -66,6 +66,7 @@ struct IrExpr {
   bool is_local;      // LEA: frame slot vs global
   bool ptradd;        // BINOP ND_ADD produced by pointer arithmetic
   char *name;         // LEA global name / CALL direct callee
+  Obj *var;           // LEA / MEMZERO source variable (for register promotion)
   int fsize;          // CAST from-size
   bool funs;          // CAST from-unsigned
   IrExpr *a, *b, *c;  // kids
@@ -328,24 +329,59 @@ static bool stmt_ok(Node *node) {
 // Builder: AST -> IR.
 // ---------------------------------------------------------------------------
 
+// OP5 compound-assign fold: chibicc lowers `x op= B` / `x++` to
+// `tmp = &x, *tmp = *tmp op B` with `tmp` a fresh empty-name pointer. When x is
+// a simple promotable local, folding the idiom (substitute `*tmp` -> x, drop the
+// `tmp = &x` init) frees x from the forced `&x` so it can live in a register.
+// ir_plan_regs (below) populates this map; the builder consumes it.
+static Obj *fa_tmp[256]; // the synthesized `&x` pointer temp
+static Obj *fa_v[256];   // the target local x it aliases
+static Node *fa_init[256]; // the ADDR(&x) node (ignored by the address-taken scan)
+static int fa_n;
+
+// If `n` is a foldable compound-assign temp (`VAR tmp`), the local x it aliases.
+static Obj *foldable_alias(Node *n) {
+  if (!n || n->kind != ND_VAR)
+    return NULL;
+  for (int i = 0; i < fa_n; i++)
+    if (fa_tmp[i] == n->var)
+      return fa_v[i];
+  return NULL;
+}
+
+static bool fa_is_init(Node *addr) {
+  for (int i = 0; i < fa_n; i++)
+    if (fa_init[i] == addr)
+      return true;
+  return false;
+}
+
 static IrExpr *build_expr(Node *node);
+
+// Address of a variable -> IE_LEA (frame slot or global), tagged with the var
+// so register promotion can substitute its register.
+static IrExpr *build_lea(Obj *v) {
+  IrExpr *e = ie_new(IE_LEA);
+  e->var = v;
+  if (v->is_local) {
+    e->is_local = true;
+    e->off = v->offset;
+  } else {
+    e->is_local = false;
+    e->name = v->name;
+  }
+  return e;
+}
 
 // Address-producing lowering (mirrors gen_addr for the supported lvalues).
 static IrExpr *build_addr(Node *node) {
   switch (node->kind) {
-  case ND_VAR: {
-    IrExpr *e = ie_new(IE_LEA);
-    if (node->var->is_local) {
-      e->is_local = true;
-      e->off = node->var->offset;
-    } else {
-      e->is_local = false;
-      e->name = node->var->name;
-    }
-    return e;
+  case ND_VAR:
+    return build_lea(node->var);
+  case ND_DEREF: {
+    Obj *v = foldable_alias(node->lhs); // *tmp (tmp = &x) -> &x
+    return v ? build_lea(v) : build_expr(node->lhs);
   }
-  case ND_DEREF:
-    return build_expr(node->lhs);
   case ND_COMMA: {
     IrExpr *e = ie_new(IE_COMMA);
     e->a = build_expr(node->lhs);
@@ -383,8 +419,9 @@ static IrExpr *build_expr(Node *node) {
         node->ty->kind == TY_STRUCT || node->ty->kind == TY_UNION)
       return build_expr(node->lhs); // aggregate rvalue == its address
     {
+      Obj *v = foldable_alias(node->lhs); // *tmp (tmp = &x) -> x
       IrExpr *e = ie_new(IE_LOAD);
-      e->a = build_expr(node->lhs);
+      e->a = v ? build_lea(v) : build_expr(node->lhs);
       e->size = node->ty->size;
       e->uns = node->ty->is_unsigned;
       return e;
@@ -392,6 +429,10 @@ static IrExpr *build_expr(Node *node) {
   case ND_ADDR:
     return build_addr(node->lhs);
   case ND_ASSIGN: {
+    // The folded compound-assign init `tmp = &x` is dead (we substitute `*tmp`
+    // with x directly), so drop it.
+    if (node->lhs->kind == ND_VAR && foldable_alias(node->lhs))
+      return ie_new(IE_NOP);
     IrExpr *e = ie_new(IE_STORE);
     e->a = build_addr(node->lhs);
     e->b = build_expr(node->rhs);
@@ -462,6 +503,7 @@ static IrExpr *build_expr(Node *node) {
   }
   case ND_MEMZERO: {
     IrExpr *e = ie_new(IE_MEMZERO);
+    e->var = node->var;
     e->off = node->var->offset;
     e->size = node->var->ty->size;
     return e;
@@ -672,6 +714,17 @@ static void ir_build_cfg(void) {
 static void ir_expr(IrExpr *e);
 static void ir_cond(IrExpr *e, char *label, bool when);
 
+// OP5 register promotion (opt_regalloc): a promoted local/param lives in a
+// callee-saved data register (D2-D7) instead of its frame slot.
+static bool var_promoted(Obj *v) { return v && v->reg; }
+
+// If `e` is the address of a promoted local (IE_LEA of a var held in a
+// register), return that register number (2..7); else 0.
+static int lea_reg(IrExpr *e) {
+  return (e->kind == IE_LEA && e->is_local && var_promoted(e->var)) ? e->var->reg
+                                                                    : 0;
+}
+
 // An IE_NUM behind width-preserving (>=4-byte) integer casts -> its 32-bit value.
 static bool ie_const(IrExpr *e, int32_t *out) {
   while (e->kind == IE_CAST && tk_is_integer(e->op) && e->size >= 4)
@@ -690,7 +743,10 @@ static IrExpr *ie_simple_lval(IrExpr *e, char **ea) {
   if (e->kind != IE_LOAD || e->a->kind != IE_LEA)
     return NULL;
   IrExpr *lea = e->a;
-  *ea = lea->is_local ? format("%d(a6)", lea->off) : cg_symref(lea->name);
+  int r = lea_reg(lea);
+  *ea = r          ? format("d%d", r) // promoted: register operand (add.l dN,d0)
+        : lea->is_local ? format("%d(a6)", lea->off)
+                        : cg_symref(lea->name);
   return e;
 }
 
@@ -1041,6 +1097,10 @@ static void ir_call(IrExpr *e) {
 }
 
 static void ir_memzero(IrExpr *e) {
+  if (var_promoted(e->var)) {
+    EMIT("  moveq #0,d%d", e->var->reg); // promoted local: clear the register
+    return;
+  }
   int sz = e->size, off = e->off;
   if (opt_level >= 1 && sz <= 16 && (off & 1) == 0) {
     int p = 0;
@@ -1079,14 +1139,26 @@ static void ir_expr(IrExpr *e) {
       EMIT("  lea %s,a0", cg_symref(e->name));
     EMIT("  move.l a0,d0");
     return;
-  case IE_LOAD:
+  case IE_LOAD: {
+    int r = lea_reg(e->a);
+    if (r) {
+      EMIT("  move.l d%d,d0", r); // promoted local: no memory access
+      return;
+    }
     if (ir_indexed_load(e))
       return;
     ir_expr(e->a);
     EMIT("  movea.l d0,a0");
     emit_load_from_a0(e->size, e->uns);
     return;
+  }
   case IE_STORE: {
+    int r = lea_reg(e->a);
+    if (r) {
+      ir_expr(e->b);
+      EMIT("  move.l d0,d%d", r); // promoted local: no memory access
+      return;
+    }
     // Direct store to a simple lvalue EA (OP2 #5): skip the address push/pop.
     if (e->a->kind == IE_LEA && e->size <= 4) {
       ir_expr(e->b);
@@ -1278,6 +1350,258 @@ static void ir_emit_item(IrItem *it) {
     EMIT("  bra L_return_%s", ir_fn->name);
     return;
   }
+}
+
+// ---------------------------------------------------------------------------
+// OP5: whole-function register promotion of hot scalar locals/params.
+// ---------------------------------------------------------------------------
+
+static Obj *ra_addr[256]; // vars whose address is taken (cannot be a register)
+static int ra_naddr;
+
+static void ra_note_addr(Node *n) { // n = the operand of an ND_ADDR
+  while (n && n->kind == ND_MEMBER)
+    n = n->lhs;
+  if (n && n->kind == ND_VAR && n->var && ra_naddr < 256)
+    ra_addr[ra_naddr++] = n->var;
+}
+
+static bool ra_addr_taken(Obj *v) {
+  for (int i = 0; i < ra_naddr; i++)
+    if (ra_addr[i] == v)
+      return true;
+  return false;
+}
+
+typedef struct {
+  Obj *var;
+  int uses;     // total references
+  int loopuses; // references at loop depth >= 1 (where promotion pays off)
+} RaCand;
+static RaCand ra_cand[256];
+static int ra_ncand;
+static int ra_loopdepth; // current loop nesting during ra_walk
+
+static int ra_cand_index(Obj *v) {
+  for (int i = 0; i < ra_ncand; i++)
+    if (ra_cand[i].var == v)
+      return i;
+  return -1;
+}
+
+// One AST walk: note address-taken vars and count candidate references, giving
+// uses inside loops a separate tally (register residency only pays for its
+// movem/param-load overhead when the accesses repeat).
+static void ra_walk(Node *n) {
+  if (!n)
+    return;
+  // Folded `*tmp` (tmp = &x) counts as a use of x; recursing into the tmp is
+  // pointless (it is folded away).
+  if (n->kind == ND_DEREF) {
+    Obj *v = foldable_alias(n->lhs);
+    if (v) {
+      int i = ra_cand_index(v);
+      if (i >= 0) {
+        ra_cand[i].uses++;
+        if (ra_loopdepth)
+          ra_cand[i].loopuses++;
+      }
+      return;
+    }
+  }
+  if (n->kind == ND_ADDR) {
+    if (fa_is_init(n)) // folded `&x` init: does not make x address-taken
+      return;
+    ra_note_addr(n->lhs);
+  }
+  if (n->kind == ND_VAR) {
+    int i = ra_cand_index(n->var);
+    if (i >= 0) {
+      ra_cand[i].uses++;
+      if (ra_loopdepth)
+        ra_cand[i].loopuses++;
+    }
+  }
+  // A loop's per-iteration parts recurse one nesting level deeper; the for-init
+  // runs once and stays at the current depth.
+  if (n->kind == ND_FOR) {
+    ra_walk(n->init);
+    ra_loopdepth++;
+    ra_walk(n->cond);
+    ra_walk(n->inc);
+    ra_walk(n->then);
+    ra_loopdepth--;
+    return;
+  }
+  if (n->kind == ND_DO) {
+    ra_loopdepth++;
+    ra_walk(n->cond);
+    ra_walk(n->then);
+    ra_loopdepth--;
+    return;
+  }
+  ra_walk(n->lhs);
+  ra_walk(n->rhs);
+  ra_walk(n->cond);
+  ra_walk(n->then);
+  ra_walk(n->els);
+  ra_walk(n->init);
+  ra_walk(n->inc);
+  for (Node *b = n->body; b; b = b->next)
+    ra_walk(b);
+  for (Node *a = n->args; a; a = a->next)
+    ra_walk(a);
+}
+
+// Recognize COMMA(ASSIGN(VAR tmp, [cast] ADDR(VAR x)), _) -> record tmp -> x.
+// chibicc's to_assign wraps the `&x` in a pointer cast, so peel ND_CAST first.
+static void fa_find(Node *n) {
+  if (!n)
+    return;
+  if (n->kind == ND_COMMA && n->lhs && n->lhs->kind == ND_ASSIGN) {
+    Node *as = n->lhs, *addr = as->rhs;
+    while (addr && addr->kind == ND_CAST)
+      addr = addr->lhs;
+    if (as->lhs && as->lhs->kind == ND_VAR && addr && addr->kind == ND_ADDR &&
+        addr->lhs && addr->lhs->kind == ND_VAR) {
+      Obj *tmp = as->lhs->var, *v = addr->lhs->var;
+      if (tmp && tmp->is_local && tmp->name && !tmp->name[0] &&
+          tmp->ty->kind == TY_PTR && v && v->is_local && v->name && v->name[0] &&
+          v->ty->size == 4 && (is_integer(v->ty) || v->ty->kind == TY_PTR) &&
+          fa_n < 256) {
+        fa_tmp[fa_n] = tmp;
+        fa_v[fa_n] = v;
+        fa_init[fa_n] = addr;
+        fa_n++;
+      }
+    }
+  }
+  fa_find(n->lhs);
+  fa_find(n->rhs);
+  fa_find(n->cond);
+  fa_find(n->then);
+  fa_find(n->els);
+  fa_find(n->init);
+  fa_find(n->inc);
+  for (Node *b = n->body; b; b = b->next)
+    fa_find(b);
+  for (Node *a = n->args; a; a = a->next)
+    fa_find(a);
+}
+
+// Safety: a foldable tmp must appear ONLY as its init lhs or inside `*tmp`, so a
+// valid tmp has (total refs) == 1 + (deref refs). Any bare escape disqualifies.
+static int fa_ref[256], fa_deref[256];
+
+static int fa_index(Obj *tmp) {
+  for (int i = 0; i < fa_n; i++)
+    if (fa_tmp[i] == tmp)
+      return i;
+  return -1;
+}
+
+static void fa_count(Node *n) {
+  if (!n)
+    return;
+  if (n->kind == ND_DEREF && n->lhs && n->lhs->kind == ND_VAR) {
+    int i = fa_index(n->lhs->var);
+    if (i >= 0)
+      fa_deref[i]++;
+  }
+  if (n->kind == ND_VAR) {
+    int i = fa_index(n->var);
+    if (i >= 0)
+      fa_ref[i]++;
+  }
+  fa_count(n->lhs);
+  fa_count(n->rhs);
+  fa_count(n->cond);
+  fa_count(n->then);
+  fa_count(n->els);
+  fa_count(n->init);
+  fa_count(n->inc);
+  for (Node *b = n->body; b; b = b->next)
+    fa_count(b);
+  for (Node *a = n->args; a; a = a->next)
+    fa_count(a);
+}
+
+static void ra_add_cand(Obj *v, Obj *fn) {
+  if (ra_ncand >= 256 || v == fn->va_area || v == fn->alloca_bottom)
+    return;
+  // Skip compiler-synthesized temps (empty name) -- notably the `tmp = &x`
+  // pointer chibicc emits for every compound assignment (`x += ...`, `x++`).
+  // The fold above rewrites `*tmp` back to `x` so the underlying `x` becomes the
+  // candidate; the bare pointer temp itself is never worth a register.
+  if (!v->name || !v->name[0])
+    return;
+  Type *t = v->ty;
+  // Only 4-byte int/pointer scalars fit a data register cleanly (v1).
+  if (t->size != 4 || !(is_integer(t) || t->kind == TY_PTR))
+    return;
+  ra_cand[ra_ncand].var = v;
+  ra_cand[ra_ncand].uses = 0;
+  ra_cand[ra_ncand].loopuses = 0;
+  ra_ncand++;
+}
+
+bool ir_body_eligible(Obj *fn) { return stmt_ok(fn->body); }
+
+// Promote the most-used, address-not-taken scalar locals/params into D2-D7
+// (callee-saved, so they survive calls); returns the highest register used
+// (0 = none) so the prologue/epilogue can movem-save exactly D2..that.
+int ir_plan_regs(Obj *fn) {
+  for (Obj *v = fn->params; v; v = v->next)
+    v->reg = 0;
+  for (Obj *v = fn->locals; v; v = v->next)
+    v->reg = 0;
+  fa_n = 0; // reset the fold map -- with regalloc off the builder folds nothing
+  if (!opt_regalloc || fn->uses_returns_twice)
+    return 0;
+
+  // Fold the compound-assign `tmp = &x` idiom (so x can be promoted), then drop
+  // any tmp that escapes its idiom.
+  fa_find(fn->body);
+  for (int i = 0; i < fa_n; i++) {
+    fa_ref[i] = 0;
+    fa_deref[i] = 0;
+  }
+  fa_count(fn->body);
+  for (int i = 0; i < fa_n; i++)
+    if (fa_ref[i] != 1 + fa_deref[i]) {
+      fa_tmp[i] = NULL;
+      fa_init[i] = NULL;
+    }
+
+  ra_naddr = 0;
+  ra_ncand = 0;
+  ra_loopdepth = 0;
+  for (Obj *v = fn->params; v; v = v->next)
+    ra_add_cand(v, fn);
+  for (Obj *v = fn->locals; v; v = v->next)
+    ra_add_cand(v, fn);
+  ra_walk(fn->body);
+
+  // Assign D2,D3,... to the most-used candidates, up to the six data registers.
+  // Require a loop use: register residency only repays its movem/param-load
+  // overhead when the accesses repeat, so straight-line leaf code is left in
+  // frame slots (promoting it there is code-size-neutral at best).
+  int next = 2, hi = 0;
+  while (next <= 7) {
+    int best = -1;
+    for (int i = 0; i < ra_ncand; i++) {
+      if (ra_cand[i].var->reg || ra_cand[i].loopuses < 1 ||
+          ra_addr_taken(ra_cand[i].var))
+        continue;
+      if (best < 0 || ra_cand[i].uses > ra_cand[best].uses)
+        best = i;
+    }
+    if (best < 0)
+      break;
+    ra_cand[best].var->reg = next;
+    hi = next++;
+  }
+  return hi;
 }
 
 // ---------------------------------------------------------------------------

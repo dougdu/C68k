@@ -41,6 +41,10 @@ $rules = @(
   @{ N='sdiv4-no-call';   O=2; C='int f(int x){return x/4;}';                    P='__divsi3';            Neg=$true;  E='pass';    Ph='OP2 #8' }
   # --- OP3 (Tier C) ---
   @{ N='cond-no-scc';     O=2; C='int f(int a,int b){if(a<b)return 1;return 0;}';P='slt d0';              Neg=$true;  E='pass';    Ph='OP3 #9' }
+  # --- OP5 (Tier E): opt-in local register allocation (-fregalloc). A hot loop
+  #     accumulator is promoted to a callee-saved data register (movem-saved). ---
+  @{ N='regalloc-loopvar';O=2; F=@('-fregalloc'); C='int a[9];int f(int n){int s=0;for(int i=0;i<n;i++)s+=a[i];return s;}'; P='movem\.l d2'; Neg=$false; E='pass'; Ph='OP5' }
+  @{ N='regalloc-off-def';O=2; C='int a[9];int f(int n){int s=0;for(int i=0;i<n;i++)s+=a[i];return s;}'; P='movem'; Neg=$true;  E='pass'; Ph='OP5' }
 )
 
 $fail = 0; $landed = 0
@@ -51,7 +55,11 @@ Write-Host ('-' * 52)
 foreach ($r in $rules) {
   $src = Join-Path $work ($r.N.Replace('->','_').Replace(' ','_') + '.c')
   Set-Content -Path $src -Value $r.C
-  $asm = & $Cc -S "-O$($r.O)" $src -o - 2>$null
+  $ccArgs = [System.Collections.Generic.List[string]]::new()
+  $ccArgs.Add('-S'); $ccArgs.Add("-O$($r.O)")
+  if ($r.ContainsKey('F')) { foreach ($f in $r.F) { $ccArgs.Add($f) } }
+  $ccArgs.Add($src); $ccArgs.Add('-o'); $ccArgs.Add('-')
+  $asm = & $Cc $ccArgs.ToArray() 2>$null
   if ($LASTEXITCODE -ne 0) { $asm = ''; }
   $text = ($asm -join "`n")
   $matched = [bool]([regex]::IsMatch($text, $r.P))

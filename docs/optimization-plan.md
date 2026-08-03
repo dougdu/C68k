@@ -65,10 +65,10 @@ Measured: `CORETEST.PRG` 95,824 (`-O0`) → 78,736 (`-O1`) → **75,440 with the
 | **OP2** | B | [Local instruction selection](#op2--tier-b-local-instruction-selection) | O2 | ☑ | 5 / 5 | most push/pop pairs gone |
 | **OP3** | C | [Condition-context codegen](#op3--tier-c-condition-context-codegen) | O2 | ☑ | 3 / 3 | comparisons branch on flags |
 | **OP4** | D | [IR + CFG (the pivot)](#op4--tier-d-ir--cfg-the-pivot) | O2/O3 | ☑ | 5 / 5 | AST → IR → select → emit |
-| **OP5** | E | [Local register allocation](#op5--tier-e-local-register-allocation) | O2 | ☐ | 0 / 4 | temporaries live in `D2–D7`/`A2–A5` |
+| **OP5** | E | [Local register allocation](#op5--tier-e-local-register-allocation) | O2 | ◐ | 4 / 4 | hot locals in `D2–D7` (opt-in `-fregalloc`; `-O2` flip deferred) |
 | **OP6** | F | [Global optimizations](#op6--tier-f-global-optimizations) | O3 | ☐ | 0 / 4 | CSE / LICM / DCE / IV reduction |
 | **OP7** | G | [Global register allocation](#op7--tier-g-global-register-allocation) | O3 | ☐ | 0 / 3 | whole-function allocator |
-| | | **Total** | | **5 / 8** | **21 / 32** | |
+| | | **Total** | | **5 / 8** | **25 / 32** | |
 
 ---
 
@@ -361,22 +361,52 @@ single-pass `-O2` code.
 
 ## OP5 — Tier E: Local register allocation
 
-**Objective:** keep expression temporaries and hot locals in `D2–D7`/`A2–A5` within a basic block —
-kill the memory round-trips. **Lands `-O2`.** *(Catalog #11 — impact XL.)*
+**Objective:** keep hot locals in `D2–D7` (address class `A2–A5` later) instead of frame slots — kill
+the memory round-trips. *(Catalog #11 — impact XL.)*
 
-- [ ] **Per-block liveness** over the IR; **linear-scan/interval allocation** across `D2–D7`/`A2–A5`
-      (data vs address classes), spilling to frame slots only on pressure.
-- [ ] **Callee-saved `MOVEM`.** Prologue `movem.l <used>,-(sp)` / epilogue `movem.l (sp)+,<used>` for
-      exactly the callee-saved registers the allocation used (matches the ABI in
-      [architecture.md §7.2](architecture.md#72-calling-convention--abi)).
-- [ ] **Caller-saved discipline** across calls (`D0/D1/A0/A1` clobbered) — spill/reload live values
-      around `jsr` (the [asm-callee-clobbers](codegen.md) hazard class).
-- [ ] Measure + gate (G1–G5).
+**Status: v1 landed behind an opt-in gate; the `-O2` flip is deferred** (needs on-target lockstep +
+self-host, exactly like the OP4 rollout). Default `-O0…-O3` output is **byte-identical** with the gate
+off — verified across the corpus (39/39 files `-O2` == `-fno-regalloc`).
 
-**Exit (MO4):** the §10.1 `reuse`/`sum_loop` round-trips become register ops; straight-line code holds
-values in registers; lockstep green at `-O2`; self-host at `-O2`.
+**Gate:** `-fregalloc` / `C68K_REGALLOC=1` enables it (default **off**); `-fno-regalloc` /
+`C68K_REGALLOC=0` forces off. Engages only inside the IR path (`-O2`+, no `-g`).
+
+- [x] **Whole-function promotion.** Address-not-taken scalar `int`/pointer locals & params (size 4) are
+      promoted to callee-saved `D2–D7`, prioritised by use count and **gated on a loop use** (register
+      residency only repays its `MOVEM`/param-load overhead when accesses repeat, so straight-line leaf
+      code is left in frame slots — keeps code size neutral). Skips `setjmp`/VLA/aggregate/address-taken
+      (invariant #4).
+- [x] **Callee-saved `MOVEM`.** Prologue `movem.l d2-dN,-(sp)` (+ `move.l off(a6),dN` param loads),
+      epilogue `movem.l (sp)+,d2-dN` for exactly the promoted registers (matches the ABI in
+      [architecture.md §7.2](architecture.md#72-calling-convention--abi)). The `emit_elf.c` integrated
+      assembler grew a `MOVEM` encoder — byte-validated against binutils (`48e7 3800` / `4cdf 001c`).
+- [x] **Compound-assign fold.** chibicc lowers `x += …` / `x++` to `tmp = &x, *tmp = *tmp op …`, which
+      makes every such `x` address-taken (unpromotable) and adds a pointer temp. The IR builder folds
+      `*tmp` back to `x` and drops the dead `tmp = &x`, so loop accumulators/counters promote. Guarded
+      by an escape check (a `tmp` used anywhere but its idiom disqualifies the fold).
+- [x] Measure + gate: `opt-check` rules `regalloc-loopvar` / `regalloc-off-def`; `sum_loop` −13 insns,
+      leaf functions unchanged. Correctness hand-verified across for/while/do-while/nested loops, loops
+      with calls, and pointer promotion (all runtime helpers — `__mulsi3`, `_fpadd…`, `memcpy` — preserve
+      `D2–D7`, so promoted values survive calls).
+
+**Miscompile fixed + on-target validated (2026-08-02).** A latent 64-bit ABI violation surfaced under
+regalloc: functions doing `long long` arithmetic or bitfield stores load operands into `D2:D3` (the
+rt68k 64-bit `b` pair) without a `MOVEM` save, so a caller keeping a promoted value in `D2` across such
+a call had it clobbered. Fixed by a `node_clobbers_d2d3` AST walk in `codegen68k.c` that extends the
+prologue/epilogue `MOVEM` mask to cover `D2–D3` when the body clobbers them — gated on `opt_regalloc`,
+so default output stays byte-identical. Validated: **full lockstep 26/26 on both OSes** and **self-host
+stage3 14/14 byte-identical** (`stage2 == stage3`) with a regalloc-built `CC.PRG`.
+
+**Deferred (follow-ups):** the `-O2` **flip** (on-target lockstep + self-host byte-identity); the `A2–A5`
+address-register class; per-block **liveness + linear-scan** with spilling (this v1 is a use-count
+heuristic, not interval allocation) — folded into OP7's whole-function allocator. Caller-saved spill
+discipline is moot here: promoted values live in callee-saved registers and so survive `jsr` by ABI.
+
+**Exit (MO4):** the §10.1 `sum_loop` round-trips become register ops; lockstep green at `-O2` **(done,
+26/26)**; self-host at `-O2` **(done under regalloc, 14/14 byte-identical)** — the default `-O2` **flip**
+remains deferred (opt-in behind the gate).
 **Risk:** medium — spill correctness + the caller/callee-saved boundary; the µ-suite + lockstep + the
-setjmp/VLA cases (invariant #4) gate it.
+setjmp/VLA cases (invariant #4) gate the flip.
 **Depends on:** OP4.
 
 ---

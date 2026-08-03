@@ -1709,6 +1709,44 @@ static void emit_data(Obj *prog) {
   }
 }
 
+// Under -fregalloc a caller may keep a live value in a callee-saved data
+// register (D2..D7) across a call, so any function that clobbers such a
+// register must save/restore it. Register PROMOTION (ir_plan_regs) already
+// covers the D2..hireg it assigns; but the single-pass 64-bit `long long` ABI
+// (gen_int64_binop puts operand `b` in D2:D3, and the shift count in D2) and
+// bitfield stores (read-modify-write scratch in D2/D3) also clobber D2/D3
+// without going through promotion. Such functions are always IR-INELIGIBLE
+// (expr_ok/ty_ok reject 8-byte scalars and bitfield members), so they are
+// never promoted (hireg == 0) and this never collides with promotion.
+// Walk the AST for those two patterns so the prologue can movem-save D2/D3.
+static bool node_clobbers_d2d3(Node *node) {
+  for (; node; node = node->next) {
+    // 64-bit integer binary op -> gen_int64_binop (operand `b` in D2:D3).
+    if (node->lhs && node->lhs->ty && is_integer(node->lhs->ty) &&
+        node->lhs->ty->size == 8) {
+      switch (node->kind) {
+      case ND_ADD: case ND_SUB: case ND_MUL: case ND_DIV: case ND_MOD:
+      case ND_BITAND: case ND_BITOR: case ND_BITXOR: case ND_SHL: case ND_SHR:
+      case ND_EQ: case ND_NE: case ND_LT: case ND_LE:
+        return true;
+      default:
+        break;
+      }
+    }
+    // Bitfield store -> load-modify-store via D2/D3.
+    if (node->kind == ND_ASSIGN && node->lhs && node->lhs->kind == ND_MEMBER &&
+        node->lhs->member && node->lhs->member->is_bitfield)
+      return true;
+    if (node_clobbers_d2d3(node->lhs) || node_clobbers_d2d3(node->rhs) ||
+        node_clobbers_d2d3(node->cond) || node_clobbers_d2d3(node->then) ||
+        node_clobbers_d2d3(node->els) || node_clobbers_d2d3(node->init) ||
+        node_clobbers_d2d3(node->inc) || node_clobbers_d2d3(node->body) ||
+        node_clobbers_d2d3(node->args))
+      return true;
+  }
+  return false;
+}
+
 static void emit_text(Obj *prog) {
   for (Obj *fn = prog; fn; fn = fn->next) {
     if (!fn->is_function || !fn->is_definition)
@@ -1728,6 +1766,35 @@ static void emit_text(Obj *prog) {
     // Prologue: set up the A6 frame and reserve locals.
     println("  link a6,#%d", -fn->stack_size);
 
+    // OP5 (opt_regalloc): promote hot scalar locals/params into callee-saved
+    // D2..D<hireg>; save them with movem and load promoted params from their
+    // frame slots. Only for IR-handled functions (single-pass never promotes,
+    // and ir_plan_regs returns 0 unless opt_regalloc), so the default is
+    // byte-identical. Callee-saved regs survive calls, so no spill is needed.
+    bool use_ir = opt_use_ir && opt_level >= 2 && !opt_g && ir_body_eligible(fn);
+    int hireg = use_ir ? ir_plan_regs(fn) : 0;
+
+    // Registers the prologue must movem-save. Promotion assigns D2..hireg; on
+    // top of that, under -fregalloc a function that clobbers D2/D3 via the
+    // single-pass 64-bit ABI or a bitfield store must save them too (its caller
+    // may keep a promoted value there across the call). Gated on opt_regalloc
+    // so the default output stays byte-identical (without it no caller keeps a
+    // live value in D2-D7 across a call).
+    int savereg = hireg;
+    if (opt_regalloc && savereg < 3 && node_clobbers_d2d3(fn->body))
+      savereg = 3;
+    if (savereg) {
+      if (savereg == 2)
+        println("  movem.l d2,-(sp)");
+      else
+        println("  movem.l d2-d%d,-(sp)", savereg);
+    }
+    if (hireg) {
+      for (Obj *p = fn->params; p; p = p->next)
+        if (p->reg)
+          println("  move.l %d(a6),d%d", p->offset, p->reg);
+    }
+
     // Variadic: stash a pointer to the first stack vararg in __va_area__ (all
     // args are on the stack; the first vararg sits just past the named params).
     if (fn->va_area) {
@@ -1742,12 +1809,13 @@ static void emit_text(Obj *prog) {
     }
 
     // Function body. At -O2+ the IR back-end (ir68k.c) is the default: route
-    // eligible functions through it (AST -> IR -> CFG -> tiling -> emit).
-    // ir_emit_body returns false, having emitted nothing, for any function that
-    // uses a construct outside the IR's supported subset, so the proven single-
-    // pass generator still handles it. -O0/-O1 (and -g, and -fno-ir) always take
-    // the single-pass path; the IR output is byte-identical to single-pass -O2.
-    if (!(opt_use_ir && opt_level >= 2 && !opt_g && ir_emit_body(fn)))
+    // eligible functions through it (AST -> IR -> CFG -> tiling -> emit); the
+    // single-pass generator handles everything else. -O0/-O1 (and -g, -fno-ir)
+    // always take the single-pass path; without -fregalloc the IR output is
+    // byte-identical to single-pass -O2.
+    if (use_ir)
+      ir_emit_body(fn);
+    else
       gen_stmt(fn->body);
     assert(depth == 0);
 
@@ -1757,6 +1825,12 @@ static void emit_text(Obj *prog) {
 
     // Epilogue.
     println("L_return_%s:", fn->name);
+    if (savereg) {
+      if (savereg == 2)
+        println("  movem.l (sp)+,d2");
+      else
+        println("  movem.l (sp)+,d2-d%d", savereg);
+    }
     println("  unlk a6");
     println("  rts");
     if (opt_g)

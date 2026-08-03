@@ -705,6 +705,52 @@ static void encode_insn(char *mnem, char *o1, char *o2) {
     b16(&text, 0x4e58 | a.reg);
     return;
   }
+
+  // movem.l <list>,-(sp) / movem.l (sp)+,<list>  --  callee-saved save/restore
+  // (OP5 register allocation). One operand is a register list, the other a
+  // memory EA. The register mask is REVERSED for predecrement (-(An)), normal
+  // otherwise; logical bit i = D0..D7 (0..7) / A0..A7 (8..15).
+  if (!strcmp(base, "movem")) {
+    char *listop, *eaop;
+    int dr; // 0 = registers -> memory, 1 = memory -> registers
+    if (strchr(o1, '(')) {
+      eaop = o1;
+      listop = o2;
+      dr = 1;
+    } else {
+      listop = o1;
+      eaop = o2;
+      dr = 0;
+    }
+    int set = 0;
+    for (char *p = listop; *p;) {
+      if (*p == '/' || *p == ' ') {
+        p++;
+        continue;
+      }
+      int lo = (*p == 'a' ? 8 : 0) + (p[1] - '0');
+      p += 2;
+      int hi = lo;
+      if (*p == '-') {
+        p++;
+        hi = (*p == 'a' ? 8 : 0) + (p[1] - '0');
+        p += 2;
+      }
+      for (int i = lo; i <= hi; i++)
+        set |= 1 << i;
+    }
+    EA ea = parse_ea(eaop, sz);
+    int op =
+        0x4880 | (dr << 10) | (sz == 4 ? 0x40 : 0) | (ea.mode << 3) | ea.reg;
+    int mask = 0;
+    for (int i = 0; i < 16; i++)
+      if (set & (1 << i))
+        mask |= 1 << (ea.mode == 4 ? 15 - i : i);
+    b16(&text, op);
+    b16(&text, mask);
+    emit_ext(&ea);
+    return;
+  }
   if (!strcmp(base, "rts")) {
     b16(&text, 0x4e75);
     return;

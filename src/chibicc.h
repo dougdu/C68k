@@ -137,6 +137,7 @@ struct Obj {
 
   // Local variable
   int offset;
+  int reg;       // OP5 register allocation: 0 = frame slot, 2..7 = D2..D7
 
   // Global variable or function
   bool is_function;
@@ -442,6 +443,14 @@ int cg_uid(void);           // module-unique counter (shared with codegen)
 // back to the single-pass generator for that function.
 bool ir_emit_body(Obj *fn);
 
+// OP5: whether a function's body is IR-eligible (the prologue uses this to decide
+// register allocation), and the register-promotion planner -- it assigns hot
+// scalar locals/params to callee-saved D2-D7 (only when opt_regalloc), returning
+// the highest D-register used (0 = none) so the prologue/epilogue can movem-save
+// exactly those.
+bool ir_body_eligible(Obj *fn);
+int ir_plan_regs(Obj *fn);
+
 //
 // unicode.c
 //
@@ -489,6 +498,7 @@ extern bool opt_ffreestanding;
 extern bool opt_integrated_as;
 extern int opt_level;
 extern bool opt_use_ir;
+extern bool opt_regalloc;
 extern bool opt_Werror;
 extern bool opt_g;
 extern char *base_file;
