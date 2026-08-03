@@ -1569,6 +1569,192 @@ static void ra_add_cand(Obj *v, Obj *fn) {
 
 bool ir_body_eligible(Obj *fn) { return stmt_ok(fn->body); }
 
+// ---------------------------------------------------------------------------
+// OP7 (Tier G): global register allocation.  Lands -O3.
+//
+// The OP5 pass below gives every promoted variable its OWN register for the
+// whole function.  OP7 instead computes a live range per candidate and lets
+// candidates whose ranges are DISJOINT share a register, so more variables are
+// promoted under the same D2-D7/A2-A5 budget (e.g. the index variables of two
+// sequential loops need only one register between them).  It subsumes OP5: when
+// every candidate is simultaneously live the coloring reproduces OP5's D2,D3,...
+// assignment exactly, so most functions stay identical.
+//
+// Liveness model = linear-scan intervals.  A pre-order walk numbers program
+// points; a candidate's interval is [first ref, last ref], EXTENDED to span any
+// loop it is referenced in (so a value live across the loop back edge is
+// covered).  Two candidates interfere iff their intervals overlap.  For
+// goto-free structured code this OVER-approximates true liveness (a variable is
+// treated as live across the whole span, holes included), so the interference
+// is conservative and sharing is always sound.  A function containing a goto or
+// a label (which includes chibicc-lowered break/continue) is not structured
+// this way, so ra_plan falls back to the OP5 whole-function assignment there.
+//
+// This is a v1: no live-range splitting and no spilling of temporaries (a
+// candidate that cannot get a color simply stays in its frame slot, exactly as
+// under OP5's overflow).  The value-materialization optimizations OP6 deferred
+// here (CSE materialization, LICM, IV strength reduction) build on this reg
+// budget and are a follow-up.
+// ---------------------------------------------------------------------------
+
+static int ra_time;         // pre-order program-point counter
+static int ra_lo[256];      // per-candidate live interval [lo,hi]; lo>hi = unref
+static int ra_hi[256];
+
+// True if the subtree contains a goto or label -- unstructured control flow that
+// the interval model cannot bound (chibicc lowers break/continue to ND_GOTO too).
+static bool ra_has_goto(Node *n) {
+  if (!n)
+    return false;
+  if (n->kind == ND_GOTO || n->kind == ND_LABEL)
+    return true;
+  if (ra_has_goto(n->lhs) || ra_has_goto(n->rhs) || ra_has_goto(n->cond) ||
+      ra_has_goto(n->then) || ra_has_goto(n->els) || ra_has_goto(n->init) ||
+      ra_has_goto(n->inc))
+    return true;
+  for (Node *b = n->body; b; b = b->next)
+    if (ra_has_goto(b))
+      return true;
+  for (Node *a = n->args; a; a = a->next)
+    if (ra_has_goto(a))
+      return true;
+  return false;
+}
+
+// Record a reference to candidate `v` at the current program point.
+static void ra_live_ref(Obj *v) {
+  int i = ra_cand_index(v);
+  if (i < 0)
+    return;
+  if (ra_lo[i] > ra_hi[i]) {
+    ra_lo[i] = ra_hi[i] = ra_time;
+  } else {
+    if (ra_time < ra_lo[i])
+      ra_lo[i] = ra_time;
+    if (ra_time > ra_hi[i])
+      ra_hi[i] = ra_time;
+  }
+}
+
+// After walking a loop spanning program points [lstart,lend] (inclusive; lend is
+// the time of the loop's last node), extend every candidate referenced inside it
+// to cover the whole loop (cross-iteration liveness): the value may be live from
+// the loop bottom back to the top.
+static void ra_extend_loop(int lstart, int lend) {
+  for (int i = 0; i < ra_ncand; i++) {
+    if (ra_lo[i] > ra_hi[i]) // unreferenced
+      continue;
+    if (ra_hi[i] >= lstart && ra_lo[i] <= lend) { // referenced inside the loop
+      if (lstart < ra_lo[i])
+        ra_lo[i] = lstart;
+      if (lend > ra_hi[i])
+        ra_hi[i] = lend;
+    }
+  }
+}
+
+// Pre-order interval walk, mirroring ra_walk's reference semantics (the folded
+// `*tmp` counts as a use of x; the folded `&x` init is not a reference).
+static void ra_live_walk(Node *n) {
+  if (!n)
+    return;
+  ra_time++;
+  if (n->kind == ND_DEREF) {
+    Obj *v = foldable_alias(n->lhs);
+    if (v) {
+      ra_live_ref(v);
+      return; // the pointer temp is folded away; don't recurse into it
+    }
+  }
+  if (n->kind == ND_ADDR && fa_is_init(n))
+    return; // folded `&x` init: not a reference
+  if (n->kind == ND_VAR)
+    ra_live_ref(n->var);
+  if (n->kind == ND_FOR) {
+    int lstart = ra_time;
+    ra_live_walk(n->init);
+    ra_live_walk(n->cond);
+    ra_live_walk(n->inc);
+    ra_live_walk(n->then);
+    ra_extend_loop(lstart, ra_time);
+    return;
+  }
+  if (n->kind == ND_DO) {
+    int lstart = ra_time;
+    ra_live_walk(n->cond);
+    ra_live_walk(n->then);
+    ra_extend_loop(lstart, ra_time);
+    return;
+  }
+  ra_live_walk(n->lhs);
+  ra_live_walk(n->rhs);
+  ra_live_walk(n->cond);
+  ra_live_walk(n->then);
+  ra_live_walk(n->els);
+  ra_live_walk(n->init);
+  ra_live_walk(n->inc);
+  for (Node *b = n->body; b; b = b->next)
+    ra_live_walk(b);
+  for (Node *a = n->args; a; a = a->next)
+    ra_live_walk(a);
+}
+
+// True if candidates i and j have overlapping (interfering) live intervals.
+static bool ra_interfere(int i, int j) {
+  return !(ra_hi[i] < ra_lo[j] || ra_hi[j] < ra_lo[i]);
+}
+
+// OP7 coloring: interference-aware assignment. Candidates in OP5 priority order
+// (uses desc, declaration order asc) each take the lowest-numbered register not
+// used by an already-colored interfering neighbor. Returns the highest data
+// register assigned (address regs are recovered by the prologue via ->reg).
+static int ra_color_global(Obj *fn) {
+  ra_time = 0;
+  for (int i = 0; i < ra_ncand; i++) {
+    ra_lo[i] = 1; // empty interval (lo > hi)
+    ra_hi[i] = 0;
+  }
+  ra_live_walk(fn->body);
+
+  // Colorable candidates (same gate as OP5: used in a loop, address not taken).
+  int order[256], no = 0;
+  for (int i = 0; i < ra_ncand; i++)
+    if (ra_cand[i].loopuses >= 1 && !ra_addr_taken(ra_cand[i].var))
+      order[no++] = i;
+  // Stable insertion sort by uses descending (ties keep declaration order, so an
+  // all-interfering function reproduces OP5's D2,D3,... assignment exactly).
+  for (int a = 1; a < no; a++) {
+    int cur = order[a], j = a - 1;
+    while (j >= 0 && ra_cand[order[j]].uses < ra_cand[cur].uses) {
+      order[j + 1] = order[j];
+      j--;
+    }
+    order[j + 1] = cur;
+  }
+
+  static const int pool[] = {2, 3, 4, 5, 6, 7, 10, 11, 12, 13};
+  int hi = 0;
+  for (int k = 0; k < no; k++) {
+    int ci = order[k];
+    bool used[14] = {false};
+    for (int m = 0; m < k; m++) {
+      int cj = order[m];
+      if (ra_cand[cj].var->reg && ra_interfere(ci, cj))
+        used[ra_cand[cj].var->reg] = true;
+    }
+    int chosen = 0;
+    for (int p = 0; p < (int)(sizeof(pool) / sizeof(pool[0])); p++)
+      if (!used[pool[p]]) {
+        chosen = pool[p];
+        break;
+      }
+    ra_cand[ci].var->reg = chosen; // 0 = all registers conflict -> stay in memory
+    if (chosen >= 2 && chosen <= 7 && chosen > hi)
+      hi = chosen;
+  }
+  return hi;
+}
+
 // Promote the most-used, address-not-taken scalar locals/params into callee-
 // saved registers (they survive calls): the six data registers D2-D7 first,
 // then the four address registers A2-A5 as overflow. Returns the highest DATA
@@ -1605,6 +1791,16 @@ int ir_plan_regs(Obj *fn) {
   for (Obj *v = fn->locals; v; v = v->next)
     ra_add_cand(v, fn);
   ra_walk(fn->body);
+
+  // OP7 (Tier G, -O3): liveness-based interference coloring lets candidates with
+  // disjoint live ranges SHARE a register, promoting more of them under the same
+  // D2-D7/A2-A5 budget. Only for goto-free functions (structured control flow, so
+  // the interval liveness model is a sound over-approximation); a goto/label (or
+  // a lowered break/continue) falls through to the OP5 whole-function assignment
+  // below, which gives each candidate its own register and is always safe. -O2
+  // never enters here, so its output stays byte-identical.
+  if (opt_level >= 3 && !ra_has_goto(fn->body))
+    return ra_color_global(fn);
 
   // Assign D2,D3,...,D7 then A2,...,A5 to the most-used candidates. Require a
   // loop use: register residency only repays its movem/param-load overhead when

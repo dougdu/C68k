@@ -57,3 +57,24 @@ int constfold(void)   { return 2 * 3 + 4; }          // -> moveq #10,d0
 int dbl(int x)        { return x + x; }              // -> asl.l #1,d0
 int deadbranch(int x) { if (0) return 99; return x; } // then-arm eliminated
 
+// OP7 (Tier G, -O3 only): global register allocation. Ten sequential loops with
+// disjoint index variables plus the accumulator = 11 candidates, one more than
+// the D2-D7/A2-A5 pool. The OP5 local allocator (-O2) gives each its own register
+// and overflows the last index var to memory (movem d2-d7/a2-a5). OP7 (-O3) sees
+// the index ranges are disjoint and shares one register across all ten, so every
+// index is promoted (movem d2-d3).
+int manyloops(int n) {
+  int s = 0;
+  for (int a = 0; a < n; a++) s += a;
+  for (int b = 0; b < n; b++) s += b * 2;
+  for (int c = 0; c < n; c++) s += c * 3;
+  for (int d = 0; d < n; d++) s += d * 5;
+  for (int e = 0; e < n; e++) s += e * 7;
+  for (int f = 0; f < n; f++) s += f * 11;
+  for (int h = 0; h < n; h++) s += h * 13;
+  for (int i = 0; i < n; i++) s += i * 17;
+  for (int j = 0; j < n; j++) s += j * 19;
+  for (int k = 0; k < n; k++) s += k * 23;
+  return s;
+}
+

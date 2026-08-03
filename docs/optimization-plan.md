@@ -67,8 +67,8 @@ Measured: `CORETEST.PRG` 95,824 (`-O0`) → 78,736 (`-O1`) → **75,440 with the
 | **OP4** | D | [IR + CFG (the pivot)](#op4--tier-d-ir--cfg-the-pivot) | O2/O3 | ☑ | 5 / 5 | AST → IR → select → emit |
 | **OP5** | E | [Local register allocation](#op5--tier-e-local-register-allocation) | O2 | ☑ | 5 / 5 | hot locals in `D2–D7`/`A2–A5`; ON by default at `-O2`+ (`-fno-regalloc` opts out) |
 | **OP6** | F | [Global optimizations](#op6--tier-f-global-optimizations) | O3 | ◐ | 2 / 4 | const-prop + fold + DCE at `-O3`; CSE / LICM / IV → OP7 |
-| **OP7** | G | [Global register allocation](#op7--tier-g-global-register-allocation) | O3 | ☐ | 0 / 3 | whole-function allocator |
-| | | **Total** | | **6 / 8** | **28 / 33** | |
+| **OP7** | G | [Global register allocation](#op7--tier-g-global-register-allocation) | O3 | ◐ | 2 / 3 | liveness interference sharing at `-O3`; spill / splitting → v2 |
+| | | **Total** | | **6 / 8** | **30 / 33** | |
 
 ---
 
@@ -93,6 +93,8 @@ Measured: `CORETEST.PRG` 95,824 (`-O0`) → 78,736 (`-O1`) → **75,440 with the
    round-trips for straight-line code; callee-saved `MOVEM` prologue/epilogue.
 5. **MO5 — `-O3` optimizing** (end OP7): CSE/LICM/DCE + a whole-function register allocator — a
    genuinely optimizing compiler; measurable speed + size gains, every test green on both OSes.
+   *(OP6 fold/DCE + OP7 liveness-interference allocator v1 landed 2026-08-03; CSE-materialization /
+   LICM / IV-SR + real spilling are the v2 follow-up.)*
 
 ---
 
@@ -476,15 +478,43 @@ aliasing (operand-dropping identities require a memory-free operand; the IR subs
 **Objective:** a whole-function allocator over the IR, subsuming OP5's local pass. **Lands `-O3`.**
 *(Catalog #14 — impact XL.)*
 
-- [ ] **Whole-function allocation** — graph-coloring or global linear-scan over live ranges spanning
-      blocks, with real **spill heuristics** (spill cost, live-range splitting).
-- [ ] **Integration** with OP6 (allocate after global opts) and the ABI `MOVEM`/caller-saved rules.
-- [ ] Measure + gate (G1–G5); confirm it dominates the OP5 local allocator on the corpus.
+**Status: v1 landed at `-O3` (2026-08-03).** A liveness-based interference allocator runs over the same
+candidate set as OP5 but, instead of giving every promoted variable its own register for the whole
+function, computes a live range per candidate and lets candidates whose ranges are **disjoint share a
+register** — so more variables are promoted under the same `D2–D7`/`A2–A5` budget. It **subsumes OP5**:
+when every candidate is simultaneously live the coloring reproduces OP5's `D2,D3,…` assignment exactly,
+so most functions are unchanged. Gated `opt_level >= 3` (OP5 stays the `-O2` allocator), so
+`-O0`/`-O1`/`-O2` are byte-identical.
 
-**Exit (MO5):** whole-function register allocation; a genuinely optimizing `-O3`; measurable gains,
-all tests green on both OSes; self-host at `-O2`/`-O3`.
-**Risk:** high — allocator complexity + spill correctness. Mitigation: keep OP5's local allocator as
-the fallback/`-O2` path; extensive lockstep + self-host gating.
+- [ ] ◐ **Whole-function allocation — partial.** **Done:** liveness as **linear-scan intervals**
+      (`[first ref, last ref]`, extended to span any loop a candidate is referenced in, so a value live
+      across the loop back edge is covered) + an **interference** test (intervals overlap) + greedy
+      coloring into `D2–D7`/`A2–A5` in OP5 priority order ([ir68k.c](../src/ir68k.c) `ra_color_global`).
+      For goto-free structured code the interval is a sound over-approximation of liveness, so sharing
+      is always safe; a function with a goto/label (chibicc lowers `break`/`continue` to goto) falls
+      back to the OP5 per-variable assignment. **Deferred → v2:** real **spill heuristics** (spill cost,
+      live-range splitting) — a candidate that cannot get a color stays in its frame slot (as under
+      OP5's overflow) rather than spilling a lower-value value; and the value-materialization
+      optimizations OP6 deferred here (CSE materialization, LICM, IV strength reduction) that this
+      register budget enables.
+- [x] **Integration** with OP6 (the allocator runs *after* the global opts, on the folded/DCE'd IR) and
+      the ABI `MOVEM`/caller-saved rules (unchanged — promoted values live in callee-saved registers and
+      survive `jsr`; the `node_clobbers_d2d3` guard still applies).
+- [x] Measure + gate (G1–G5). `manyloops` (ten sequential loops with disjoint indices + accumulator +
+      bound = 12 candidates > the 10-register pool): `-O2` spills two to memory (`movem d2-d7/a2-a5`),
+      `-O3` shares one register across the disjoint indices (`movem d2-d4`) — **13 → 1 frame-memory
+      references**. `bench.c` `-O3` −10 insns / −68 B vs `-O2`. Full lockstep at `-O3` (new self-checking
+      `regalloc` case); self-host at `-O3`.
+
+**Exit (MO5):** whole-function register allocation (**done — liveness-based interference allocator**);
+a genuinely optimizing `-O3`; measurable gains (**`manyloops` 13→1 frame refs; `bench.c` −68 B vs
+`-O2`**); all tests green on both OSes (**lockstep at `-O3`**); self-host at `-O2`/`-O3` (**done**). Real
+spilling / live-range splitting and the CSE/LICM/IV-SR optimizations this budget enables are the v2
+follow-up.
+**Risk:** high — allocator complexity + sharing correctness. Mitigation: OP5's per-variable allocator is
+the always-safe `-O2` path and the fallback for unstructured control flow; the interval model
+over-approximates interference (conservative); gated at `-O3` with the `regalloc` runtime test + full
+lockstep + self-host.
 **Depends on:** OP5, OP6.
 
 ---
@@ -552,3 +582,4 @@ register allocator (OP5/OP7) and the global optimizations (OP6).
 | 2026-07 | Draft 0.1 | **OP3 done (3/3).** Tier C condition-context codegen, gated `opt_level>=2`: `gen_cond` lowers relational/`!`/`&&`/`||` in `if`/`for`/`while`/`do`/`?:` straight to `cmp`+`Bcc` (short-circuit, correct signed/unsigned `Bcc`; float/64-bit fall back to materialize-then-test so the NaN `BVS` guard is preserved). `bench.c` `-O2` **281/558 → 264/498** (−17 insns / −60 B; 54.6 % below `-O0`); `-O1` unchanged (336/658). `cond-no-scc` PENDING→PASS; full lockstep 26/26 both OSes at `-O2`. **MO2's byte-identical `-O2` self-host is blocked by a separate known libheap SOA `.data`-corruption bug** (`stage3 -Tu unicode` fails@3504; OP3 codegen verified correct via byte-identical intermediate asm). Also fixed build-cc.ps1's `C68K_OPT` splat (pwsh 7.6 mid-command array-splat bug). |
 | 2026-08 | Draft 0.1 | **`-O2` self-host UNBLOCKED.** The libheap SOA `.data`-corruption bug that blocked byte-identical `-O2` self-host is **fixed**. Root-caused via a live `sim68k`/`sid68k` capture (an `ILLEGAL`-at-`_start` resumable breakpoint + watchpoints) to `HeapDestroy` freeing a destroyed sub-heap's block **without invalidating its SOA slab `SLAB` magics**, so reused memory was mis-recognized as a stale cross-heap cell (`__HeapSlabFromPtr` false-positive) — the class-24 tile aliased `assemble_to_elf`'s `data.data` block. Fix in [`lib/heap/HeapDestroy.a68`](../lib/heap/HeapDestroy.a68) (clear each slab/arena magic before the block is freed; upstream worm68k `8e75cf50`, re-vendored via [`tools/vendor-sync.ps1`](../tools/vendor-sync.ps1)). **Full `-O2` self-host now 13/13 byte-identical** (stage2==stage3); upstream heap tests 9/9. See [bugs/soa-o2-selfhost-data-corruption.md](bugs/soa-o2-selfhost-data-corruption.md). |
 | 2026-08 | Draft 0.1 | **OP6 v1 done (`-O3`).** Tier F global optimizations over the IR+CFG ([`ir68k.c`](../src/ir68k.c) `ir_optimize`), gated `opt_level>=3` so `-O0`/`-O1`/`-O2` stay byte-identical **by construction** (single gate — `-O2` and `-O3` were previously identical, OP6 makes `-O3` diverge): constant folding+propagation, algebraic identities (incl. `x+x`→`x<<1`, purity-guarded), constant-condition branch folding, DCE (unreachable blocks + trivially-pure evals). CSE-with-materialization / cross-block copy-prop / LICM / IV strength-reduction **deferred → OP7** (they need a register to hold a reused value across blocks). `bench.c` `-O3` **301/506 → 291/478** (−10 insns / −28 B; was `-O3`==`-O2`); `-O0`/`-O1`/`-O2` unchanged. 5 OP6 `opt-check` rules PENDING→PASS (18/18). **Lockstep 26/26 both OSes at `-O3`**; **`-O3` self-host stage3 14/14 byte-identical** (CC.PRG built at `C68K_OPT=3`, OP6 active on the compiler's own source — `ir68k` self-hosts 135156==135156). |
+| 2026-08 | Draft 0.1 | **OP7 v1 done (`-O3`).** Tier G global register allocation ([`ir68k.c`](../src/ir68k.c) `ra_color_global`), gated `opt_level>=3` so `-O0`/`-O1`/`-O2` stay byte-identical (OP5 remains the `-O2` allocator). A liveness-based interference allocator lets candidates with **disjoint live ranges share a register**: linear-scan intervals (loop-extended so a value live across the back edge is covered) + interference (interval overlap) + greedy coloring into `D2–D7`/`A2–A5` in OP5 priority order. **Subsumes OP5** (reproduces its `D2,D3,…` assignment when all candidates interfere) and promotes more under the same budget when they don't. Goto-free structured functions only (`break`/`continue`/`goto` fall back to the OP5 per-variable assignment — always safe). `manyloops` (12 candidates > 10 registers): `-O2` spills two to memory (`movem d2-d7/a2-a5`), `-O3` shares one register across ten disjoint indices (`movem d2-d4`) — **13→1 frame-memory refs**; `bench.c` `-O3` −10 insns / −68 B vs `-O2`. 2 `opt-check` rules; new self-checking `regalloc` lockstep case; **lockstep 27/27 both OSes at `-O3`**; **`-O3` self-host stage3 14/14 byte-identical**. Real spilling / live-range splitting + CSE-materialization / LICM / IV-SR deferred → v2. |

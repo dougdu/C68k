@@ -55,6 +55,14 @@ $rules = @(
   @{ N='xx->shift-o3';    O=3; C='int f(int x){return x+x;}';                    P='asl\.l #1,d0';        Neg=$false; E='pass';    Ph='OP6' }
   @{ N='xx->shift-o2-no'; O=2; C='int f(int x){return x+x;}';                    P='asl\.l #1,d0';        Neg=$true;  E='pass';    Ph='OP6' }
   @{ N='deadbranch-o3';   O=3; C='int f(int x){if(0)return 99;return x;}';       P='moveq #99,d0';        Neg=$true;  E='pass';    Ph='OP6' }
+  # --- OP7 (Tier G): global register allocation, ON at -O3 only. Ten sequential
+  #     loops with disjoint index vars, plus the accumulator s and the bound n
+  #     (both live across every loop) = 12 candidates > the 10-register pool. At
+  #     -O2 the OP5 local allocator gives each its own register and spills two to
+  #     memory (movem d2-d7/a2-a5); at -O3 OP7 shares one register across the ten
+  #     disjoint index ranges, so s->d2, n->d3, all indices->d4 (movem d2-d4). ---
+  @{ N='regshare-o2';     O=2; C='int f(int n){int s=0;for(int a=0;a<n;a++)s+=a;for(int b=0;b<n;b++)s+=b*2;for(int c=0;c<n;c++)s+=c*3;for(int d=0;d<n;d++)s+=d*5;for(int e=0;e<n;e++)s+=e*7;for(int g=0;g<n;g++)s+=g*11;for(int h=0;h<n;h++)s+=h*13;for(int i=0;i<n;i++)s+=i*17;for(int j=0;j<n;j++)s+=j*19;for(int k=0;k<n;k++)s+=k*23;return s;}'; P='movem\.l d2-d7/a2-a5'; Neg=$false; E='pass'; Ph='OP7' }
+  @{ N='regshare-o3';     O=3; C='int f(int n){int s=0;for(int a=0;a<n;a++)s+=a;for(int b=0;b<n;b++)s+=b*2;for(int c=0;c<n;c++)s+=c*3;for(int d=0;d<n;d++)s+=d*5;for(int e=0;e<n;e++)s+=e*7;for(int g=0;g<n;g++)s+=g*11;for(int h=0;h<n;h++)s+=h*13;for(int i=0;i<n;i++)s+=i*17;for(int j=0;j<n;j++)s+=j*19;for(int k=0;k<n;k++)s+=k*23;return s;}'; P='movem\.l d2-d4,-\(sp\)'; Neg=$false; E='pass'; Ph='OP7' }
 )
 
 $fail = 0; $landed = 0
