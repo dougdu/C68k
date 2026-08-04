@@ -1608,16 +1608,17 @@ bool ir_body_eligible(Obj *fn) { return stmt_ok(fn->body); }
 // whatever is live at that point (this covers dead defs), and everything live at
 // function entry interferes pairwise (all promoted params are loaded by the
 // prologue and coexist).  This removes the v1 interval approximation's false
-// conflicts (holes inside [first,last]) and is correct across arbitrary edges --
-// the basis V3 will use to allocate through break/continue.  A store evaluated
-// on only one arm of a ?: / && / || is a MAY-def: it clobbers (interferes) but
-// does not kill liveness.
+// conflicts (holes inside [first,last]) and is correct across arbitrary edges,
+// so V3 allocates through the structured back/forward edges that chibicc's
+// break/continue lower to.  A store evaluated on only one arm of a ?: / && / ||
+// is a MAY-def: it clobbers (interferes) but does not kill liveness.
 //
-// The gate is unchanged from v1: only goto-free functions at -O3 use this; a
-// goto/label (including a lowered break/continue) still falls back to the OP5
-// whole-function assignment below, and -O2 never enters here (so it stays byte-
-// identical).  Still no live-range splitting or spilling -- a candidate that
-// cannot get a color stays in its frame slot, as under OP5 overflow (that is V4).
+// The -O3 gate (V3) admits any function whose only unstructured edges are
+// break/continue (ND_GOTO with no source label); a USER goto or label -- which
+// may be irreducible -- still falls back to the OP5 whole-function assignment
+// below, and -O2 never enters here (so it stays byte-identical).  Still no
+// live-range splitting or spilling -- a candidate that cannot get a color stays
+// in its frame slot, as under OP5 overflow (that is V4).
 // ---------------------------------------------------------------------------
 
 // Candidate liveness/interference sets are bitsets indexed by candidate number
@@ -1658,22 +1659,30 @@ static void ra_conf_add(int i, int j) {
   }
 }
 
-// True if the subtree contains a goto or label -- unstructured control flow that
-// the interval model cannot bound (chibicc lowers break/continue to ND_GOTO too).
-static bool ra_has_goto(Node *n) {
+// True if the subtree contains a USER goto or label -- unstructured, possibly
+// irreducible control flow the allocator stays conservative about.  chibicc
+// lowers break/continue to ND_GOTO as well, but those carry no source label
+// (only unique_label), and the CFG dataflow liveness handles their structured
+// edges exactly, so they are NOT flagged here.  A user `goto` sets node->label
+// (the source name); every ND_LABEL is a user label (switch/case make the
+// function IR-ineligible in stmt_ok, so no synthetic labels reach the IR).
+static bool ra_has_user_jump(Node *n) {
   if (!n)
     return false;
-  if (n->kind == ND_GOTO || n->kind == ND_LABEL)
+  if (n->kind == ND_GOTO && n->label) // user goto (break/continue: label==NULL)
     return true;
-  if (ra_has_goto(n->lhs) || ra_has_goto(n->rhs) || ra_has_goto(n->cond) ||
-      ra_has_goto(n->then) || ra_has_goto(n->els) || ra_has_goto(n->init) ||
-      ra_has_goto(n->inc))
+  if (n->kind == ND_LABEL) // user label
+    return true;
+  if (ra_has_user_jump(n->lhs) || ra_has_user_jump(n->rhs) ||
+      ra_has_user_jump(n->cond) || ra_has_user_jump(n->then) ||
+      ra_has_user_jump(n->els) || ra_has_user_jump(n->init) ||
+      ra_has_user_jump(n->inc))
     return true;
   for (Node *b = n->body; b; b = b->next)
-    if (ra_has_goto(b))
+    if (ra_has_user_jump(b))
       return true;
   for (Node *a = n->args; a; a = a->next)
-    if (ra_has_goto(a))
+    if (ra_has_user_jump(a))
       return true;
   return false;
 }
@@ -1960,11 +1969,13 @@ static int ir_color_regs(Obj *fn) {
 
   // OP7 (Tier G, -O3): CFG dataflow-liveness interference coloring lets
   // candidates with disjoint live ranges SHARE a register, promoting more of
-  // them under the same D2-D7/A2-A5 budget. Only for goto-free functions (a
-  // goto/label -- including a lowered break/continue -- falls through to the OP5
-  // whole-function assignment below, which gives each candidate its own register
-  // and is always safe). -O2 never enters here, so its output stays byte-identical.
-  if (opt_level >= 3 && !ra_has_goto(fn->body))
+  // them under the same D2-D7/A2-A5 budget. V3 admits functions whose only
+  // unstructured edges are break/continue (the CFG liveness handles them
+  // exactly); a user goto/label -- possibly irreducible -- still falls through
+  // to the OP5 whole-function assignment below, which gives each candidate its
+  // own register and is always safe. -O2 never enters here, so its output stays
+  // byte-identical.
+  if (opt_level >= 3 && !ra_has_user_jump(fn->body))
     return ra_color_global(fn);
 
   // Assign D2,D3,...,D7 then A2,...,A5 to the most-used candidates. Require a

@@ -5,8 +5,9 @@
  * loops with disjoint index ranges (OP7's -O3 interference sharing packs their
  * indices into one register), simultaneously-live accumulators (all interfere,
  * so they take distinct registers and overflow to memory), nested loops,
- * pointer loops, and break/continue (chibicc lowers these to goto, so OP7 falls
- * back to the OP5 per-variable assignment -- still correct).  Every result is
+ * pointer loops, and break/continue (chibicc lowers these to goto; V3's CFG
+ * dataflow liveness now allocates through those structured edges).  Every result
+ * is
  * checked against a closed form, so a mis-shared register would corrupt a sum
  * and fail here on real hardware at whatever -O level the harness built.
  * Self-checking: prints "REGALLOC PASS n/n".  Name kept <= 8 chars for CP/M 8.3.
@@ -76,7 +77,9 @@ static int nested(int n) {
   return s;
 }
 
-/* break/continue -> goto -> OP7 falls back to OP5 whole-function assignment. */
+/* break/continue -> goto: V3 allocates through these structured edges (before
+ * V3 they forced the OP5 whole-function fallback). s is live across both the
+ * continue and break edges, so it interferes with i and keeps its own reg. */
 static int withbreak(int n) {
   int s = 0;
   for (int i = 0; i < n; i++) {
@@ -85,6 +88,31 @@ static int withbreak(int n) {
     if (i == 12)
       break;
     s += i;
+  }
+  return s;
+}
+
+/* Two sequential loops that each contain a continue and a break.  Their index
+ * ranges (a, then b) are disjoint, so V3's interference allocator shares ONE
+ * register across them through the break/continue edges, while the accumulator s
+ * -- live across both loops -- keeps a distinct register.  A register mis-shared
+ * across a continue/break edge would corrupt the sum and fail the closed-form
+ * check on real hardware. */
+static int breakshare(int n) {
+  int s = 0;
+  for (int a = 0; a < n; a++) {
+    if (a == 4)
+      continue; /* skip 4 */
+    if (a == 9)
+      break; /* stop before 9 */
+    s += a;
+  }
+  for (int b = 0; b < n; b++) {
+    if (b == 2)
+      continue; /* skip 2 */
+    if (b == 7)
+      break; /* stop before 7 */
+    s += b * 10;
   }
   return s;
 }
@@ -114,6 +142,9 @@ int main(void) {
 
   chk(withbreak(20) == 61, 11);           /* 0..11 minus 5 */
   chk(withbreak(3) == 3, 12);             /* 0+1+2 */
+
+  chk(breakshare(20) == 222, 15);         /* (0+1+2+3+5+6+7+8) + 10*(0+1+3+4+5+6) */
+  chk(breakshare(3) == 13, 16);           /* (0+1+2) + 10*(0+1) */
 
   {
     int arr[8];
