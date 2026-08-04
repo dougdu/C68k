@@ -68,8 +68,8 @@ Measured: `CORETEST.PRG` 95,824 (`-O0`) → 78,736 (`-O1`) → **75,440 with the
 | **OP5** | E | [Local register allocation](#op5--tier-e-local-register-allocation) | O2 | ☑ | 5 / 5 | hot locals in `D2–D7`/`A2–A5`; ON by default at `-O2`+ (`-fno-regalloc` opts out) |
 | **OP6** | F | [Global optimizations](#op6--tier-f-global-optimizations) | O3 | ◐ | 2 / 4 | const-prop + fold + DCE at `-O3`; CSE / LICM / IV → OP7 v2 |
 | **OP7** | G | [Global register allocation](#op7--tier-g-global-register-allocation) | O3 | ◐ | 2 / 3 | liveness interference sharing at `-O3`; spill / splitting → v2 |
-| **OP7 v2** | F·G | [Value materialization & full allocation](#op7-v2--value-materialization--full-allocation) | O3 | ☐ | 0 / 8 | CSE-mat / LICM / IV-SR + real spill / live-range splitting + `break`/`continue` |
-| | | **Total** | | **6 / 8** | **30 / 33 core · 0 / 8 v2** | |
+| **OP7 v2** | F·G | [Value materialization & full allocation](#op7-v2--value-materialization--full-allocation) | O3 | ◐ | 1 / 8 | CSE-mat / LICM / IV-SR + real spill / live-range splitting + `break`/`continue` |
+| | | **Total** | | **6 / 8** | **30 / 33 core · 1 / 8 v2** | |
 
 ---
 
@@ -528,19 +528,25 @@ allocated register across statements/blocks**: the value-materialization optimiz
 live-range splitting, unstructured `break`/`continue`). **Lands `-O3`** and completes **MO5**. *(Catalog
 #12/#13 remainder + #14 — impact L–XL.)*
 
-**Status: ☐ not started (scoped 2026-08-03).** OP7 v1's interference allocator handles source-variable
+**Status: ◐ in progress (scoped 2026-08-03; V1 landed 2026-08-03).** OP7 v1's interference allocator handles source-variable
 candidates with a linear-scan interval approximation and no spilling; the tree IR (D0-accumulator, no
 virtual registers) cannot yet name a computed value to keep it in a register across blocks — so
 CSE-materialization / LICM / IV-SR have nowhere to put the reused value. v2 adds that capability (V1) and
 the exact liveness (V2) the rest build on. Gated `opt_level >= 3`, so `-O0`/`-O1`/`-O2` stay
 **byte-identical** by construction.
 
-- [ ] **V1 — IR value temporaries (the enabler).** A materialized-temp / virtual-register value in the
-      IR ([ir68k.c](../src/ir68k.c)) that names a computed result and pins it in an allocated register
-      across items and blocks, with the tiler + [codegen68k.c](../src/codegen68k.c) emitter reading/writing
-      it as a register operand instead of the `D0`-accumulator round-trip; the temps join
-      `ra_color_global`'s candidate pool. **Prerequisite for V5–V7.** Validate **byte-neutral** (no
-      materialization requested ⇒ output unchanged) before any transform uses it.
+- [x] **V1 — IR value temporaries (the enabler). Done 2026-08-03.** A value temporary (`VTemp`) in the
+      IR ([ir68k.c](../src/ir68k.c)) named by `IE_VDEF`/`IE_VUSE` nodes that pins a computed result in a
+      callee-saved data register across items and blocks; the emitter reads/writes it as a register operand
+      (`move.l d0,dR` / `move.l dR,d0`) instead of the `D0`-accumulator round-trip. `ir_vtemp_new` eager-picks
+      the lowest free `D2`–`D7` not taken by a source var, and the register joins the prologue `movem`
+      save-set (`ir_build_body` returns the high vtemp reg; `emit_text` folds it into `dhi`). IR is now
+      built **before** the prologue (`ir_build_body` / `ir_emit_built` split) so vtemps can be colored
+      into registers the source-var allocator did not use. Byte-neutral by default (no materialization
+      requested ⇒ output unchanged); a `C68K_VTEMP_TEST` self-test wraps pure size-4 returns in a
+      `VDEF`/`VUSE` round-trip to exercise the path. **Validated:** opt-check 20/20, opt-measure identical,
+      **self-host stage3 14/14 byte-identical** (OFF); **lockstep 27/27 on both OSes** with the self-test ON.
+      **Prerequisite for V5–V7.**
 - [ ] **V2 — CFG dataflow liveness.** Replace the linear-scan interval approximation with backward
       live-in/live-out dataflow over the existing CFG, so interference is exact (no false conflicts from
       interval holes) and liveness is correct across arbitrary edges — the basis for V3 and tighter sharing.
@@ -642,4 +648,5 @@ register allocator (OP5/OP7) and the global optimizations (OP6).
 | 2026-08 | Draft 0.1 | **`-O2` self-host UNBLOCKED.** The libheap SOA `.data`-corruption bug that blocked byte-identical `-O2` self-host is **fixed**. Root-caused via a live `sim68k`/`sid68k` capture (an `ILLEGAL`-at-`_start` resumable breakpoint + watchpoints) to `HeapDestroy` freeing a destroyed sub-heap's block **without invalidating its SOA slab `SLAB` magics**, so reused memory was mis-recognized as a stale cross-heap cell (`__HeapSlabFromPtr` false-positive) — the class-24 tile aliased `assemble_to_elf`'s `data.data` block. Fix in [`lib/heap/HeapDestroy.a68`](../lib/heap/HeapDestroy.a68) (clear each slab/arena magic before the block is freed; upstream worm68k `8e75cf50`, re-vendored via [`tools/vendor-sync.ps1`](../tools/vendor-sync.ps1)). **Full `-O2` self-host now 13/13 byte-identical** (stage2==stage3); upstream heap tests 9/9. See [bugs/soa-o2-selfhost-data-corruption.md](bugs/soa-o2-selfhost-data-corruption.md). |
 | 2026-08 | Draft 0.1 | **OP6 v1 done (`-O3`).** Tier F global optimizations over the IR+CFG ([`ir68k.c`](../src/ir68k.c) `ir_optimize`), gated `opt_level>=3` so `-O0`/`-O1`/`-O2` stay byte-identical **by construction** (single gate — `-O2` and `-O3` were previously identical, OP6 makes `-O3` diverge): constant folding+propagation, algebraic identities (incl. `x+x`→`x<<1`, purity-guarded), constant-condition branch folding, DCE (unreachable blocks + trivially-pure evals). CSE-with-materialization / cross-block copy-prop / LICM / IV strength-reduction **deferred → OP7** (they need a register to hold a reused value across blocks). `bench.c` `-O3` **301/506 → 291/478** (−10 insns / −28 B; was `-O3`==`-O2`); `-O0`/`-O1`/`-O2` unchanged. 5 OP6 `opt-check` rules PENDING→PASS (18/18). **Lockstep 26/26 both OSes at `-O3`**; **`-O3` self-host stage3 14/14 byte-identical** (CC.PRG built at `C68K_OPT=3`, OP6 active on the compiler's own source — `ir68k` self-hosts 135156==135156). |
 | 2026-08 | Draft 0.1 | **OP7 v1 done (`-O3`).** Tier G global register allocation ([`ir68k.c`](../src/ir68k.c) `ra_color_global`), gated `opt_level>=3` so `-O0`/`-O1`/`-O2` stay byte-identical (OP5 remains the `-O2` allocator). A liveness-based interference allocator lets candidates with **disjoint live ranges share a register**: linear-scan intervals (loop-extended so a value live across the back edge is covered) + interference (interval overlap) + greedy coloring into `D2–D7`/`A2–A5` in OP5 priority order. **Subsumes OP5** (reproduces its `D2,D3,…` assignment when all candidates interfere) and promotes more under the same budget when they don't. Goto-free structured functions only (`break`/`continue`/`goto` fall back to the OP5 per-variable assignment — always safe). `manyloops` (12 candidates > 10 registers): `-O2` spills two to memory (`movem d2-d7/a2-a5`), `-O3` shares one register across ten disjoint indices (`movem d2-d4`) — **13→1 frame-memory refs**; `bench.c` `-O3` −10 insns / −68 B vs `-O2`. 2 `opt-check` rules; new self-checking `regalloc` lockstep case; **lockstep 27/27 both OSes at `-O3`**; **`-O3` self-host stage3 14/14 byte-identical**. Real spilling / live-range splitting + CSE-materialization / LICM / IV-SR deferred → v2. |
+| 2026-08 | Draft 0.1 | **OP7 v2 · V1 done (`-O3`).** IR value temporaries (`VTemp` / `IE_VDEF` / `IE_VUSE` in [`ir68k.c`](../src/ir68k.c)) pin a computed value in a callee-saved `D2`–`D7` register across items/blocks, emitted as a register operand instead of the `D0`-accumulator round-trip; IR built before the prologue (`ir_build_body`/`ir_emit_built` split) so vtemps color into free registers and join the `movem` save-set. Byte-neutral by default (self-host stage3 14/14 byte-identical; opt-check 20/20); machinery validated with `C68K_VTEMP_TEST` (lockstep 27/27 × 2 OSes). Enabler for V5–V7. |
 | 2026-08 | Draft 0.1 | **OP7 v2 scoped.** The deferred value-materialization + full-allocation follow-up broken into eight tracked tasks — [OP7 v2](#op7-v2--value-materialization--full-allocation) **V1–V8**: V1 IR value temporaries (the register-across-blocks enabler), V2 CFG dataflow liveness, V3 structured `break`/`continue`, V4 spill cost / live-range splitting (completes #14), V5 CSE-materialization + copy-prop (completes #12), V6 LICM, V7 IV strength-reduction (complete #13), V8 equivalence/µ-checks/gates. New **OP7 v2** dashboard row (☐ 0/8); OP6 #12/#13 and OP7 spill deferrals cross-referenced to the tasks. Doc only, no code change. |

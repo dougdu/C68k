@@ -436,12 +436,17 @@ int cg_uid(void);           // module-unique counter (shared with codegen)
 // ir68k.c  (OP4 --- Tier D: IR + CFG, behind opt_use_ir at -O2+)
 //
 
-// Lower one function body to the linear IR, build basic blocks + a CFG, tile-
-// select instructions, and emit them through the shared sink. Returns true when
-// the whole body was emitted; false --- having emitted nothing --- when the
-// function uses a construct outside the supported subset, so the caller falls
-// back to the single-pass generator for that function.
-bool ir_emit_body(Obj *fn);
+// Build one function body's IR (lower + basic blocks + CFG + the -O3 global
+// optimizations) and create any value temporaries (OP7 v2), leaving it ready for
+// ir_emit_built(). Called before the prologue is emitted so a materialized value
+// temporary can be colored and movem-saved; returns the highest DATA register
+// (2..7, else 0) a temporary took. Only called when the body is IR-eligible
+// (ir_body_eligible), so it never needs to signal fallback.
+int ir_build_body(Obj *fn);
+
+// Emit the IR built by the preceding ir_build_body() through the shared sink
+// (block by block in layout order).
+void ir_emit_built(void);
 
 // OP5: whether a function's body is IR-eligible (the prologue uses this to decide
 // register allocation), and the register-promotion planner -- it assigns hot

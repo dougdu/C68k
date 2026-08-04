@@ -13,9 +13,9 @@
 // / C68K_IR env) is set and opt_level >= 2; -O0/-O1 and the default -O2/-O3
 // paths never reach it, so the byte-identical baselines are untouched. Any
 // function that uses a construct outside the supported integer/pointer/control-
-// flow subset makes ir_emit_body() return false --- having emitted nothing ---
-// so codegen68k.c's proven single-pass generator handles it. That whole-
-// function fallback keeps correctness guaranteed while the IR grows.
+// flow subset is rejected by ir_body_eligible() (stmt_ok) before emission, so
+// codegen68k.c's proven single-pass generator handles it. That whole-function
+// fallback keeps correctness guaranteed while the IR grows.
 //
 // Register model: none yet. Like the single-pass generator, the selector uses
 // D0 as the accumulator and spills temporaries to the SP stack (via the shared
@@ -53,7 +53,12 @@ typedef enum {
   IE_CAST,    // integer cast of a (op = target TypeKind) -> D0
   IE_CALL,    // call (name direct, else a = fn-pointer)  -> D0
   IE_MEMZERO, // zero-clear the frame local at `off`, `size` bytes
+  IE_VDEF,    // define value temporary `vt` = eval(a); value also left in D0
+  IE_VUSE,    // read value temporary `vt`                            -> D0
 } IeKind;
+
+typedef struct VTemp VTemp;
+struct VTemp { int reg; }; // OP7 v2 value temporary: a value pinned in a register
 
 typedef struct IrExpr IrExpr;
 struct IrExpr {
@@ -72,6 +77,7 @@ struct IrExpr {
   IrExpr *a, *b, *c;  // kids
   IrExpr **args;      // CALL argument exprs (source order)
   int nargs;
+  VTemp *vt;          // VDEF / VUSE value temporary (OP7 v2)
 };
 
 static IrExpr *ie_new(IeKind k) {
@@ -1275,6 +1281,19 @@ static void ir_expr(IrExpr *e) {
   case IE_MEMZERO:
     ir_memzero(e);
     return;
+  case IE_VDEF:
+    ir_expr(e->a); // value -> D0
+    if (e->vt->reg) {
+      if (reg_is_addr(e->vt->reg))
+        EMIT("  movea.l d0,%s", reg_name(e->vt->reg));
+      else
+        EMIT("  move.l d0,%s", reg_name(e->vt->reg));
+    }
+    return; // the value stays in D0, so a VDEF can also be used inline
+  case IE_VUSE:
+    if (e->vt->reg)
+      EMIT("  move.l %s,d0", reg_name(e->vt->reg));
+    return;
   }
 }
 
@@ -1831,7 +1850,7 @@ int ir_plan_regs(Obj *fn) {
 
 // ---------------------------------------------------------------------------
 // OP6 (Tier F): global optimizations over the IR + CFG.  Lands -O3: everything
-// here is gated on opt_level >= 3 (see ir_emit_body), so -O0/-O1/-O2 never run
+// here is gated on opt_level >= 3 (see ir_build_body), so -O0/-O1/-O2 never run
 // any of it and stay byte-identical to the single-pass baseline.
 //
 // v1 is the catalog-#12 cluster that needs no new value storage and is strictly
@@ -1867,7 +1886,8 @@ static IrExpr *ie_num_new(int32_t v, int size, bool uns) {
 static bool ie_pure(IrExpr *e) {
   if (!e)
     return true;
-  if (e->kind == IE_CALL || e->kind == IE_STORE || e->kind == IE_MEMZERO)
+  if (e->kind == IE_CALL || e->kind == IE_STORE || e->kind == IE_MEMZERO ||
+      e->kind == IE_VDEF)
     return false;
   if (!ie_pure(e->a) || !ie_pure(e->b) || !ie_pure(e->c))
     return false;
@@ -1887,6 +1907,8 @@ static bool ie_trivial(IrExpr *e) {
   case IE_STORE:
   case IE_CALL:
   case IE_MEMZERO:
+  case IE_VDEF:
+  case IE_VUSE:
     return false;
   }
   if (!ie_trivial(e->a) || !ie_trivial(e->b) || !ie_trivial(e->c))
@@ -2150,39 +2172,128 @@ static void ir_optimize(void) {
 }
 
 // ---------------------------------------------------------------------------
+// OP7 v2 (V1): value temporaries.  A value temporary is a computed value pinned
+// in an allocated callee-saved register across IR items/blocks -- the substrate
+// the CSE-materialization / LICM / IV-strength-reduction passes (V5-V7) need to
+// keep a reused value live without a stack round-trip.  It is not a source
+// variable, so it is tracked here rather than in fn->locals, and it is emitted
+// as a register operand by the IE_VDEF/IE_VUSE tiles.
+//
+// v1 allocation is deliberately simple: each temporary takes a DEDICATED data
+// register (a whole-function live range), chosen from D2-D7 avoiding the
+// registers OP5/OP7 already gave to source variables.  Interval-based sharing
+// with source variables (letting a temporary reuse a register a variable is not
+// live across) is V2's job once liveness moves onto the CFG.  No pass creates a
+// temporary yet, so ir_build_body() adds none and the output stays byte-
+// identical; the C68K_VTEMP_TEST self-test creates one per pure return to
+// exercise the path on-target before V5-V7 rely on it.
+// ---------------------------------------------------------------------------
+
+static VTemp *vtemps[64];
+static int nvtemp;
+
+// Give a new value temporary a dedicated D2-D7 register not used by source-
+// variable promotion or an earlier temporary. Returns NULL when all six are
+// taken (the caller then declines to materialize). IR-eligible functions never
+// clobber D2/D3 via the 64-bit/bitfield paths (ty_ok/expr_ok reject them), so
+// every free data register here is safe to keep a value in across a call.
+static VTemp *ir_vtemp_new(void) {
+  if (nvtemp >= 64)
+    return NULL;
+  bool used[8] = {false}; // indexed by data-register number 2..7
+  for (Obj *v = ir_fn->params; v; v = v->next)
+    if (v->reg >= 2 && v->reg <= 7)
+      used[v->reg] = true;
+  for (Obj *v = ir_fn->locals; v; v = v->next)
+    if (v->reg >= 2 && v->reg <= 7)
+      used[v->reg] = true;
+  for (int i = 0; i < nvtemp; i++)
+    if (vtemps[i]->reg >= 2 && vtemps[i]->reg <= 7)
+      used[vtemps[i]->reg] = true;
+  for (int r = 2; r <= 7; r++)
+    if (!used[r]) {
+      VTemp *t = calloc(1, sizeof(VTemp));
+      t->reg = r;
+      vtemps[nvtemp++] = t;
+      return t;
+    }
+  return NULL;
+}
+
+// V1 self-test (gated on C68K_VTEMP_TEST, off by default): wrap every pure size-4
+// return value in a materialize-then-read-back through a value temporary. The
+// value round-trips through a callee-saved register, so it is semantically a
+// no-op, but it exercises the whole vtemp path -- IE_VDEF/IE_VUSE emission,
+// register coloring and the prologue movem-save -- so the machinery can be
+// validated on-target (lockstep / self-host) before V5-V7 rely on it. With the
+// switch unset nothing is created and the output is byte-identical.
+static void ir_materialize_selftest(void) {
+  if (!getenv("C68K_VTEMP_TEST"))
+    return;
+  for (int i = 0; i < nitems; i++) {
+    if (items[i].kind != II_RET || !items[i].e || items[i].e->size != 4 ||
+        !ie_pure(items[i].e))
+      continue;
+    VTemp *t = ir_vtemp_new();
+    if (!t)
+      continue;
+    IrExpr *vd = ie_new(IE_VDEF);
+    vd->vt = t;
+    vd->a = items[i].e;
+    vd->size = 4;
+    IrExpr *vu = ie_new(IE_VUSE);
+    vu->vt = t;
+    vu->size = 4;
+    IrExpr *cm = ie_new(IE_COMMA);
+    cm->a = vd;
+    cm->b = vu;
+    cm->size = 4;
+    items[i].e = cm;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Entry point.
 // ---------------------------------------------------------------------------
 
-bool ir_emit_body(Obj *fn) {
-  bool stats = getenv("C68K_IR_STATS") != NULL;
-
-  if (!stmt_ok(fn->body)) {
-    if (stats)
-      fprintf(stderr, "ir: %-24s fallback\n", fn->name);
-    return false;
-  }
-
+// Build `fn`'s IR (lower + CFG + -O3 global opts), then create and color value
+// temporaries. The built items/blocks stay in the file statics for
+// ir_emit_built(); returning here -- before the prologue is emitted -- lets the
+// caller movem-save any temporary's register. Returns the highest DATA register
+// (2..7, else 0) a temporary took. Only called when the body is IR-eligible.
+int ir_build_body(Obj *fn) {
   nitems = 0;
+  nvtemp = 0;
   ir_fn = fn;
   lower_stmt(fn->body);
   ir_build_cfg();
 
-  // OP6 (-O3): global optimizations over the IR + CFG. Gated here so -O0/-O1/-O2
-  // keep the exact single-pass-parity output; only -O3 diverges.
+  // OP6 (-O3): global optimizations over the IR + CFG. Gated so -O0/-O1/-O2 keep
+  // the exact single-pass-parity output; only -O3 diverges.
   if (opt_level >= 3)
     ir_optimize();
 
-  // Emit block by block in layout order (the CFG's first consumer).
+  ir_materialize_selftest(); // gated on C68K_VTEMP_TEST; no-op otherwise
+
+  int vdhi = 0;
+  for (int i = 0; i < nvtemp; i++)
+    if (vtemps[i]->reg >= 2 && vtemps[i]->reg <= 7 && vtemps[i]->reg > vdhi)
+      vdhi = vtemps[i]->reg;
+  return vdhi;
+}
+
+// Emit the IR built by the preceding ir_build_body(), block by block in layout
+// order (the CFG's first consumer).
+void ir_emit_built(void) {
   for (int b = 0; b < nblocks; b++)
     for (int i = blocks[b].start; i < blocks[b].end; i++)
       ir_emit_item(&items[i]);
 
-  if (stats) {
+  if (getenv("C68K_IR_STATS")) {
     int edges = 0;
     for (int b = 0; b < nblocks; b++)
       edges += blocks[b].nsucc;
-    fprintf(stderr, "ir: %-24s ok  items=%d blocks=%d edges=%d\n", fn->name,
-            nitems, nblocks, edges);
+    fprintf(stderr, "ir: %-24s ok  items=%d blocks=%d edges=%d vtemps=%d\n",
+            ir_fn->name, nitems, nblocks, edges, nvtemp);
   }
-  return true;
 }

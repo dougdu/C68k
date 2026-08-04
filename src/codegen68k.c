@@ -1791,6 +1791,12 @@ static void emit_text(Obj *prog) {
     // no spill is needed.
     bool use_ir = opt_use_ir && opt_level >= 2 && !opt_g && ir_body_eligible(fn);
     int hireg = use_ir ? ir_plan_regs(fn) : 0;
+    // Build the IR now, before the prologue, so any value temporaries the IR
+    // materializes (ir68k.c OP7 v2 V1) are colored and can be movem-saved here;
+    // ir_emit_built() below emits the already-built body. vdhi is the highest
+    // DATA register a temporary took (0 when none -- the default, so the save
+    // set and the emitted output are unchanged).
+    int vdhi = use_ir ? ir_build_body(fn) : 0;
 
     // Registers the prologue must movem-save. Promotion assigns data regs
     // D2..hireg (and address regs A2-A5 as overflow); on top of that, with
@@ -1803,6 +1809,8 @@ static void emit_text(Obj *prog) {
     int dhi = hireg;
     if (opt_regalloc && dhi < 3 && node_clobbers_d2d3(fn->body))
       dhi = 3;
+    if (vdhi > dhi)
+      dhi = vdhi;
     int ahi = 0;
     if (hireg) {
       for (Obj *v = fn->params; v; v = v->next)
@@ -1842,7 +1850,7 @@ static void emit_text(Obj *prog) {
     // always take the single-pass path; with -fno-regalloc the IR output is
     // byte-identical to single-pass -O2.
     if (use_ir)
-      ir_emit_body(fn);
+      ir_emit_built();
     else
       gen_stmt(fn->body);
     assert(depth == 0);
