@@ -437,10 +437,11 @@ int cg_uid(void);           // module-unique counter (shared with codegen)
 //
 
 // Build one function body's IR (lower + basic blocks + CFG + the -O3 global
-// optimizations) and create any value temporaries (OP7 v2), leaving it ready for
-// ir_emit_built(). Called before the prologue is emitted so a materialized value
-// temporary can be colored and movem-saved; returns the highest DATA register
-// (2..7, else 0) a temporary took. Only called when the body is IR-eligible
+// optimizations), allocate registers over the built CFG (OP7 v2 dataflow
+// liveness) and create/color any value temporaries, leaving it ready for
+// ir_emit_built(). Called before the prologue is emitted so promoted registers
+// and value temporaries can be movem-saved; returns the highest DATA register
+// used (2..7, else 0). Only called when the body is IR-eligible
 // (ir_body_eligible), so it never needs to signal fallback.
 int ir_build_body(Obj *fn);
 
@@ -448,13 +449,9 @@ int ir_build_body(Obj *fn);
 // (block by block in layout order).
 void ir_emit_built(void);
 
-// OP5: whether a function's body is IR-eligible (the prologue uses this to decide
-// register allocation), and the register-promotion planner -- it assigns hot
-// scalar locals/params to callee-saved D2-D7 (only when opt_regalloc), returning
-// the highest D-register used (0 = none) so the prologue/epilogue can movem-save
-// exactly those.
+// Whether a function's body is IR-eligible (the prologue uses this to decide
+// whether to route the function through the IR back-end and its allocator).
 bool ir_body_eligible(Obj *fn);
-int ir_plan_regs(Obj *fn);
 
 //
 // unicode.c

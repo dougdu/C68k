@@ -1712,8 +1712,8 @@ static void emit_data(Obj *prog) {
 // When register allocation is on (default at -O2+, or -fregalloc), a caller may
 // keep a live value in a callee-saved data register (D2..D7) across a call, so
 // any function that clobbers such a register must save/restore it. Register
-// PROMOTION (ir_plan_regs) already covers the D2..hireg it assigns; but the
-// single-pass 64-bit `long long` ABI
+// PROMOTION (ir_build_body's allocator) already covers the D2..dhi it assigns;
+// but the single-pass 64-bit `long long` ABI
 // (gen_int64_binop puts operand `b` in D2:D3, and the shift count in D2) and
 // bitfield stores (read-modify-write scratch in D2/D3) also clobber D2/D3
 // without going through promotion. Such functions are always IR-INELIGIBLE
@@ -1783,36 +1783,29 @@ static void emit_text(Obj *prog) {
     // Prologue: set up the A6 frame and reserve locals.
     println("  link a6,#%d", -fn->stack_size);
 
-    // OP5 (opt_regalloc): promote hot scalar locals/params into callee-saved
-    // D2..D<hireg>; save them with movem and load promoted params from their
-    // frame slots. Only for IR-handled functions (single-pass never promotes,
-    // and ir_plan_regs returns 0 unless opt_regalloc), so -O0/-O1/-g and
-    // -fno-regalloc stay byte-identical. Callee-saved regs survive calls, so
-    // no spill is needed.
+    // OP5+ (opt_regalloc): promote hot scalar locals/params into callee-saved
+    // D2-D7 (then A2-A5). Only for IR-handled functions (single-pass never
+    // promotes, and the allocator promotes nothing unless opt_regalloc), so
+    // -O0/-O1/-g and -fno-regalloc stay byte-identical. Callee-saved regs survive
+    // calls, so no spill is needed.
+    //
+    // ir_build_body lowers the function to IR, builds the CFG, runs the -O3
+    // global opts, then allocates registers over that CFG (OP7 v2 dataflow
+    // liveness) and colors any value temporaries -- setting ->reg on promoted
+    // params/locals before ir_emit_built() reads it. It returns the highest DATA
+    // register used (0 = none, so the save set and output are unchanged).
     bool use_ir = opt_use_ir && opt_level >= 2 && !opt_g && ir_body_eligible(fn);
-    int hireg = use_ir ? ir_plan_regs(fn) : 0;
-    // Build the IR now, before the prologue, so any value temporaries the IR
-    // materializes (ir68k.c OP7 v2 V1) are colored and can be movem-saved here;
-    // ir_emit_built() below emits the already-built body. vdhi is the highest
-    // DATA register a temporary took (0 when none -- the default, so the save
-    // set and the emitted output are unchanged).
-    int vdhi = use_ir ? ir_build_body(fn) : 0;
+    int dhi = use_ir ? ir_build_body(fn) : 0;
 
-    // Registers the prologue must movem-save. Promotion assigns data regs
-    // D2..hireg (and address regs A2-A5 as overflow); on top of that, with
-    // regalloc on a function that clobbers D2/D3 via the single-pass 64-bit ABI
-    // or a bitfield store must save them too (its caller may keep a promoted
-    // value there across the call). Gated on opt_regalloc so -fno-regalloc
-    // output stays byte-identical (without it no caller keeps a live value
-    // across a call). Address-reg promotion follows D2-D7, so recover the
-    // highest A-reg by scanning the promoted vars.
-    int dhi = hireg;
+    // A single-pass function that clobbers D2/D3 (the 64-bit ABI or a bitfield
+    // store) must save them: its caller may keep a promoted value there across
+    // the call. IR-eligible functions never clobber D2/D3, so this only fires on
+    // the single-pass path; gated on opt_regalloc so -fno-regalloc is unchanged.
     if (opt_regalloc && dhi < 3 && node_clobbers_d2d3(fn->body))
       dhi = 3;
-    if (vdhi > dhi)
-      dhi = vdhi;
+    // Address-reg promotion follows D2-D7; recover the highest A-reg used.
     int ahi = 0;
-    if (hireg) {
+    if (use_ir) {
       for (Obj *v = fn->params; v; v = v->next)
         if (v->reg >= 10 && v->reg > ahi)
           ahi = v->reg;
@@ -1823,7 +1816,7 @@ static void emit_text(Obj *prog) {
     char *save_list = movem_reg_list(dhi, ahi);
     if (save_list)
       println("  movem.l %s,-(sp)", save_list);
-    if (hireg) {
+    if (use_ir) {
       for (Obj *p = fn->params; p; p = p->next)
         if (p->reg >= 10)
           println("  movea.l %d(a6),a%d", p->offset, p->reg - 8);

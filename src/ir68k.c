@@ -339,7 +339,7 @@ static bool stmt_ok(Node *node) {
 // `tmp = &x, *tmp = *tmp op B` with `tmp` a fresh empty-name pointer. When x is
 // a simple promotable local, folding the idiom (substitute `*tmp` -> x, drop the
 // `tmp = &x` init) frees x from the forced `&x` so it can live in a register.
-// ir_plan_regs (below) populates this map; the builder consumes it.
+// ir_prep_regs (below) populates this map; the builder consumes it.
 static Obj *fa_tmp[256]; // the synthesized `&x` pointer temp
 static Obj *fa_v[256];   // the target local x it aliases
 static Node *fa_init[256]; // the ADDR(&x) node (ignored by the address-taken scan)
@@ -1592,33 +1592,71 @@ bool ir_body_eligible(Obj *fn) { return stmt_ok(fn->body); }
 // OP7 (Tier G): global register allocation.  Lands -O3.
 //
 // The OP5 pass below gives every promoted variable its OWN register for the
-// whole function.  OP7 instead computes a live range per candidate and lets
+// whole function.  OP7 instead computes each candidate's live range and lets
 // candidates whose ranges are DISJOINT share a register, so more variables are
 // promoted under the same D2-D7/A2-A5 budget (e.g. the index variables of two
 // sequential loops need only one register between them).  It subsumes OP5: when
 // every candidate is simultaneously live the coloring reproduces OP5's D2,D3,...
 // assignment exactly, so most functions stay identical.
 //
-// Liveness model = linear-scan intervals.  A pre-order walk numbers program
-// points; a candidate's interval is [first ref, last ref], EXTENDED to span any
-// loop it is referenced in (so a value live across the loop back edge is
-// covered).  Two candidates interfere iff their intervals overlap.  For
-// goto-free structured code this OVER-approximates true liveness (a variable is
-// treated as live across the whole span, holes included), so the interference
-// is conservative and sharing is always sound.  A function containing a goto or
-// a label (which includes chibicc-lowered break/continue) is not structured
-// this way, so ra_plan falls back to the OP5 whole-function assignment there.
+// Liveness model (v2) = backward live-in/live-out DATAFLOW over the basic-block
+// CFG.  Each block's upward-exposed uses and must-kill defs are read from the IR
+// expressions (a load of a candidate's frame slot is a use, a store a def); then
+// out[b] = U in[s] over successors and in[b] = use[b] U (out[b] - def[b]) are
+// iterated to a fixpoint.  Interference is then exact: walking each block
+// backward over its live set, every def clobbers -- and so interferes with --
+// whatever is live at that point (this covers dead defs), and everything live at
+// function entry interferes pairwise (all promoted params are loaded by the
+// prologue and coexist).  This removes the v1 interval approximation's false
+// conflicts (holes inside [first,last]) and is correct across arbitrary edges --
+// the basis V3 will use to allocate through break/continue.  A store evaluated
+// on only one arm of a ?: / && / || is a MAY-def: it clobbers (interferes) but
+// does not kill liveness.
 //
-// This is a v1: no live-range splitting and no spilling of temporaries (a
-// candidate that cannot get a color simply stays in its frame slot, exactly as
-// under OP5's overflow).  The value-materialization optimizations OP6 deferred
-// here (CSE materialization, LICM, IV strength reduction) build on this reg
-// budget and are a follow-up.
+// The gate is unchanged from v1: only goto-free functions at -O3 use this; a
+// goto/label (including a lowered break/continue) still falls back to the OP5
+// whole-function assignment below, and -O2 never enters here (so it stays byte-
+// identical).  Still no live-range splitting or spilling -- a candidate that
+// cannot get a color stays in its frame slot, as under OP5 overflow (that is V4).
 // ---------------------------------------------------------------------------
 
-static int ra_time;         // pre-order program-point counter
-static int ra_lo[256];      // per-candidate live interval [lo,hi]; lo>hi = unref
-static int ra_hi[256];
+// Candidate liveness/interference sets are bitsets indexed by candidate number
+// (ra_ncand <= 256).
+#define RA_WORDS 8
+typedef uint32_t RaSet[RA_WORDS];
+
+static void ra_set_zero(RaSet s) {
+  for (int i = 0; i < RA_WORDS; i++)
+    s[i] = 0;
+}
+static void ra_set_add(RaSet s, int i) { s[i >> 5] |= 1u << (i & 31); }
+static void ra_set_del(RaSet s, int i) { s[i >> 5] &= ~(1u << (i & 31)); }
+static bool ra_set_has(RaSet s, int i) { return (s[i >> 5] >> (i & 31)) & 1u; }
+static void ra_set_copy(RaSet d, RaSet s) {
+  for (int i = 0; i < RA_WORDS; i++)
+    d[i] = s[i];
+}
+// d |= s; returns true if any bit was newly set.
+static bool ra_set_or(RaSet d, RaSet s) {
+  bool ch = false;
+  for (int i = 0; i < RA_WORDS; i++) {
+    uint32_t n = d[i] | s[i];
+    if (n != d[i]) {
+      d[i] = n;
+      ch = true;
+    }
+  }
+  return ch;
+}
+
+// Interference matrix: ra_conf[i] holds the set of candidates conflicting with i.
+static RaSet ra_conf[256];
+static void ra_conf_add(int i, int j) {
+  if (i != j) {
+    ra_set_add(ra_conf[i], j);
+    ra_set_add(ra_conf[j], i);
+  }
+}
 
 // True if the subtree contains a goto or label -- unstructured control flow that
 // the interval model cannot bound (chibicc lowers break/continue to ND_GOTO too).
@@ -1640,105 +1678,205 @@ static bool ra_has_goto(Node *n) {
   return false;
 }
 
-// Record a reference to candidate `v` at the current program point.
-static void ra_live_ref(Obj *v) {
+// A candidate is colorable under the same gate as OP5: referenced in a loop
+// (register residency repays its overhead) and its address never taken.
+static bool ra_colorable(int i) {
+  return ra_cand[i].loopuses >= 1 && !ra_addr_taken(ra_cand[i].var);
+}
+
+// If `e` is the frame slot (local IE_LEA) of a colorable candidate, return its
+// candidate index, else -1.  Only colorable candidates get registers, so only
+// their loads/stores affect the liveness that matters.
+static int ra_cand_of_lea(IrExpr *e) {
+  if (!e || e->kind != IE_LEA || !e->is_local || !e->var)
+    return -1;
+  int i = ra_cand_index(e->var);
+  return (i >= 0 && ra_colorable(i)) ? i : -1;
+}
+
+static int ra_cand_of_var(Obj *v) {
+  if (!v)
+    return -1;
   int i = ra_cand_index(v);
-  if (i < 0)
-    return;
-  if (ra_lo[i] > ra_hi[i]) {
-    ra_lo[i] = ra_hi[i] = ra_time;
-  } else {
-    if (ra_time < ra_lo[i])
-      ra_lo[i] = ra_time;
-    if (ra_time > ra_hi[i])
-      ra_hi[i] = ra_time;
+  return (i >= 0 && ra_colorable(i)) ? i : -1;
+}
+
+// Def/use events for one IR item, in evaluation order.  kind: 0 use, 1 must-def
+// (an unconditional store -- kills liveness), 2 may-def (a store on only one
+// arm of a ?:/&&/|| -- clobbers the register but does not kill).
+typedef struct {
+  int ci, kind;
+} RaEv;
+static RaEv ra_ev[4096];
+static int ra_nev;
+static void ra_ev_push(int ci, int kind) {
+  if (ci >= 0 && ra_nev < 4096) {
+    ra_ev[ra_nev].ci = ci;
+    ra_ev[ra_nev].kind = kind;
+    ra_nev++;
   }
 }
 
-// After walking a loop spanning program points [lstart,lend] (inclusive; lend is
-// the time of the loop's last node), extend every candidate referenced inside it
-// to cover the whole loop (cross-iteration liveness): the value may be live from
-// the loop bottom back to the top.
-static void ra_extend_loop(int lstart, int lend) {
-  for (int i = 0; i < ra_ncand; i++) {
-    if (ra_lo[i] > ra_hi[i]) // unreferenced
-      continue;
-    if (ra_hi[i] >= lstart && ra_lo[i] <= lend) { // referenced inside the loop
-      if (lstart < ra_lo[i])
-        ra_lo[i] = lstart;
-      if (lend > ra_hi[i])
-        ra_hi[i] = lend;
+// Walk an IR expression in evaluation order, appending def/use events for
+// colorable candidates.  `cond` = the expression is only conditionally evaluated
+// (inside a ?: arm or a short-circuit rhs), so a store here is a may-def.
+static void ra_ev_walk(IrExpr *e, bool cond) {
+  if (!e)
+    return;
+  switch (e->kind) {
+  case IE_LOAD: {
+    int ci = ra_cand_of_lea(e->a);
+    if (ci >= 0)
+      ra_ev_push(ci, 0); // use; the folded lea is not itself a reference
+    else
+      ra_ev_walk(e->a, cond);
+    return;
+  }
+  case IE_STORE: {
+    int ci = ra_cand_of_lea(e->a);
+    if (ci >= 0) {
+      ra_ev_walk(e->b, cond);       // the stored value is evaluated first
+      ra_ev_push(ci, cond ? 2 : 1); // then the def
+    } else {
+      ra_ev_walk(e->a, cond);
+      ra_ev_walk(e->b, cond);
+    }
+    return;
+  }
+  case IE_MEMZERO:
+    ra_ev_push(ra_cand_of_var(e->var), cond ? 2 : 1);
+    return;
+  case IE_COND: // a ? b : c -- the arms are conditionally evaluated
+    ra_ev_walk(e->a, cond);
+    ra_ev_walk(e->b, true);
+    ra_ev_walk(e->c, true);
+    return;
+  case IE_LOGAND:
+  case IE_LOGOR: // the rhs is short-circuited
+    ra_ev_walk(e->a, cond);
+    ra_ev_walk(e->b, true);
+    return;
+  case IE_VDEF: // a value temporary, not a source candidate
+    ra_ev_walk(e->a, cond);
+    return;
+  case IE_VUSE:
+    return;
+  case IE_CALL:
+    if (e->a)
+      ra_ev_walk(e->a, cond);
+    for (int i = 0; i < e->nargs; i++)
+      ra_ev_walk(e->args[i], cond);
+    return;
+  default:
+    ra_ev_walk(e->a, cond);
+    ra_ev_walk(e->b, cond);
+    ra_ev_walk(e->c, cond);
+    return;
+  }
+}
+
+// Compute per-block use/def, solve the backward live-in/out fixpoint over the
+// CFG, then build the interference graph (ra_conf) from it.
+static void ra_liveness(void) {
+  RaSet *use = calloc(nblocks ? nblocks : 1, sizeof(RaSet));
+  RaSet *def = calloc(nblocks ? nblocks : 1, sizeof(RaSet));
+  RaSet *in = calloc(nblocks ? nblocks : 1, sizeof(RaSet));
+  RaSet *out = calloc(nblocks ? nblocks : 1, sizeof(RaSet));
+
+  // use[b] = upward-exposed uses, def[b] = must-kills, computed forward.
+  for (int b = 0; b < nblocks; b++) {
+    RaSet defined;
+    ra_set_zero(defined);
+    for (int i = blocks[b].start; i < blocks[b].end; i++) {
+      ra_nev = 0;
+      ra_ev_walk(items[i].e, false);
+      for (int k = 0; k < ra_nev; k++) {
+        int ci = ra_ev[k].ci;
+        if (ra_ev[k].kind == 0) { // use
+          if (!ra_set_has(defined, ci))
+            ra_set_add(use[b], ci);
+        } else if (ra_ev[k].kind == 1) { // must-def
+          ra_set_add(def[b], ci);
+          ra_set_add(defined, ci);
+        } // may-def: neither exposes a use nor kills
+      }
     }
   }
-}
 
-// Pre-order interval walk, mirroring ra_walk's reference semantics (the folded
-// `*tmp` counts as a use of x; the folded `&x` init is not a reference).
-static void ra_live_walk(Node *n) {
-  if (!n)
-    return;
-  ra_time++;
-  if (n->kind == ND_DEREF) {
-    Obj *v = foldable_alias(n->lhs);
-    if (v) {
-      ra_live_ref(v);
-      return; // the pointer temp is folded away; don't recurse into it
+  // out[b] = U in[succ]; in[b] = use[b] U (out[b] - def[b]); to a fixpoint.
+  bool changed = true;
+  while (changed) {
+    changed = false;
+    for (int b = nblocks - 1; b >= 0; b--) {
+      RaSet o;
+      ra_set_zero(o);
+      for (int s = 0; s < blocks[b].nsucc; s++)
+        ra_set_or(o, in[blocks[b].succ[s]]);
+      ra_set_copy(out[b], o);
+      RaSet ni;
+      ra_set_copy(ni, o);
+      for (int w = 0; w < RA_WORDS; w++)
+        ni[w] &= ~def[b][w];
+      ra_set_or(ni, use[b]);
+      if (ra_set_or(in[b], ni))
+        changed = true;
     }
   }
-  if (n->kind == ND_ADDR && fa_is_init(n))
-    return; // folded `&x` init: not a reference
-  if (n->kind == ND_VAR)
-    ra_live_ref(n->var);
-  if (n->kind == ND_FOR) {
-    int lstart = ra_time;
-    ra_live_walk(n->init);
-    ra_live_walk(n->cond);
-    ra_live_walk(n->inc);
-    ra_live_walk(n->then);
-    ra_extend_loop(lstart, ra_time);
-    return;
+
+  // Interference: per block, walk backward over the live set.  A def clobbers
+  // everything live at that point; a must-def then kills it.
+  for (int i = 0; i < ra_ncand; i++)
+    ra_set_zero(ra_conf[i]);
+  for (int b = 0; b < nblocks; b++) {
+    RaSet live;
+    ra_set_copy(live, out[b]);
+    for (int i = blocks[b].end - 1; i >= blocks[b].start; i--) {
+      ra_nev = 0;
+      ra_ev_walk(items[i].e, false);
+      for (int k = ra_nev - 1; k >= 0; k--) {
+        int ci = ra_ev[k].ci;
+        if (ra_ev[k].kind == 0) { // use -> becomes live
+          ra_set_add(live, ci);
+        } else { // def (must or may) -> clobbers whatever is live now
+          for (int j = 0; j < ra_ncand; j++)
+            if (j != ci && ra_set_has(live, j))
+              ra_conf_add(ci, j);
+          if (ra_ev[k].kind == 1)
+            ra_set_del(live, ci); // must-def kills
+        }
+      }
+    }
   }
-  if (n->kind == ND_DO) {
-    int lstart = ra_time;
-    ra_live_walk(n->cond);
-    ra_live_walk(n->then);
-    ra_extend_loop(lstart, ra_time);
-    return;
-  }
-  ra_live_walk(n->lhs);
-  ra_live_walk(n->rhs);
-  ra_live_walk(n->cond);
-  ra_live_walk(n->then);
-  ra_live_walk(n->els);
-  ra_live_walk(n->init);
-  ra_live_walk(n->inc);
-  for (Node *b = n->body; b; b = b->next)
-    ra_live_walk(b);
-  for (Node *a = n->args; a; a = a->next)
-    ra_live_walk(a);
+  // Everything live at function entry coexists (all promoted params are loaded
+  // by the prologue), so it interferes pairwise.
+  if (nblocks > 0)
+    for (int i = 0; i < ra_ncand; i++)
+      if (ra_set_has(in[0], i))
+        for (int j = i + 1; j < ra_ncand; j++)
+          if (ra_set_has(in[0], j))
+            ra_conf_add(i, j);
+
+  free(use);
+  free(def);
+  free(in);
+  free(out);
 }
 
-// True if candidates i and j have overlapping (interfering) live intervals.
-static bool ra_interfere(int i, int j) {
-  return !(ra_hi[i] < ra_lo[j] || ra_hi[j] < ra_lo[i]);
-}
+// True if candidates i and j are ever simultaneously live (share no register).
+static bool ra_interfere(int i, int j) { return ra_set_has(ra_conf[i], j); }
 
 // OP7 coloring: interference-aware assignment. Candidates in OP5 priority order
 // (uses desc, declaration order asc) each take the lowest-numbered register not
 // used by an already-colored interfering neighbor. Returns the highest data
 // register assigned (address regs are recovered by the prologue via ->reg).
 static int ra_color_global(Obj *fn) {
-  ra_time = 0;
-  for (int i = 0; i < ra_ncand; i++) {
-    ra_lo[i] = 1; // empty interval (lo > hi)
-    ra_hi[i] = 0;
-  }
-  ra_live_walk(fn->body);
+  (void)fn;
+  ra_liveness();
 
   // Colorable candidates (same gate as OP5: used in a loop, address not taken).
   int order[256], no = 0;
   for (int i = 0; i < ra_ncand; i++)
-    if (ra_cand[i].loopuses >= 1 && !ra_addr_taken(ra_cand[i].var))
+    if (ra_colorable(i))
       order[no++] = i;
   // Stable insertion sort by uses descending (ties keep declaration order, so an
   // all-interfering function reproduces OP5's D2,D3,... assignment exactly).
@@ -1774,19 +1912,20 @@ static int ra_color_global(Obj *fn) {
   return hi;
 }
 
-// Promote the most-used, address-not-taken scalar locals/params into callee-
-// saved registers (they survive calls): the six data registers D2-D7 first,
-// then the four address registers A2-A5 as overflow. Returns the highest DATA
-// register used (0 = none) so the prologue/epilogue can movem-save exactly
-// D2..that (address registers are recovered separately by scanning ->reg).
-int ir_plan_regs(Obj *fn) {
+// Register promotion (opt_regalloc): the most-used, address-not-taken scalar
+// locals/params go into callee-saved registers (they survive calls) -- the six
+// data registers D2-D7 first, then A2-A5 as overflow.  ir_prep_regs collects the
+// candidates (and the compound-assign fold map the builder needs) before the IR
+// is lowered; ir_color_regs assigns the registers afterwards, over the built CFG.
+static void ir_prep_regs(Obj *fn) {
   for (Obj *v = fn->params; v; v = v->next)
     v->reg = 0;
   for (Obj *v = fn->locals; v; v = v->next)
     v->reg = 0;
   fa_n = 0; // reset the fold map -- with regalloc off the builder folds nothing
+  ra_ncand = 0;
   if (!opt_regalloc || fn->uses_returns_twice)
-    return 0;
+    return;
 
   // Fold the compound-assign `tmp = &x` idiom (so x can be promoted), then drop
   // any tmp that escapes its idiom.
@@ -1803,21 +1942,28 @@ int ir_plan_regs(Obj *fn) {
     }
 
   ra_naddr = 0;
-  ra_ncand = 0;
   ra_loopdepth = 0;
   for (Obj *v = fn->params; v; v = v->next)
     ra_add_cand(v, fn);
   for (Obj *v = fn->locals; v; v = v->next)
     ra_add_cand(v, fn);
   ra_walk(fn->body);
+}
 
-  // OP7 (Tier G, -O3): liveness-based interference coloring lets candidates with
-  // disjoint live ranges SHARE a register, promoting more of them under the same
-  // D2-D7/A2-A5 budget. Only for goto-free functions (structured control flow, so
-  // the interval liveness model is a sound over-approximation); a goto/label (or
-  // a lowered break/continue) falls through to the OP5 whole-function assignment
-  // below, which gives each candidate its own register and is always safe. -O2
-  // never enters here, so its output stays byte-identical.
+// Color the candidates prepared by ir_prep_regs, now that the IR + CFG (and the
+// -O3 global opts) are built.  Returns the highest DATA register used (0 = none)
+// so the prologue/epilogue can movem-save exactly D2..that (address registers are
+// recovered separately by scanning ->reg).
+static int ir_color_regs(Obj *fn) {
+  if (!opt_regalloc || fn->uses_returns_twice)
+    return 0;
+
+  // OP7 (Tier G, -O3): CFG dataflow-liveness interference coloring lets
+  // candidates with disjoint live ranges SHARE a register, promoting more of
+  // them under the same D2-D7/A2-A5 budget. Only for goto-free functions (a
+  // goto/label -- including a lowered break/continue -- falls through to the OP5
+  // whole-function assignment below, which gives each candidate its own register
+  // and is always safe). -O2 never enters here, so its output stays byte-identical.
   if (opt_level >= 3 && !ra_has_goto(fn->body))
     return ra_color_global(fn);
 
@@ -2256,15 +2402,17 @@ static void ir_materialize_selftest(void) {
 // Entry point.
 // ---------------------------------------------------------------------------
 
-// Build `fn`'s IR (lower + CFG + -O3 global opts), then create and color value
-// temporaries. The built items/blocks stay in the file statics for
-// ir_emit_built(); returning here -- before the prologue is emitted -- lets the
-// caller movem-save any temporary's register. Returns the highest DATA register
-// (2..7, else 0) a temporary took. Only called when the body is IR-eligible.
+// Build `fn`'s IR (lower + CFG + -O3 global opts), allocate registers over the
+// built CFG (OP7 v2 dataflow liveness), then create and color value temporaries.
+// The built items/blocks stay in the file statics for ir_emit_built(); returning
+// here -- before the prologue is emitted -- lets the caller movem-save the
+// promoted registers. Returns the highest DATA register used (2..7, else 0).
+// Only called when the body is IR-eligible.
 int ir_build_body(Obj *fn) {
   nitems = 0;
   nvtemp = 0;
   ir_fn = fn;
+  ir_prep_regs(fn); // fold map + candidates (the builder reads the fold map)
   lower_stmt(fn->body);
   ir_build_cfg();
 
@@ -2273,13 +2421,14 @@ int ir_build_body(Obj *fn) {
   if (opt_level >= 3)
     ir_optimize();
 
+  // OP7 (-O2 seq / -O3 CFG liveness): allocate registers now that the CFG is
+  // final, then materialize value temporaries into the registers left free.
+  int hi = ir_color_regs(fn);
   ir_materialize_selftest(); // gated on C68K_VTEMP_TEST; no-op otherwise
-
-  int vdhi = 0;
   for (int i = 0; i < nvtemp; i++)
-    if (vtemps[i]->reg >= 2 && vtemps[i]->reg <= 7 && vtemps[i]->reg > vdhi)
-      vdhi = vtemps[i]->reg;
-  return vdhi;
+    if (vtemps[i]->reg >= 2 && vtemps[i]->reg <= 7 && vtemps[i]->reg > hi)
+      hi = vtemps[i]->reg;
+  return hi;
 }
 
 // Emit the IR built by the preceding ir_build_body(), block by block in layout
